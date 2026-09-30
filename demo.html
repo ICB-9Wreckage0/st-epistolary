@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>书信簿 演示</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/2.1.4/toastr.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+<link rel="stylesheet" href="style.css">
+<style>
+    :root {
+        --bg: #16161a; --panel: #1f1f24; --line: rgba(255,255,255,.12); --fg: #e6e2da; --muted: #9b968c; --accent: #e8b86b;
+        --SmartThemeBodyColor: var(--fg); --SmartThemeBorderColor: var(--line); --SmartThemeQuoteColor: var(--accent);
+        --SmartThemeBlurTintColor: rgba(28,28,33,.97);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+    a { color: var(--accent); }
+    header { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+    header h1 { margin: 0 0 4px; font-size: 18px; }
+    header p { margin: 0; color: var(--muted); font-size: 13px; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 14px; padding: 14px 16px; max-width: 1200px; margin: 0 auto; }
+    @media (max-width: 860px) { main { grid-template-columns: minmax(0, 1fr); } }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    .card h2 { font-size: 14px; margin: 0 0 8px; color: var(--muted); font-weight: 600; }
+    #demo-chat { height: 52vh; min-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; }
+    .demo-msg { max-width: 92%; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); }
+    .demo-msg.user { align-self: flex-end; background: #2a2a31; }
+    .demo-msg.char { align-self: flex-start; background: #24242a; }
+    .demo-name { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+    .demo-tag { color: var(--accent); margin-left: 6px; }
+    .demo-text { white-space: pre-wrap; word-break: break-word; }
+    .demo-input { display: flex; gap: 8px; margin-top: 10px; }
+    .demo-input textarea { flex: 1; min-height: 44px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+    #demo-injection { white-space: pre-wrap; word-break: break-word; font-size: 12.5px; max-height: 40vh; overflow-y: auto; background: #18181c; border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin: 0; }
+    /* 酒馆界面里的几个通用样式，演示页里简单模仿一下 */
+    .menu_button { background: #2b2b31; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; }
+    .menu_button:hover { border-color: var(--accent); }
+    .text_pole { background: #141417; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; width: 100%; }
+    .checkbox_label { display: flex !important; gap: 6px; align-items: center; margin: 6px 0; }
+    .flex-container { display: flex; gap: 6px; flex-wrap: wrap; }
+    .flex1 { flex: 1; }
+    .inline-drawer-header { display: flex; justify-content: space-between; margin-bottom: 8px; }
+    .inline-drawer-icon { display: none; }
+    #extensionsMenu { display: flex; gap: 6px; flex-wrap: wrap; }
+    #extensionsMenu .list-group-item { display: inline-flex; gap: 6px; align-items: center; background: #2b2b31; border: 1px solid var(--accent); color: var(--accent); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+    .hint { color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<header>
+    <h1>✉ 书信簿 · 演示页</h1>
+    <p>这里模拟了一个小酒馆，用来预览插件的界面和动画。AI 回复是写死的演示文字，不会调用任何 API；数据只保存在这个浏览器里。真正使用请把插件装进 SillyTavern。</p>
+</header>
+<main>
+    <section class="card">
+        <div class="row">
+            <div id="extensionsMenu"></div>
+            <span class="hint">（在酒馆里，这个按钮在输入框左边的魔法棒菜单里）</span>
+        </div>
+        <div id="demo-chat"></div>
+        <div class="demo-input">
+            <textarea id="demo-text" class="text_pole" placeholder="试着提到信里的内容，比如：你还记得她信里写的那种蓝色的鸟吗？"></textarea>
+            <button class="menu_button" id="demo-send">发送</button>
+        </div>
+    </section>
+    <aside>
+        <section class="card">
+            <h2>当前聊天的角色</h2>
+            <div class="row">
+                <select id="demo-char" class="text_pole" style="flex:1">
+                    <option>文森特</option><option>提奥</option><option>高更</option>
+                </select>
+            </div>
+            <p class="hint">切换角色，再发一句提到信件内容的话，看看不同的人各自“记得”什么。文森特听提奥念过其中两段，提奥读过全文，高更什么都不知道。</p>
+        </section>
+        <section class="card" style="margin-top:14px">
+            <h2>本轮注入给 AI 的内容</h2>
+            <pre id="demo-injection">（发送一条消息后显示）</pre>
+        </section>
+        <section class="card" style="margin-top:14px">
+            <h2>扩展设置（在酒馆里位于“扩展”面板）</h2>
+            <div id="extensions_settings2"></div>
+            <div class="row" style="margin-top:10px">
+                <button class="menu_button" id="demo-reset">重置演示数据</button>
+            </div>
+        </section>
+    </aside>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/2.1.4/toastr.min.js"></script>
+<script type="module">
+    import { ctx, renderMessage, rerenderChat, saveState, LS_ARCHIVE, LS_STATE } from './demo/mock.js';
+    import { seedArchive } from './demo/seed.js';
+
+    toastr.options = { positionClass: 'toast-top-center', timeOut: 2500 };
+
+    if (!localStorage.getItem(LS_ARCHIVE)) {
+        try { localStorage.setItem(LS_ARCHIVE, JSON.stringify(seedArchive())); } catch { /* 隐私模式 */ }
+    }
+    if (!ctx.chat.length) {
+        ctx.chat.push({ name: '文森特', is_user: false, is_system: false, mes: '*（演示聊天开始。点左上角“书信簿”，可以读已有的信、写新信并寄出。）*' });
+    }
+
+    globalThis.epistolary = { mockGenerate: globalThis.__epistolaryDemoMock };
+    await import('./index.js');
+
+    rerenderChat();
+    const charSel = document.getElementById('demo-char');
+    charSel.value = ctx.name2;
+    charSel.addEventListener('change', async () => {
+        ctx.name2 = charSel.value;
+        saveState();
+        await ctx.eventSource.emit(ctx.eventTypes.CHAT_CHANGED);
+        toastr.info(`现在和 ${ctx.name2} 聊天`);
+    });
+
+    const send = async () => {
+        const ta = document.getElementById('demo-text');
+        const text = ta.value.trim();
+        if (!text) return;
+        ta.value = '';
+        const msg = { name: ctx.name1, is_user: true, is_system: false, mes: text, send_date: new Date().toLocaleString() };
+        ctx.chat.push(msg);
+        renderMessage(msg);
+        await ctx.generate('normal');
+    };
+    document.getElementById('demo-send').addEventListener('click', send);
+    document.getElementById('demo-text').addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+    document.getElementById('demo-reset').addEventListener('click', () => {
+        if (!confirm('清空这个浏览器里的演示数据，恢复成初始的几封信？')) return;
+        localStorage.removeItem(LS_ARCHIVE);
+        localStorage.removeItem(LS_STATE);
+        location.reload();
+    });
+</script>
+</body>
+</html>

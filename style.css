@@ -1,0 +1,949 @@
+/* 书信簿 · 样式。面板跟随酒馆主题色；只有阅读视图里的“信纸”用自己的颜色。 */
+
+#epi-root {
+    --epi-fg: var(--SmartThemeBodyColor, #ddd);
+    --epi-bg: var(--SmartThemeBlurTintColor, rgba(24, 24, 28, 0.96));
+    --epi-border: var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
+    --epi-accent: var(--SmartThemeQuoteColor, #e8b86b);
+    /* 酒馆手机模式会给 <html> 加 transform，inset:0 会被算成高度 0，所以写明视口尺寸 */
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    z-index: 9000;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--epi-fg);
+}
+
+#epi-root.epi-hidden,
+#epi-root .epi-hidden { display: none !important; }
+
+.epi-window {
+    width: min(1100px, 96vw);
+    height: min(92vh, 1000px);
+    display: flex;
+    flex-direction: column;
+    background: var(--epi-bg);
+    backdrop-filter: blur(var(--SmartThemeBlurStrength, 8px));
+    border: 1px solid var(--epi-border);
+    border-radius: 10px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+}
+
+.epi-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--epi-border);
+    flex-wrap: wrap;
+}
+.epi-title { font-weight: bold; font-size: 1.1em; }
+.epi-tabs { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
+.epi-tabs button, .epi-close {
+    background: transparent;
+    color: inherit;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+}
+.epi-tabs button.active { border-color: var(--epi-accent); color: var(--epi-accent); }
+.epi-tabs button:hover, .epi-close:hover { border-color: var(--epi-border); }
+
+.epi-body { flex: 1; overflow-y: auto; padding: 12px 14px 24px; }
+.epi-body h4 { margin: 18px 0 6px; }
+.epi-body label { display: flex; flex-direction: column; gap: 2px; font-size: 0.9em; }
+.epi-body .text_pole { margin: 0; }
+
+.epi-muted { opacity: 0.65; font-size: 0.9em; }
+.epi-empty { opacity: 0.7; padding: 40px 10px; text-align: center; }
+.epi-foot { margin-top: 16px; }
+
+.epi-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.epi-toolbar .menu_button, .epi-inline { width: auto; margin: 0; padding: 3px 10px; }
+.epi-search { flex: 1; min-width: 180px; }
+
+.epi-card {
+    display: flex;
+    gap: 8px;
+    border: 1px solid var(--epi-border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
+}
+.epi-card-main { flex: 1; cursor: pointer; min-width: 0; }
+.epi-card-main:hover { color: var(--epi-accent); }
+.epi-card-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.epi-card-actions { display: flex; flex-direction: column; gap: 4px; }
+.epi-card-actions .menu_button { margin: 0; padding: 2px 10px; white-space: nowrap; width: auto; }
+.epi-body h4 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.epi-chip {
+    font-size: 0.8em;
+    border: 1px solid var(--epi-border);
+    border-radius: 10px;
+    padding: 0 7px;
+}
+.epi-status-draft, .epi-status-unsent { opacity: 0.7; border-style: dashed; }
+.epi-status-sent { border-color: var(--epi-accent); }
+.epi-tags { display: flex; gap: 6px; flex-wrap: wrap; font-size: 0.85em; color: var(--epi-accent); }
+
+.epi-grid2, .epi-grid3, .epi-set-grid { display: grid; gap: 8px; }
+.epi-grid2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.epi-grid3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.epi-set-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 6px 0; }
+
+.epi-body-row { display: flex; gap: 10px; margin-top: 10px; }
+.epi-grow { flex: 1; min-width: 0; }
+.epi-textarea { min-height: 280px; font-family: inherit; line-height: 1.6; resize: vertical; }
+
+.epi-presets { width: 260px; display: flex; flex-direction: column; gap: 6px; }
+.epi-preset-list { display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow-y: auto; }
+.epi-preset {
+    text-align: left;
+    background: transparent;
+    color: inherit;
+    border: 1px solid var(--epi-border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+}
+.epi-preset:hover { border-color: var(--epi-accent); }
+.epi-preset small { opacity: 0.6; }
+
+.epi-seg {
+    border-left: 3px solid var(--epi-border);
+    padding: 4px 0 8px 10px;
+    margin-bottom: 8px;
+}
+.epi-seg-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+
+.epi-table-wrap { overflow-x: auto; }
+.epi-table { width: 100%; border-collapse: collapse; }
+.epi-table th { text-align: left; font-weight: normal; opacity: 0.7; padding: 2px 4px; }
+.epi-table td { padding: 2px 4px; vertical-align: middle; }
+.epi-table td .menu_button { margin: 0; padding: 2px 8px; width: auto; }
+
+.epi-know { margin: 4px 0; padding-left: 18px; }
+.epi-pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    border: 1px solid var(--epi-border);
+    border-radius: 6px;
+    padding: 10px;
+    font-size: 0.9em;
+}
+
+/* ---------- 阅读视图 ---------- */
+.epi-reader-wrap {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    box-sizing: border-box;
+    background: rgba(10, 10, 12, 0.92);
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    overflow-y: auto;
+    padding: 3vh 12px;
+    z-index: 9001;
+}
+.epi-reader { width: min(760px, 100%); }
+.epi-reader-bar {
+    display: flex;
+    padding: 4px 0;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    color: #eee;
+    margin-bottom: 8px;
+}
+.epi-reader-bar .menu_button { width: auto; margin: 0 0 0 4px; padding: 3px 10px; }
+
+.epi-paper {
+    --paper: #fbf8f1;
+    --ink: #1f2a44;
+    background: var(--paper);
+    color: var(--ink);
+    padding: 56px 60px 64px;
+    border-radius: 3px;
+    box-shadow: 0 6px 30px rgba(0, 0, 0, 0.45), inset 0 0 80px rgba(120, 90, 40, 0.08);
+    line-height: 1.9;
+    font-size: 17px;
+}
+.epi-paper-place { text-align: right; margin-bottom: 2em; opacity: 0.85; }
+.epi-paper-body { white-space: pre-wrap; word-break: break-word; }
+.epi-paper-sign { text-align: right; margin-top: 2.2em; }
+.epi-paper-note { margin-top: 2em; font-size: 0.85em; opacity: 0.7; border-top: 1px dashed currentColor; padding-top: 0.6em; }
+
+.paper-plain { --paper: #fdfdfb; }
+.paper-cream { --paper: #f7f0de; }
+.paper-aged {
+    --paper: #ecdcb6;
+    background: radial-gradient(ellipse at center, #f1e4c3 0%, #e6d2a4 70%, #d9c08b 100%);
+}
+.paper-lined {
+    --paper: #fbf9f3;
+    background-image: repeating-linear-gradient(to bottom, transparent 0, transparent calc(1.9em - 1px), rgba(80, 110, 160, 0.25) calc(1.9em - 1px), rgba(80, 110, 160, 0.25) 1.9em);
+    background-color: var(--paper);
+    background-position: 0 calc(56px - 0.5em);
+}
+.paper-blue { --paper: #e7eef6; }
+
+.ink-black { --ink: #1c1c1c; }
+.ink-blueblack { --ink: #1f2a44; }
+.ink-brown { --ink: #4a2f1b; }
+.ink-faded { --ink: #5d4a36; }
+
+.font-serif, .font-formal { font-family: 'EB Garamond', 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'SimSun', Georgia, serif; }
+.font-kai, .font-hand, .font-personal { font-family: 'Allura', 'LXGW WenKai', 'KaiTi', 'STKaiti', 'Kaiti SC', cursive; }
+.font-elegant { font-family: 'Great Vibes', 'Ma Shan Zheng', 'KaiTi', 'STKaiti', cursive; }
+.font-casual { font-family: 'Caveat', 'LXGW WenKai', 'KaiTi', 'STKaiti', cursive; }
+.font-mono, .font-typewriter { font-family: 'Courier Prime', 'Courier New', 'FangSong', 'STFangsong', monospace; }
+
+/* ---------- 窄屏 ---------- */
+@media (max-width: 760px) {
+    .epi-window { width: 100vw; height: 100vh; height: 100dvh; border-radius: 0; }
+    .epi-header { gap: 6px; padding: 6px 8px; }
+    .epi-title { flex: 1; }
+    .epi-tabs { order: 3; flex: 0 0 100%; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+    .epi-tabs button { white-space: nowrap; flex-shrink: 0; }
+    .epi-grid3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .epi-body-row { flex-direction: column; }
+    .epi-presets { width: auto; }
+    .epi-paper { padding: 32px 22px 40px; font-size: 16px; }
+}
+@media (max-width: 460px) {
+    .epi-grid2, .epi-grid3 { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 扩展设置面板 */
+.epistolary-settings label { display: block; margin-top: 6px; }
+.epistolary-settings .epi-set-grid label { margin-top: 0; font-size: 0.9em; }
+.epistolary-settings .menu_button { width: auto; }
+.epistolary-settings .epi-muted { opacity: 0.65; display: block; margin-top: 6px; }
+
+/* ================= v0.2：模式切换、文档式写信页、对话框、人物卡 ================= */
+
+.epi-mode { display: flex; border: 1px solid var(--epi-border); border-radius: 7px; overflow: hidden; }
+.epi-mode button { background: transparent; color: inherit; border: 0; padding: 3px 10px; cursor: pointer; font-size: 0.9em; }
+.epi-mode button.active { background: var(--epi-accent); color: #1a1a1a; }
+
+.epi-primary { border-color: var(--epi-accent) !important; color: var(--epi-accent) !important; }
+
+/* 工具栏：像文档编辑器的功能区 */
+.epi-doc { max-width: 900px; margin: 0 auto; }
+.epi-ribbon {
+    position: sticky;
+    top: -12px;
+    z-index: 2;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    align-items: center;
+    padding: 8px 10px;
+    margin: -4px -4px 10px;
+    background: var(--epi-bg);
+    border: 1px solid var(--epi-border);
+    border-radius: 8px;
+}
+.epi-rgroup { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.epi-rgroup + .epi-rgroup { border-left: 1px solid var(--epi-border); padding-left: 12px; }
+.epi-rlabel { opacity: 0.6; font-size: 0.85em; margin-right: 2px; }
+.epi-rbtn, .epi-rsel {
+    background: transparent;
+    color: inherit;
+    border: 1px solid var(--epi-border);
+    border-radius: 6px;
+    padding: 3px 8px;
+    font-size: 0.9em;
+    cursor: pointer;
+    max-width: 150px;
+}
+.epi-rsel option { color: #222; background: #fff; }
+.epi-rbtn:hover, .epi-rsel:hover { border-color: var(--epi-accent); }
+
+/* 信头：像信封上的几行字 */
+.epi-letterhead {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    padding: 4px 6px 10px;
+    font-size: 0.92em;
+}
+.epi-letterhead label { display: flex; flex-direction: row; align-items: baseline; gap: 6px; }
+.epi-letterhead span { opacity: 0.6; white-space: nowrap; }
+.epi-letterhead input {
+    background: transparent;
+    color: inherit;
+    border: 0;
+    border-bottom: 1px solid var(--epi-border);
+    padding: 2px 2px;
+    min-width: 4em;
+    font: inherit;
+}
+.epi-letterhead input:focus { outline: none; border-bottom-color: var(--epi-accent); }
+
+/* 桌面与信纸 */
+.epi-desk { display: flex; justify-content: center; padding: 6px 0 4px; }
+.epi-paper-edit { width: 100%; max-width: 760px; box-sizing: border-box; }
+.epi-page {
+    display: block;
+    width: 100%;
+    min-height: 420px;
+    border: 0;
+    outline: none;
+    resize: none;
+    overflow: hidden;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    line-height: 1.9;
+    padding: 0;
+    margin: 0;
+    white-space: pre-wrap;
+}
+.epi-page::placeholder { color: var(--ink); opacity: 0.35; }
+.epi-docstatus {
+    display: flex;
+    gap: 14px;
+    justify-content: center;
+    font-size: 0.85em;
+    opacity: 0.7;
+    padding: 8px 0 4px;
+}
+.epi-dirty { color: var(--epi-accent); }
+
+.epi-banner {
+    border: 1px solid var(--epi-accent);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin: 0 0 10px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+}
+.epi-banner-soft { border-color: var(--epi-border); font-size: 0.92em; }
+.epi-banner a, .epi-reader-link a { color: var(--epi-accent); }
+.epi-banner-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.epi-banner-actions .menu_button { width: auto; margin: 0; padding: 3px 10px; }
+
+/* 专家区的折叠块 */
+.epi-sec {
+    border: 1px solid var(--epi-border);
+    border-radius: 8px;
+    padding: 6px 12px;
+    margin: 10px 0;
+}
+.epi-sec > summary { cursor: pointer; padding: 4px 0; font-weight: bold; }
+.epi-sec[open] > summary { margin-bottom: 6px; }
+
+/* 人物卡 */
+.epi-person {
+    border: 1px solid var(--epi-border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.epi-person-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.epi-person-name { flex: 1; min-width: 140px; font-weight: bold; }
+.epi-person .checkbox_label { flex-direction: row; align-items: center; gap: 4px; }
+.epi-person .epi-sec { margin: 4px 0 0; }
+.epi-person .epi-sec label { margin-top: 6px; }
+
+/* 对话框 */
+.epi-dialog-wrap {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    z-index: 9002;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    box-sizing: border-box;
+}
+.epi-dialog {
+    width: min(520px, 100%);
+    max-height: 92%;
+    overflow-y: auto;
+    background: var(--epi-bg);
+    border: 1px solid var(--epi-border);
+    border-radius: 10px;
+    padding: 14px 18px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.epi-dialog h3 { margin: 0 0 4px; }
+.epi-dialog p { margin: 0; }
+.epi-dialog label { display: flex; flex-direction: column; gap: 3px; }
+.epi-dialog .checkbox_label { flex-direction: row; align-items: center; gap: 6px; }
+.epi-row { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.epi-row .text_pole { flex: 1; min-width: 120px; margin: 0; }
+.epi-mini { width: auto !important; margin: 0 !important; padding: 2px 8px !important; font-size: 0.85em; }
+.epi-choice {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border-top: 1px solid var(--epi-border);
+    padding-top: 8px;
+    margin-top: 4px;
+}
+.epi-choice label { flex-direction: row !important; align-items: center; gap: 6px; cursor: pointer; }
+.epi-warn { color: var(--epi-accent); font-size: 0.9em; }
+.epi-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.epi-dialog-actions .menu_button { width: auto; margin: 0; padding: 4px 14px; }
+
+.epi-reader-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.epi-reader-actions .menu_button { margin: 0 !important; }
+.epi-reader-link { color: #ddd; font-size: 0.9em; margin: 6px 2px; }
+
+@media (max-width: 760px) {
+    .epi-rgroup + .epi-rgroup { border-left: 0; padding-left: 0; }
+    .epi-ribbon { gap: 6px; }
+    .epi-mode button { padding: 3px 7px; }
+}
+
+/* 挡住酒馆全局输入框样式漏进信纸和工具栏 */
+#epi-root .epi-page,
+#epi-root .epi-page:focus {
+    border: 0 !important;
+    outline: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    max-height: none !important;
+}
+#epi-root .epi-rsel { width: auto !important; min-width: 0; flex: 0 0 auto; }
+#epi-root .epi-letterhead input { width: auto !important; box-shadow: none !important; }
+
+/* ================= v0.3：信封动画 ================= */
+
+.epi-env-stage {
+    --W: min(84vw, 460px);
+    --H: calc(var(--W) * 0.64);
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    z-index: 9500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    cursor: pointer;
+    user-select: none;
+}
+.epi-env-backdrop {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at 50% 42%, rgba(40, 32, 22, 0.55), rgba(6, 6, 8, 0.82) 70%);
+}
+.epi-env-camera {
+    position: relative;
+    width: var(--W);
+    height: var(--H);
+    perspective: 1300px;
+    perspective-origin: 50% 15%;
+}
+.epi-env-scene {
+    position: absolute;
+    inset: 0;
+    /* 场景是平的：每块纸的前后顺序由 z-index 决定，不交给浏览器的三维深度排序（它会把翻盖画断）。
+       翻盖、印章自身的立体运动仍然有透视，来自这里的 perspective。 */
+    transform-style: flat;
+    perspective: 1300px;
+    perspective-origin: 50% 15%;
+}
+.epi-env-scene > * { position: absolute; }
+
+/* 固定的前后顺序（从后到前） */
+.epi-env-back { z-index: 1; }
+.epi-env-flap.behind { z-index: 2; }
+.epi-env-letter { z-index: 3; }
+.epi-env-pocket { z-index: 4; }
+.epi-env-flap { z-index: 5; }
+.epi-env-seal-shadow { z-index: 6; }
+.epi-env-seal, .epi-env-seal-half { z-index: 7; }
+.epi-env-stamp-shadow { z-index: 8; }
+.epi-env-stamp { z-index: 9; }
+.epi-env-face { z-index: 10; }
+
+/* 正反面：翻到侧对镜头时由脚本切换 */
+.epi-env-stage.side-back .epi-env-face { display: none; }
+.epi-env-stage.side-front .epi-env-scene > :not(.epi-env-face) { display: none; }
+
+/* 程序生成的纸张纤维纹理（无图片素材） */
+.epi-env-grain {
+    background-color: var(--env-paper);
+    background-image:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .35 0 0 0 0 .28 0 0 0 0 .18 0 0 0 .13 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"),
+        radial-gradient(ellipse at 30% 20%, rgba(255, 255, 255, 0.18), transparent 60%);
+}
+
+/* 慢慢漂移的一道光，让纸面有点微光 */
+.epi-env-sheen {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(115deg, transparent 35%, rgba(255, 255, 255, 0.2) 50%, transparent 65%);
+    background-size: 300% 100%;
+    animation: epi-env-shimmer 7s ease-in-out infinite alternate;
+}
+@keyframes epi-env-shimmer {
+    from { background-position: 100% 0; }
+    to { background-position: 0% 0; }
+}
+
+/* ---- 背面：内衬、信纸、口袋、翻盖 ---- */
+.epi-env-back {
+    inset: 0;
+    border-radius: 3px;
+    background-color: var(--env-lining-b);
+    background-image: repeating-linear-gradient(45deg, var(--env-lining-a) 0 5px, var(--env-lining-b) 5px 10px);
+    box-shadow: 0 22px 40px rgba(0, 0, 0, 0.45), 0 4px 10px rgba(0, 0, 0, 0.3);
+    transform: translateZ(0);
+}
+/* 信纸样式见文件末尾“信封动画里的信纸” */
+
+.epi-env-pocket {
+    inset: 0;
+    border-radius: 3px;
+    transform: translateZ(2px);
+    /* 口袋：两侧小片一直延伸到顶角，中间是 V 形开口；四条折线在中心交汇 */
+    clip-path: polygon(0 0, 50% 58%, 100% 0, 100% 100%, 0 100%);
+    background-color: var(--env-edge);
+}
+/* 下面那片（压在两侧小片上），颜色略亮 */
+.epi-env-pocket::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.14), transparent 10%), var(--env-paper);
+    clip-path: polygon(0 100%, 50% 56%, 100% 100%);
+}
+.epi-env-pocket .epi-env-sheen { z-index: 1; }
+
+.epi-env-flap {
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 62%;
+    transform-origin: 50% 0;
+    transform-style: preserve-3d;
+}
+.epi-env-flap-out, .epi-env-flap-in {
+    position: absolute;
+    inset: 0;
+    clip-path: polygon(0 0, 100% 0, 53% 96%, 50% 100%, 47% 96%);
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+}
+.epi-env-flap-out {
+    background-image:
+        linear-gradient(to bottom, transparent 55%, rgba(0, 0, 0, 0.1)),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .35 0 0 0 0 .28 0 0 0 0 .18 0 0 0 .13 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.epi-env-flap-in {
+    /* 内侧这一面自己先绕中线翻了 180°，所以三角形要倒过来画，翻开后底边才会贴着信封上沿、尖朝上 */
+    clip-path: polygon(0 100%, 100% 100%, 53% 4%, 50% 0, 47% 4%);
+    transform: rotateX(180deg);
+    background-color: var(--env-lining-b);
+    background-image: repeating-linear-gradient(45deg, var(--env-lining-a) 0 5px, var(--env-lining-b) 5px 10px);
+}
+
+/* ---- 火漆 ---- */
+.epi-env-seal, .epi-env-seal-half, .epi-env-seal-shadow {
+    left: 50%;
+    top: 57%;
+    width: calc(var(--W) * 0.2);
+    height: calc(var(--W) * 0.2);
+    transform: translate(-50%, -50%) translateZ(4px);
+}
+.epi-env-seal-shadow {
+    transform: translate(-50%, -50%) translateZ(3.5px) translateY(3px);
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.35);
+    filter: blur(4px);
+}
+.epi-env-wax {
+    position: absolute;
+    inset: 0;
+    border-radius: 47% 53% 50% 50% / 52% 46% 54% 48%;
+    background: radial-gradient(circle at 34% 28%, var(--wax-hi), var(--wax) 48%, var(--wax-lo) 100%);
+    box-shadow:
+        inset 0 -3px 6px rgba(0, 0, 0, 0.4),
+        inset 0 2px 3px rgba(255, 255, 255, 0.22),
+        0 1px 1px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+}
+/* 边缘不规则的溢出 */
+.epi-env-wax::before {
+    content: '';
+    position: absolute;
+    inset: -6%;
+    border-radius: 58% 42% 55% 45% / 45% 58% 42% 55%;
+    background: radial-gradient(circle at 60% 70%, var(--wax), var(--wax-lo));
+    z-index: -1;
+    opacity: 0.9;
+}
+.epi-env-imprint {
+    position: absolute;
+    inset: 16%;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.55), inset 0 -1px 2px rgba(255, 255, 255, 0.2), 0 0 0 2px rgba(0, 0, 0, 0.12);
+    background: radial-gradient(circle at 50% 60%, var(--wax), var(--wax-lo));
+    opacity: 0;
+}
+.epi-env-imprint::after {
+    content: '';
+    position: absolute;
+    inset: 9%;
+    border-radius: 50%;
+    border: 1px dashed rgba(0, 0, 0, 0.35);
+}
+.epi-env-imprint span {
+    font-family: 'Cormorant Garamond', Georgia, 'Songti SC', 'SimSun', serif;
+    font-weight: 700;
+    font-size: calc(var(--W) * 0.068);
+    line-height: 1;
+    color: var(--wax-lo);
+    text-shadow: 0 1px 0 rgba(255, 255, 255, 0.4), 0 -1px 1px rgba(0, 0, 0, 0.7);
+}
+.epi-env-wax-sheen {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(110deg, transparent 30%, rgba(255, 255, 255, 0.45) 50%, transparent 70%);
+    opacity: 0;
+    mix-blend-mode: screen;
+}
+.epi-env-seal-l { clip-path: polygon(0 0, 52% 0, 46% 22%, 56% 40%, 44% 60%, 54% 78%, 47% 100%, 0 100%); }
+.epi-env-seal-r { clip-path: polygon(52% 0, 100% 0, 100% 100%, 47% 100%, 54% 78%, 44% 60%, 56% 40%, 46% 22%); }
+
+/* ---- 印章：从上往下看，是木柄的顶端和一圈黄铜 ---- */
+.epi-env-stamp, .epi-env-stamp-shadow {
+    left: 50%;
+    top: 57%;
+    width: calc(var(--W) * 0.23);
+    height: calc(var(--W) * 0.23);
+    border-radius: 50%;
+    transform: translate(-50%, -50%) translateZ(300px);
+}
+.epi-env-stamp {
+    background: radial-gradient(circle at 36% 30%, #e8c77a, #b08a3a 45%, #6e5320 100%);
+    box-shadow: 0 0 0 3px #5b4318, 0 6px 14px rgba(0, 0, 0, 0.45);
+}
+.epi-env-stamp-face {
+    position: absolute;
+    inset: 16%;
+    border-radius: 50%;
+    background:
+        repeating-radial-gradient(circle at 42% 38%, rgba(0, 0, 0, 0.08) 0 2px, transparent 2px 5px),
+        radial-gradient(circle at 38% 32%, #9a5b34, #6b3a1f 55%, #3c1f10 100%);
+    box-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.25), inset 0 -3px 6px rgba(0, 0, 0, 0.45);
+}
+.epi-env-stamp-shadow {
+    transform: translate(-50%, -50%) translateZ(3.6px);
+    background: radial-gradient(circle, rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0) 70%);
+}
+
+/* ---- 正面：地址、邮票、邮戳 ---- */
+.epi-env-face {
+    inset: 0;
+    border-radius: 3px;
+    transform: translateZ(-1px) rotateY(180deg);
+    box-shadow: 0 22px 40px rgba(0, 0, 0, 0.45), 0 4px 10px rgba(0, 0, 0, 0.3);
+    overflow: hidden;
+}
+.epi-env-from {
+    position: absolute;
+    left: 6%;
+    top: 8%;
+    font-size: calc(var(--W) * 0.028);
+    line-height: 1.4;
+    color: var(--ink, #1f2a44);
+    opacity: 0.85;
+}
+.epi-env-address {
+    position: absolute;
+    left: 38%;
+    top: 50%;
+    right: 6%;
+    color: var(--ink, #1f2a44);
+    transform: rotate(-1.5deg);
+}
+.epi-env-to {
+    font-size: calc(var(--W) * 0.062);
+    line-height: 1.2;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.18);
+    padding-bottom: 0.2em;
+}
+.epi-env-place {
+    font-size: calc(var(--W) * 0.036);
+    margin-top: 0.4em;
+    padding-left: 1.2em;
+    opacity: 0.9;
+}
+.epi-env-postage {
+    position: absolute;
+    right: 6%;
+    top: 8%;
+    width: calc(var(--W) * 0.14);
+    height: calc(var(--W) * 0.17);
+    /* 齿孔：满铺小圆孔，中间被图案盖住，只在边缘露出 */
+    background: radial-gradient(circle at 4px 4px, transparent 2.6px, #f7f1e1 3px) -4px -4px / 8px 8px;
+    filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25));
+}
+.epi-env-postage-inner {
+    position: absolute;
+    inset: 5px;
+    background:
+        repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.07) 0 1px, transparent 1px 3px),
+        linear-gradient(160deg, #6f8a6c, #3f5a44);
+    border: 2px solid #f7f1e1;
+    outline: 1px solid rgba(0, 0, 0, 0.25);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #f5ecd5;
+    font-family: Georgia, serif;
+}
+.epi-env-postage-glyph { font-size: calc(var(--W) * 0.05); line-height: 1; }
+.epi-env-postage-value { font-size: calc(var(--W) * 0.026); font-weight: bold; margin-top: 2px; }
+.epi-env-postmark {
+    position: absolute;
+    right: 13%;
+    top: 5%;
+    width: calc(var(--W) * 0.24);
+    height: calc(var(--W) * 0.2);
+    transform-origin: 50% 50%;
+    mix-blend-mode: multiply;
+    pointer-events: none;
+}
+.epi-env-postmark-ring {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: calc(var(--W) * 0.19);
+    height: calc(var(--W) * 0.19);
+    border: 2px solid rgba(38, 34, 58, 0.85);
+    border-radius: 50%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: rgba(38, 34, 58, 0.9);
+    font-family: Georgia, 'Courier New', serif;
+    text-align: center;
+    line-height: 1.25;
+}
+.epi-env-postmark-ring span { font-size: calc(var(--W) * 0.022); letter-spacing: 0.08em; }
+.epi-env-postmark-ring b { font-size: calc(var(--W) * 0.026); }
+.epi-env-postmark-waves {
+    position: absolute;
+    left: calc(var(--W) * 0.17);
+    top: calc(var(--W) * 0.04);
+    width: calc(var(--W) * 0.2);
+    height: calc(var(--W) * 0.11);
+    background: repeating-linear-gradient(to bottom, rgba(38, 34, 58, 0.8) 0 2px, transparent 2px 7px);
+    border-radius: 40% 60% 40% 60% / 20% 20% 20% 20%;
+    transform: skewY(-4deg);
+    -webkit-mask: linear-gradient(to right, #000 70%, transparent);
+    mask: linear-gradient(to right, #000 70%, transparent);
+}
+
+.epi-env-hint {
+    position: absolute;
+    bottom: 5vh;
+    left: 0;
+    right: 0;
+    text-align: center;
+    color: rgba(255, 255, 255, 0.45);
+    font-size: 12px;
+    letter-spacing: 0.1em;
+}
+
+
+/* ================= v0.4：字迹、横竖版信纸 ================= */
+
+/* 拉丁字体随插件附带（SIL OFL 1.1，见 fonts/ 目录）；只含拉丁字母和法语等用到的扩展字母 */
+@font-face { font-family: 'EB Garamond'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/eb-garamond-latin-400-normal.woff2') format('woff2'); unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: 'EB Garamond'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/eb-garamond-latin-ext-400-normal.woff2') format('woff2'); unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: 'EB Garamond'; font-style: italic; font-weight: 400; font-display: swap; src: url('fonts/eb-garamond-latin-400-italic.woff2') format('woff2'); unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: 'EB Garamond'; font-style: italic; font-weight: 400; font-display: swap; src: url('fonts/eb-garamond-latin-ext-400-italic.woff2') format('woff2'); unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: 'Allura'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/allura-latin-400-normal.woff2') format('woff2'); unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: 'Allura'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/allura-latin-ext-400-normal.woff2') format('woff2'); unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: 'Great Vibes'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/great-vibes-latin-400-normal.woff2') format('woff2'); unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: 'Great Vibes'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/great-vibes-latin-ext-400-normal.woff2') format('woff2'); unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family: 'Caveat'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/caveat-latin-400-normal.woff2') format('woff2'); unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: 'Caveat'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/caveat-latin-ext-400-normal.woff2') format('woff2'); unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+
+/* 手写体的字母本身比较小。纸上写的是外文时，按字迹放大，读起来和中文一样大 */
+.epi-paper { --hs: 1; }
+.epi-paper.script-lat.font-formal { --hs: 1.08; }
+.epi-paper.script-lat.font-personal { --hs: 1.4; }
+.epi-paper.script-lat.font-elegant { --hs: 1.5; }
+.epi-paper.script-lat.font-casual { --hs: 1.22; }
+.epi-paper-body, .epi-page, .epi-env-letter-text { font-size: calc(var(--hs, 1) * 1em) !important; }
+.epi-paper.script-lat.font-personal .epi-paper-body,
+.epi-paper.script-lat.font-elegant .epi-paper-body,
+.epi-paper.script-lat.font-personal .epi-page,
+.epi-paper.script-lat.font-elegant .epi-page { line-height: 1.55; }
+
+/* 段落：空一行的距离 */
+.epi-paper-body .epi-p { margin: 0 0 0.9em; }
+.epi-paper-body .epi-p:last-child { margin-bottom: 0; }
+.epi-l-dateline { text-align: right; margin-bottom: 0.9em; }
+.epi-p-signoff { text-align: right; margin-top: 1.4em; }
+.epi-p-ps { margin-top: 1.2em; font-size: 0.94em; }
+
+/* 花体称呼与署名 */
+.epi-paper.flourish .epi-l-salutation,
+.epi-paper.flourish .epi-p-signoff {
+    font-family: 'Great Vibes', 'Ma Shan Zheng', 'KaiTi', 'STKaiti', cursive;
+}
+.epi-paper.flourish.script-lat .epi-l-salutation,
+.epi-paper.flourish.script-lat .epi-p-signoff { font-size: 1.3em; line-height: 1.3; }
+.epi-paper.flourish.script-zh .epi-l-salutation,
+.epi-paper.flourish.script-zh .epi-p-signoff { font-size: 1.15em; }
+/* 中文信里的外文署名（如 E.）用花体时也要放大 */
+.epi-paper.flourish.script-zh .epi-p-signoff { line-height: 1.5; }
+
+.epi-rbtn.epi-on { border-color: var(--epi-accent); color: var(--epi-accent); }
+
+/* 纸张比例：竖版约 A4 竖放，横版约 A4 横放。字多了会往下长 */
+.epi-paper-read { box-sizing: border-box; }
+.epi-paper-read.orient-portrait { width: min(620px, 100%); margin: 0 auto; aspect-ratio: 1 / 1.414; }
+.epi-paper-read.orient-landscape { width: 100%; aspect-ratio: 1.414 / 1; }
+.epi-reader { width: min(820px, 100%); }
+.epi-paper-edit.orient-portrait { max-width: 620px; }
+.epi-paper-edit.orient-landscape { max-width: 860px; }
+
+/* 竖版信纸对折过一次：阅读时能看到中间一道淡淡的折痕 */
+.epi-paper-read.orient-portrait { position: relative; }
+.epi-paper-read.orient-portrait::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 14px;
+    transform: translateY(-50%);
+    pointer-events: none;
+    background: linear-gradient(to bottom,
+        transparent 0, rgba(0, 0, 0, 0.035) 40%, rgba(0, 0, 0, 0.09) 50%,
+        rgba(255, 255, 255, 0.35) 52%, rgba(255, 255, 255, 0.08) 62%, transparent 100%);
+}
+
+/* ---- 信封动画里的信纸：竖版可以沿中线对折 ---- */
+.epi-env-letter {
+    background: none !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+    perspective: 1100px;
+    perspective-origin: 50% 40%;
+}
+.epi-env-letter.orient-landscape { left: 7%; top: 8%; width: 86%; height: 86%; }
+.epi-env-letter.orient-portrait { left: 9%; top: 6%; width: 82%; height: calc(var(--W) * 1.16); }
+.epi-env-letter.raised { z-index: 20; }
+
+.epi-env-half { position: absolute; left: 0; width: 100%; overflow: hidden; }
+.orient-landscape > .epi-env-half-top { top: 0; height: 100%; }
+.orient-portrait > .epi-env-half-top { top: 0; height: 50%; }
+.epi-env-half-bot {
+    top: 50%;
+    height: 50%;
+    overflow: visible;
+    transform-origin: 50% 0;
+    z-index: 1;
+}
+.epi-env-fold-front, .epi-env-fold-back { position: absolute; inset: 0; overflow: hidden; }
+.epi-env-fold-back { display: none; padding: 0 !important; box-shadow: none !important; }
+/* 折上来之后，看到的是信纸的背面：空白，靠折痕一侧略暗 */
+.epi-env-fold-back::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.08), transparent 30%, transparent 85%, rgba(0, 0, 0, 0.12));
+}
+.epi-env-half-bot.folded .epi-env-fold-front { display: none; }
+.epi-env-half-bot.folded .epi-env-fold-back { display: block; }
+
+.epi-env-sheet {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 7% 8% !important;
+    border-radius: 2px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35) !important;
+    font-size: calc(var(--W) * 0.024) !important;
+    line-height: 1.7 !important;
+    overflow: hidden;
+}
+.orient-landscape .epi-env-sheet { height: 100%; }
+.orient-portrait .epi-env-sheet { height: 200%; }
+.orient-portrait .epi-env-sheet-lower { top: -100%; }
+/* 竖版展开时中线的折痕 */
+.orient-portrait .epi-env-half-top .epi-env-sheet::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 8px;
+    transform: translateY(-100%);
+    background: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.1));
+}
+.epi-env-letter-text { height: 100%; overflow: hidden; }
+
+/* 纸上写中文时，中文字体排在前面：数字、标点、偶尔的外文字母都跟着汉字的笔迹走 */
+.epi-paper.script-zh.font-formal, .script-zh.font-formal { font-family: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'SimSun', 'EB Garamond', serif; }
+.epi-paper.script-zh.font-personal, .script-zh.font-personal { font-family: 'LXGW WenKai', 'KaiTi', 'STKaiti', 'Kaiti SC', 'Allura', cursive; }
+.epi-paper.script-zh.font-elegant, .script-zh.font-elegant { font-family: 'Ma Shan Zheng', 'KaiTi', 'STKaiti', 'Great Vibes', cursive; }
+.epi-paper.script-zh.font-casual, .script-zh.font-casual { font-family: 'LXGW WenKai', 'KaiTi', 'STKaiti', 'Caveat', cursive; }
+.epi-paper.flourish.script-zh .epi-l-salutation,
+.epi-paper.flourish.script-zh .epi-p-signoff { font-family: 'Ma Shan Zheng', 'KaiTi', 'STKaiti', 'Great Vibes', cursive; }
+
+/* 横格信笺：每一行都压在格线上。行距固定为一格（纸的 1.9em），空一行正好空一格 */
+.paper-lined .epi-paper-body,
+.paper-lined .epi-page { line-height: calc(1.9 / var(--hs, 1)) !important; }
+.paper-lined .epi-paper-body .epi-p,
+.paper-lined .epi-l-dateline { margin: 0 0 calc(1.9em / var(--hs, 1)) !important; }
+.paper-lined .epi-paper-body .epi-p:last-child { margin-bottom: 0 !important; }
+.paper-lined .epi-p-signoff, .paper-lined .epi-p-ps { margin-top: 0 !important; font-size: 1em !important; }
+.paper-lined.flourish .epi-l-salutation,
+.paper-lined.flourish .epi-p-signoff { font-size: 1em !important; line-height: inherit !important; }
+.paper-lined .epi-paper-place { line-height: 1.9em; margin-bottom: 1.9em; }
