@@ -113,3 +113,67 @@ test('托人转交：转交人那边的旁白和提示不含信的内容', () =>
     assert.ok(!g.includes('秘密内容'));
     assert.match(g, /不要编造信的内容/);
 });
+
+// ---------- 自动填写信头 ----------
+import { parseFill, guessHeadFromThread, buildFillPrompt } from '../src/correspondence.js';
+
+test('自动填写信头：解析 AI 的 JSON，丢掉不合格的字段', () => {
+    const r = parseFill('好的 {"author":"E.","recipients":"文森特、提奥","writtenAt":"1889年6月","placeFrom":"巴黎","placeTo":"","language":"","travelDays":"3"}');
+    assert.deepEqual(r.recipients, ['文森特', '提奥']);
+    assert.equal(r.author, 'E.');
+    assert.equal(r.writtenAt, undefined);
+    assert.equal(r.placeTo, undefined);
+    assert.equal(r.travelDays, 3);
+    assert.equal(parseFill('没有'), null);
+});
+
+test('自动填写信头：沿用之前通信的地点（对方来信则对调）', () => {
+    const a = mkArchive();
+    mkLetter(a, { author: '文森特', recipients: ['E.'], writtenAt: '1889-06-01', placeFrom: '圣雷米', placeTo: '巴黎', language: '法语（中文显示）', body: 'x', status: 'sent' });
+    const g = guessHeadFromThread(a, 'E.', '文森特');
+    assert.equal(g.placeFrom, '巴黎');
+    assert.equal(g.placeTo, '圣雷米');
+    assert.equal(g.language, '法语（中文显示）');
+    const { prompt } = buildFillPrompt({ draft: { body: '亲爱的文森特：', author: 'E.', recipients: [] }, userName: 'E.', charName: '文森特', storyDate: '1889-06-10' });
+    assert.match(prompt, /travelDays/);
+});
+
+// ---------- 信的样子告诉 AI ----------
+import { describeAppearance, describeEnvelope, buildReactionGuidance as brg, buildViaGuidance as bvg } from '../src/correspondence.js';
+import { paperStyle } from '../src/render.js';
+
+test('信的样子：字号、字迹、纸、封口都能描述出来', () => {
+    const a = mkArchive();
+    const l = mkLetter(a, { author: 'A', recipients: ['B'], writtenAt: '1890-01-01', body: '正文', status: 'sent',
+        appearance: { paper: 'aged', wear: 2, ink: 'faded', font: 'casual', wobble: 3, size: 'sm', envelope: 'kraft', wax: 'chop' } });
+    const d = describeAppearance(l);
+    assert.match(d, /泛黄/); assert.match(d, /潦草/); assert.match(d, /发抖/); assert.match(d, /很小/); assert.match(d, /褪/);
+    assert.match(describeEnvelope(l), /牛皮纸.*缄/);
+    assert.match(brg(a, l, 'B', '1890-01-05', { look: true }), /信纸：/);
+    assert.ok(!/信纸：/.test(brg(a, l, 'B', '1890-01-05', {})));
+    const v = bvg(a, l, 'C', '1890-01-03', { look: true });
+    assert.match(v, /信封：/); assert.ok(!/信纸：/.test(v)); // 转交人拆开前只看得到信封
+    assert.equal(paperStyle(l), '--fs:0.88');
+});
+
+// ---------- 剧情里发现收信 ----------
+import { mentionsDate, mentionsReceipt, buildPendingHints, viaDeadline } from '../src/correspondence.js';
+
+test('发现收信：日期的各种写法、名字 + 收信说法', () => {
+    for (const t of ['1889-06-13', '6月13日', '六月十三日', 'June 13', '13 juin']) assert.ok(mentionsDate(`那天是${t}，`, '1889-06-13'), t);
+    assert.ok(!mentionsDate('6月1日', '1889-06-13'));
+    assert.ok(!mentionsDate('6月13日', '1889-06-01'));
+    assert.ok(mentionsReceipt('（思考：按时间算，文森特今天该收到 E. 的来信了）', ['文森特']));
+    assert.ok(mentionsReceipt('Theo opened the letter slowly.', ['Theo']));
+    assert.ok(!mentionsReceipt('文森特在院子里画麦田。', ['文森特']));
+    assert.equal(viaDeadline('1889-06-20', 3), '1889-06-17');
+});
+
+test('未读的信提醒：不让 AI 编内容', () => {
+    const a = mkArchive();
+    const l = mkLetter(a, { author: 'A', recipients: ['B'], writtenAt: '1890-01-01', body: '秘密', status: 'sent' });
+    l.delivery = { status: 'atVia', via: 'C', viaDeadline: '1890-01-05' };
+    const h = buildPendingHints({ atVia: [l], storyDate: '1890-01-06' });
+    assert.match(h, /C 手里/); assert.match(h, /耽搁/); assert.match(h, /不要编造/); assert.ok(!h.includes('秘密'));
+    assert.equal(buildPendingHints({}), '');
+});

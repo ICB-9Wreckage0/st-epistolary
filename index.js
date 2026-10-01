@@ -5,12 +5,13 @@
 import { Store } from './src/store.js';
 import { UI } from './src/ui.js';
 import { retrieve, DEFAULT_RETRIEVAL } from './src/retrieval.js';
-import { sameName, normalizeDate } from './src/model.js';
+import { sameName, normalizeDate, findPerson } from './src/model.js';
 import {
     buildReactionGuidance, replyChatMessage, sceneSwitchMessage, sceneReturnMessage,
     deliveryEvents, buildDatePrompt, parseStoryDate, addDays,
     viaSceneMessage, viaPeekMessage, buildViaGuidance, buildViaDecisionPrompt, parseViaDecision,
     viaReceivedEvents, nextEventId, VIA_ACTIONS,
+    mentionsReceipt, mentionsDate, mentionsName, buildPendingHints, inlineLetterBlock,
 } from './src/correspondence.js';
 import { playSeal, playOpen } from './src/envelope.js';
 import { callAI, DEFAULT_API } from './src/api.js';
@@ -18,11 +19,15 @@ import { callAI, DEFAULT_API } from './src/api.js';
 const MODULE = 'epistolary';
 const PROMPT_KEY = 'epistolary_letters';
 const REACTION_KEY = 'epistolary_reaction';
+const PENDING_KEY = 'epistolary_pending';
 
 const DEFAULT_SETTINGS = {
     enabled: true,
     mode: 'simple',          // simple 简单模式 | expert 专家模式
     autoKeywords: true,      // 简单模式下，保存时自动让 AI 生成关键词
+    autoFill: true,          // 写新信时让 AI 根据剧情填信头
+    describeLook: true,
+    detectArrival: true,     // 剧情里（包括 AI 的思考）写到收信人收到信、转交人动了信，就自动处理      // 收信反应时，把信纸、墨水、字迹、字号、信封、封口告诉 AI
     animations: true,        // 寄信封缄、收信拆信动画
     jitter: true,            // 手写随机感
     onlineFonts: true,       // 在线加载中文书信字体（霞鹜文楷、思源宋体、马善政楷书）
@@ -143,7 +148,9 @@ function pendingReaction() {
         if (!m || m.is_system) continue;
         if (m.is_user) {
             const info = m.extra?.epistolary;
-            return info && (info.kind === 'letter' || info.kind === 'via') ? info : null;
+            if (info && (info.kind === 'letter' || info.kind === 'via')) return info;
+            const inline = m.extra?.epistolaryInline;
+            return inline ? { ...inline, kind: 'letter', inline: true } : null;
         }
     }
     return null;
@@ -154,8 +161,12 @@ function reactionGuidance() {
     if (!info) return '';
     const letter = store.archive.letters[info.letterId];
     if (!letter) return '';
-    if (info.kind === 'via') return buildViaGuidance(store.archive, letter, info.via, info.arrival);
-    return buildReactionGuidance(store.archive, letter, info.reader, info.arrival, { peek: !!info.peek });
+    const look = settings().describeLook !== false;
+    if (info.kind === 'via') return buildViaGuidance(store.archive, letter, info.via, info.arrival, { look });
+    const g = buildReactionGuidance(store.archive, letter, info.reader, info.arrival, { peek: !!info.peek, look });
+    // 剧情里自己写到收信的：信不在聊天里，原文直接放进上下文
+    if (info.inline) return `${inlineLetterBlock(letter, info.reader, info.arrival)}\n\n${g.replace('（信的全文就是上一条消息）', '（原文见上）').replace('，信的全文就是上一条消息', '，原文见上')}`;
+    return g;
 }
 
 function runRetrieval() {
@@ -219,6 +230,7 @@ function arrive(letter, date) {
         dv.stage = 'atVia';
         dv.status = 'atVia';
         dv.viaArrivedAt = when;
+        dv.viaArrivedFloor = floor();
         store.save();
         return;
     }
@@ -329,11 +341,11 @@ function setViaAction(letter, action) {
 }
 
 // 转交人那段剧情写完以后，让 AI 判断他拆没拆、打算怎么办
-async function judgeViaDecision(letter) {
+async function judgeViaDecision(letter, onlyText = '') {
     const dv = letter.delivery;
     const via = viaOf(letter);
     const chat = ctx().chat || [];
-    const text = chat.slice(Math.max(0, dv.decisionFrom ?? chat.length - 2))
+    const text = onlyText || chat.slice(Math.max(0, dv.decisionFrom ?? chat.length - 2))
         .filter(m => m && !m.is_system && typeof m.mes === 'string')
         .map(m => `${m.name}：${String(m.mes).slice(0, 1500)}`).join('\n\n');
     if (!text) return null;
@@ -365,12 +377,14 @@ async function applyViaDecision(letter, guess, { fromCharacter = false } = {}) {
 }
 
 async function checkViaDecisions({ fromCharacter = false } = {}) {
-    if (!fromCharacter) return;
+    const handled = new Set();
+    if (!fromCharacter) return handled;
     const cid = chatId();
     const waiting = Object.values(store.archive.letters).filter(l => l.delivery?.status === 'atVia' && l.delivery.awaitingDecision && (!l.delivery.chatId || l.delivery.chatId === cid));
     for (const l of waiting) {
         const dv = l.delivery;
         if (floor() <= (dv.decisionFrom || 0) + 1) continue; // 转交人还没开口
+        handled.add(l.id);
         dv.awaitingDecision = false;
         const guess = await judgeViaDecision(l);
         if (!guess) { store.save(); ui.renderPostbox(); continue; }
@@ -383,6 +397,7 @@ async function checkViaDecisions({ fromCharacter = false } = {}) {
         store.save();
         ui.renderPostbox();
     }
+    return handled;
 }
 
 // 镜头切到收信人那边：（拆信动画）→ 一段旁白 + 信的全文 → 角色写收信反应
@@ -465,18 +480,144 @@ async function inferStoryDate({ force = false } = {}) {
     }
 }
 
+// ---------- 从剧情里发现信的动静 ----------
+
+function namesOf(name) {
+    const p = findPerson(store.archive, name);
+    return p ? [p.name, ...(p.aliases || [])].filter(Boolean) : [name].filter(Boolean);
+}
+
+function mailInChat() {
+    const cid = chatId();
+    return Object.values(store.archive.letters).filter(l => l.delivery && (!l.delivery.chatId || l.delivery.chatId === cid));
+}
+
+// 转交人在动这封信的说法（比单个“信”字严格，免得“相信”“信任”也算）
+const VIA_LETTER_RE = /(?:那|这|一)封信|信封|拆.{0,4}信|看.{0,3}信|读.{0,3}信|转交|托.{0,8}信|把信|信纸|火漆|封口|letter|lettre|envelope|enveloppe/i;
+
+// 这条文字里，有没有哪封信的收信人收到了信
+function findReceipt(text) {
+    const today = normalizeDate(getStoryDate());
+    const f = floor();
+    for (const l of mailInChat()) {
+        const dv = l.delivery;
+        const reader = dv.reader || l.recipients[0];
+        if (ui.isMe(reader)) continue;
+        const arrived = dv.status === 'arrived';
+        const inTransit = dv.status === 'transit' && dv.stage !== 'toVia';
+        if (!arrived && !inTransit) continue;
+        if (!mentionsReceipt(text, namesOf(reader))) continue;
+        const saysDate = !!dv.eta && mentionsDate(text, dv.eta);
+        const due = arrived || saysDate
+            || (dv.mode === 'date' && today && normalizeDate(dv.eta) && normalizeDate(dv.eta) <= today)
+            || (dv.mode === 'floors' && f - (dv.sentFloor || 0) >= (dv.floors || 1));
+        if (!due) continue;
+        return { letter: l, reader, saysDate };
+    }
+    return null;
+}
+
+function markReceived(hit) {
+    const { letter, reader, saysDate } = hit;
+    const dv = letter.delivery;
+    if (saysDate && normalizeDate(dv.eta) && (!getStoryDate() || normalizeDate(dv.eta) > normalizeDate(getStoryDate()))) setStoryDate(dv.eta);
+    if (dv.status === 'transit') arrive(letter, saysDate ? dv.eta : getStoryDate());
+    const arrival = letter.delivery.arrivedAt || getStoryDate();
+    letter.delivery = { ...letter.delivery, status: 'viewed', followup: true, detected: true };
+    store.save();
+    ui.renderPostbox();
+    ui.refresh();
+    toastr.info(`剧情里 ${reader} 收到了 ${letter.author} 的信，已经把原文交给 AI`, '📬 信到了');
+    return arrival;
+}
+
+// 角色（AI）刚写完一条：正文或思考里写到收信人收到信 → 把原文发进聊天，让角色读
+async function deliverDetected(hit) {
+    const arrival = markReceived(hit);
+    if (settings().animations) await playOpen(hit.letter, { render: ui.renderOpts(hit.letter) });
+    await pushMessage({
+        name: ctx().name1, is_user: true, is_system: false, send_date: nowStamp(),
+        mes: `*（${hit.reader}收到的信，原文如下。）*\n\n${hit.letter.body}`,
+        extra: { epistolary: { kind: 'letter', letterId: hit.letter.id, reader: hit.reader, arrival } },
+    }, { generate: true });
+    ui.renderPostbox();
+}
+
+// 转交人在剧情里动了信：让 AI 判断 TA 拆没拆、交不交
+async function viaFromText(text, { fromCharacter, skip = new Set() }) {
+    for (const l of mailInChat()) {
+        const dv = l.delivery;
+        if (!['atVia', 'held'].includes(dv.status) || ui.isMe(dv.via) || skip.has(l.id) || dv.awaitingDecision) continue;
+        if (!mentionsName(text, namesOf(dv.via)) || !VIA_LETTER_RE.test(text)) continue;
+        const guess = await judgeViaDecision(l, `${dv.via}：${text.slice(0, 3000)}`);
+        if (!guess) continue;
+        const opening = guess.opened && !dv.opened;
+        if (!opening && guess.action === 'unclear') continue;
+        if (dv.status === 'held' && !opening && guess.action === 'later') continue;
+        if (settings().delivery.viaAuto) {
+            if (opening && !fromCharacter) {
+                // 用户自己写了转交人拆信：这一轮生成直接带上原文
+                await letViaRead(l, { post: false });
+                return { letter: l, peek: true };
+            }
+            await applyViaDecision(l, guess, { fromCharacter });
+        } else {
+            dv.viaGuess = guess;
+            store.save();
+            toastr.info(`${dv.via} 好像${guess.opened ? '拆开了信，' : ''}${VIA_ACTIONS[guess.action] || ''}。在右下角信箱里确认`, '🤝 转交');
+        }
+        ui.renderPostbox();
+        return null;
+    }
+    return null;
+}
+
+// 转交人拿着信太久：提醒
+function remindVia() {
+    const today = getStoryDate();
+    const f = floor();
+    for (const l of mailInChat()) {
+        const dv = l.delivery;
+        if (!['atVia', 'held'].includes(dv.status)) continue;
+        const who = ui.isMe(dv.via) ? '你' : dv.via;
+        const to = l.recipients.join('、');
+        if (dv.viaDeadline && today && normalizeDate(today) && normalizeDate(today) >= normalizeDate(addDays(dv.viaDeadline, -1))) {
+            if (dv.remindedOn === today) continue;
+            dv.remindedOn = today;
+            const late = normalizeDate(today) > normalizeDate(dv.viaDeadline);
+            toastr.warning(late
+                ? `已经过了最晚转交日 ${dv.viaDeadline}，${who} 还没把 ${l.author} 的信交出去，${to} 会晚收到`
+                : `${who} 最晚 ${dv.viaDeadline} 要把 ${l.author} 的信转交出去${dv.opened ? '' : '（要不要先看一眼，也得在这之前）'}，否则 ${to} 赶不上 ${dv.target} 收到`, '⏰ 转交提醒', { timeOut: 8000 });
+            store.save();
+        } else if (!dv.viaDeadline && f - (dv.viaArrivedFloor ?? f) >= 4 && f - (dv.remindedFloor ?? 0) >= 8) {
+            dv.remindedFloor = f;
+            toastr.warning(`${who} 拿着 ${l.author} 给 ${to} 的信已经 ${f - dv.viaArrivedFloor} 层了，还没${dv.status === 'held' ? '交出去' : '处理'}`, '⏰ 转交提醒', { timeOut: 8000 });
+            store.save();
+        }
+    }
+}
+
 // 每有一条新消息就检查一次：要不要推算日期，有没有信该送到了
 async function checkMail({ fromCharacter = false } = {}) {
     if (busy || !hasChat() || store.mode === 'unloaded') return;
     const s = settings();
     const cid = chatId();
     const transit = Object.values(store.archive.letters).filter(l => l.delivery?.status === 'transit' && (!l.delivery.chatId || l.delivery.chatId === cid));
-    const waiting = Object.values(store.archive.letters).some(l => l.delivery?.status === 'atVia' && l.delivery.awaitingDecision);
-    if (!transit.length && !waiting) { ui.renderPostbox(); return; }
+    const pending = mailInChat().some(l => ['arrived', 'atVia', 'held'].includes(l.delivery.status));
+    if (!transit.length && !pending) { ui.renderPostbox(); return; }
     busy = true;
+    let detected = null;
     try {
-        await checkViaDecisions({ fromCharacter });
-        if (!transit.length) { ui.renderPostbox(); return; }
+        const handled = await checkViaDecisions({ fromCharacter });
+        // 角色刚写完的那条（包括思考过程）里，有没有写到信的动静
+        const last = (ctx().chat || []).at(-1);
+        const lastText = last && !last.is_user && !last.is_system && !last.extra?.epistolary && fromCharacter && s.detectArrival !== false
+            ? `${last.mes || ''}\n${last.extra?.reasoning || ''}` : '';
+        if (lastText) {
+            detected = findReceipt(lastText);
+            if (!detected) await viaFromText(lastText, { fromCharacter: true, skip: handled });
+        }
+        if (!transit.length) { remindVia(); ui.renderPostbox(); return; }
         const meta = chatMeta();
         const f = floor();
         if (s.delivery.autoDate && transit.some(l => l.delivery.mode === 'date') && f - (meta.lastDateCheck || 0) >= Math.max(1, s.delivery.dateEvery)) {
@@ -508,19 +649,55 @@ async function checkMail({ fromCharacter = false } = {}) {
             }
             // 自动切过去：只在角色刚说完话的时候，免得打断正在进行的生成
             const auto = arrivedNow.find(l => l.delivery.auto || s.delivery.autoSwitch);
-            if (auto && fromCharacter) {
+            if (auto && fromCharacter && !detected) {
                 if (auto.delivery.status === 'atVia') {
                     if (!ui.isMe(auto.delivery.via)) setTimeout(() => switchToVia(auto), 600);
                 } else if (!ui.isMe(auto.delivery.reader || auto.recipients[0])) {
                     setTimeout(() => switchToRecipient(auto), 600);
                 }
             }
-        } else {
-            ui.renderPostbox();
         }
+        // 刚到的信，角色这条里已经写到收信了
+        if (!detected && lastText) detected = findReceipt(lastText);
+        remindVia();
+        ui.renderPostbox();
     } finally {
         busy = false;
+        if (detected) setTimeout(() => deliverDetected(detected), 500);
     }
+}
+
+// 用户自己写到收信 / 转交人拆信：这一轮生成直接带上原文（在拦截器里调用）
+async function detectFromUser() {
+    if (settings().detectArrival === false || !hasChat()) return;
+    const chat = ctx().chat || [];
+    const m = chat.at(-1);
+    if (!m || !m.is_user || m.extra?.epistolary || m.extra?.epistolaryInline) return;
+    const hit = findReceipt(m.mes || '');
+    if (hit) {
+        const arrival = markReceived(hit);
+        m.extra = { ...(m.extra || {}), epistolaryInline: { letterId: hit.letter.id, reader: hit.reader, arrival } };
+        await ctx().saveChat();
+        return;
+    }
+    const peek = await viaFromText(m.mes || '', { fromCharacter: false });
+    if (peek) {
+        const dv = peek.letter.delivery;
+        m.extra = { ...(m.extra || {}), epistolaryInline: { letterId: peek.letter.id, reader: dv.via, arrival: getStoryDate(), peek: true } };
+        await ctx().saveChat();
+    }
+}
+
+// 每次生成前提醒 AI：哪些信已经到了还没读、哪些信压在转交人手里
+function pendingHints() {
+    if (settings().detectArrival === false) return '';
+    const current = pendingReaction()?.letterId;
+    const mail = mailInChat().filter(l => l.id !== current);
+    return buildPendingHints({
+        arrived: mail.filter(l => l.delivery.status === 'arrived' && !ui.isMe(l.delivery.reader || l.recipients[0])),
+        atVia: mail.filter(l => ['atVia', 'held'].includes(l.delivery.status) && !ui.isMe(l.delivery.via)),
+        storyDate: getStoryDate(),
+    });
 }
 
 // ---------- 生成前拦截：在这里计算要注入的信件内容 ----------
@@ -531,17 +708,22 @@ globalThis.epistolaryInterceptor = async function (_chat, _contextSize, _abort, 
         if (!s.enabled || type === 'quiet' || store.mode === 'unloaded') {
             c.setExtensionPrompt(PROMPT_KEY, '', s.position, s.depth);
             c.setExtensionPrompt(REACTION_KEY, '', 1, 0);
+            c.setExtensionPrompt(PENDING_KEY, '', 1, 1);
             return;
         }
+        if (type !== 'swipe' && type !== 'regenerate') await detectFromUser();
         const { result, reaction } = runRetrieval();
-        lastInjection = [result.text, reaction].filter(Boolean).join('\n\n');
+        const hints = pendingHints();
+        lastInjection = [result.text, hints, reaction].filter(Boolean).join('\n\n');
         c.setExtensionPrompt(PROMPT_KEY, result.text, s.position, s.depth, false, 0);
+        c.setExtensionPrompt(PENDING_KEY, hints, 1, 1, false, 0);
         // 收信反应引导放在最新消息之后，影响最直接
         c.setExtensionPrompt(REACTION_KEY, reaction, 1, 0, false, 0);
     } catch (e) {
         console.error('[书信簿] 注入失败', e);
         c.setExtensionPrompt(PROMPT_KEY, '', s.position, s.depth);
         c.setExtensionPrompt(REACTION_KEY, '', 1, 0);
+        c.setExtensionPrompt(PENDING_KEY, '', 1, 1);
     }
 };
 

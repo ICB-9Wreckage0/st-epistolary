@@ -168,6 +168,12 @@ globalThis.__epistolaryDemoMock = async ({ prompt, kind, target }) => {
         }
         return JSON.stringify(out);
     }
+    if (kind === 'fill') {
+        const date = (prompt.match(/【当前剧情日期】(\d{4}-\d{2}-\d{2})/) || [])[1] || '1889-06-10';
+        const to = (prompt.match(/【当前聊天的角色】(.+)/) || [])[1] || '文森特';
+        const where = { 文森特: '圣雷米', 提奥: '巴黎', 高更: '阿旺桥' }[to] || '';
+        return JSON.stringify({ author: 'E.', recipients: [to], writtenAt: date, placeFrom: to === '提奥' ? '巴黎（另一区）' : '巴黎', placeTo: where, language: '法语（中文显示）', travelDays: to === '提奥' ? 1 : 3, note: `演示：E. 在巴黎，${to} 在${where}；1889 年铁路邮政大约要 ${to === '提奥' ? 1 : 3} 天` });
+    }
     if (kind === 'via') {
         if (prompt.includes('决定明天一早把信送过去')) return '{"opened": true, "resealed": true, "action": "forward", "note": "读完重新封好，明天一早送过去"}';
         if (prompt.includes('挑开了封口')) return '{"opened": true, "resealed": false, "action": "unclear", "note": "拆开了信"}';

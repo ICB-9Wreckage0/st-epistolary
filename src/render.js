@@ -72,9 +72,22 @@ export function inkColor(appearance = {}) {
 }
 
 // 自定义墨色写在元素的 style 上
+// 字号：整张纸一起放大缩小（横格信笺的格线也跟着变）
+export const SIZES = {
+    sm: { label: '小（字小而密）', scale: 0.88 },
+    md: { label: '标准', scale: 1 },
+    lg: { label: '大', scale: 1.15 },
+    xl: { label: '特大', scale: 1.3 },
+};
+export const SIZE_LABELS = Object.fromEntries(Object.entries(SIZES).map(([k, v]) => [k, v.label]));
+
 export function paperStyle(letter) {
     const a = letter.appearance || {};
-    return a.ink === 'custom' && /^#[0-9a-f]{6}$/i.test(a.inkColor || '') ? `--ink:${a.inkColor}` : '';
+    const out = [];
+    if (a.ink === 'custom' && /^#[0-9a-f]{6}$/i.test(a.inkColor || '')) out.push(`--ink:${a.inkColor}`);
+    const sc = SIZES[a.size]?.scale;
+    if (sc && sc !== 1) out.push(`--fs:${sc}`);
+    return out.join(';');
 }
 
 function luminance(hex) {

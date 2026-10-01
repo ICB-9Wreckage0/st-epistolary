@@ -909,7 +909,7 @@
     padding: 7% 8% !important;
     border-radius: 2px;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35) !important;
-    font-size: calc(var(--W) * 0.024) !important;
+    font-size: calc(var(--W) * 0.024 * var(--fs, 1)) !important;
     line-height: 1.7 !important;
     overflow: hidden;
 }
@@ -1231,3 +1231,13 @@
 .epi-pb-guess { margin-top: 6px; padding: 6px 8px; border-radius: 6px; background: rgba(143, 179, 160, .12); font-size: .92em; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .epi-pb-manual { width: 100%; font-size: .92em; }
 .epi-pb-manual summary { cursor: pointer; opacity: .8; }
+
+/* ---- AI 填写信头 ---- */
+.epi-lh-fill { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
+.epi-lh-fill .menu_button { margin: 0; padding: 3px 12px; }
+.epi-letterhead .epi-lh-fill span { opacity: 0.75; white-space: normal; font-size: 0.88em; }
+#epi-root .epi-letterhead input.epi-lh-ai { background: rgba(232, 184, 107, 0.16) !important; border-bottom-color: var(--epi-accent, #e8b86b); }
+
+/* ---- 字号：整张纸一起缩放 ---- */
+.epi-paper { font-size: calc(17px * var(--fs, 1)); }
+@media (max-width: 760px) { .epi-paper { font-size: calc(16px * var(--fs, 1)); } }

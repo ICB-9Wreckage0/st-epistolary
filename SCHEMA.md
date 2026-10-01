@@ -1,4 +1,4 @@
-# 书信簿 · 数据结构（schema 1，v0.7）
+# 书信簿 · 数据结构（schema 1，v0.10）
 
 整个档案是一个 JSON 文件。原则只有三条：
 
@@ -78,6 +78,7 @@
         "envelope": "ivory",       // ivory | kraft | blue | white | airmail（信封动画）
         "wax": "crimson",          // 封缄：crimson | navy | forest | black | gold 火漆，chop 朱印“缄”，none 不封
         "wear": 0,                 // 纸张磨损 0 崭新 | 1 轻微 | 2 旧信 | 3 破损
+        "size": "md",              // 字号 sm 小 | md 标准 | lg 大 | xl 特大
         "wobble": ""               // 笔迹抖动 0-3；"" = 跟随写信人档案（再没有就按字迹默认）
       },
       "openedAt": "",              // 收信人第一次拆开的时间；拆信动画只播放一次
@@ -97,6 +98,11 @@
         "via": "女仆玛莎",          // 转交人
         "stage": "toVia",          // toVia 送往转交人 | atVia 在转交人手里 | toRecipient 已转交、送往收信人 | done 送到
         "leg2": { "days": 1, "floors": 2 }, // 第二段路：转交人拿到后再过几天 / 几层
+        "target": "1889-06-20",    // 希望收信人最晚哪天收到（可选）
+        "viaDeadline": "1889-06-17", // 转交人最晚哪天要转交出去 = target − 第二段路的天数
+        "viaArrivedFloor": 40,     // 送到转交人手里时的楼层（按楼层提醒用）
+        "remindedOn": "",          // 上次提醒的剧情日期（同一天只提醒一次）
+        "detected": false,         // 是从剧情文字里发现收信的
         "viaArrivedAt": "",        // 送到转交人手里的剧情日期
         "viaViewed": false,        // 已经切过去看过转交人那边
         "awaitingDecision": false, // 等转交人那段剧情写完，再让 AI 判断 TA 的决定

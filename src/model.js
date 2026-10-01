@@ -164,6 +164,7 @@ function normalizeAppearance(a = {}) {
         wobble: normalizeLevel(a.wobble, true),               // 笔迹抖动 0-3；'' = 跟随写信人档案
         wear: normalizeLevel(a.wear, false) || 0,             // 纸张磨损 0 崭新 | 1 轻微 | 2 旧信 | 3 破损
         inkColor: /^#[0-9a-f]{6}$/i.test(a.inkColor || '') ? a.inkColor : '', // 墨水选“自定义颜色”时用
+        size: ['sm', 'md', 'lg', 'xl'].includes(a.size) ? a.size : 'md',      // 字号：sm 小 | md 标准 | lg 大 | xl 特大
     };
 }
 

@@ -2,6 +2,7 @@
 // 纯函数，拼提示词、算日期。实际调用 AI 的部分在 index.js。
 
 import { findPerson, sameName, segmentPosition, normalizeDate } from './model.js';
+import { effectiveWobble, normalizeHand, INKS } from './render.js';
 
 // ---------- 日期 ----------
 
@@ -251,6 +252,7 @@ export function buildReactionGuidance(archive, letter, reader, arrival, extra = 
             `- ${reader} 只知道信里写到的内容和自己本来就知道的事。不要复述整封信。`,
         );
         if (person?.historical) lines.push(`- ${reader} 是真实历史人物，反应要符合此人在这个时期的真实状况和性格。`);
+        if (extra.look) lines.push(...lookLines(archive, letter, { envelope: false }));
         return lines.join('\n');
     }
     lines.push(`【收信】${arrival ? `${arrival}，` : ''}${reader} 收到了 ${letter.author || '某人'} 寄来的信（信的全文就是上一条消息）。`);
@@ -266,6 +268,7 @@ export function buildReactionGuidance(archive, letter, reader, arrival, extra = 
     if (person?.historical) {
         lines.push(`- ${reader} 是真实历史人物，反应、想法和说话方式要符合此人在这个时期的真实状况和性格。`);
     }
+    if (extra.look) lines.push(...lookLines(archive, letter));
     return lines.join('\n');
 }
 
@@ -292,7 +295,7 @@ export function viaPeekMessage(letter, via) {
     return `*（${via}拆开了信封。）*\n\n${letter.body}`;
 }
 
-export function buildViaGuidance(archive, letter, via, arrival) {
+export function buildViaGuidance(archive, letter, via, arrival, { look = false } = {}) {
     const person = findPerson(archive, via);
     const to = (letter.recipients || []).join('、') || '收信人';
     const lines = [
@@ -303,6 +306,7 @@ export function buildViaGuidance(archive, letter, via, arrival) {
         `- 不要替 ${to} 写任何反应，${to} 现在还没拿到信。`,
     ];
     if (person?.historical) lines.push(`- ${via} 是真实历史人物，做法要符合此人在这个时期的真实状况和性格。`);
+    if (look) lines.push(...lookLines(archive, letter, { paper: false }));
     return lines.join('\n');
 }
 
@@ -452,4 +456,193 @@ export function parseStoryDate(text, currentDate) {
     if (mo < 1 || mo > 12 || da < 1 || da > 31) return null;
     if (currentDate && /^\d{4}-\d{2}-\d{2}$/.test(currentDate) && d < currentDate) return null;
     return d;
+}
+
+// ---------- 自动填写信头 ----------
+
+export const HEAD_FIELDS = ['author', 'recipients', 'writtenAt', 'placeFrom', 'placeTo', 'language'];
+
+// 不用 AI 就能猜的：沿用两人之前通信的地点和语言
+export function guessHeadFromThread(archive, author, recipient) {
+    if (!author || !recipient) return {};
+    const t = threadBetween(archive, author, recipient);
+    const last = t[t.length - 1];
+    if (!last) return {};
+    const same = sameName(archive, author, last.author);
+    return {
+        placeFrom: same ? last.placeFrom : last.placeTo,
+        placeTo: same ? last.placeTo : last.placeFrom,
+        language: last.language,
+    };
+}
+
+// 让 AI 根据剧情和信的正文填信头，并估算路上要走几天
+export function buildFillPrompt({ draft, userName, charName, storyDate, recentChat, people = [], thread = [] }) {
+    const system = '你是书信档案的整理员，根据角色扮演的剧情填写信件的信头。只输出 JSON。';
+    const cur = HEAD_FIELDS.map(k => `${k}: ${Array.isArray(draft[k]) ? draft[k].join('、') : (draft[k] || '（空）')}`).join('\n');
+    const prompt = `请根据下面的信息，推断这封信的信头。
+
+【用户扮演的角色】${userName || '（未知）'}
+【当前聊天的角色】${charName || '（未知）'}
+【当前剧情日期】${storyDate || '（未知）'}
+【档案里已有的人物】${people.length ? people.join('、') : '（无）'}
+${thread.length ? `【两人之前的通信】\n${thread.join('\n')}\n` : ''}
+【最近的剧情】
+${recentChat || '（无）'}
+
+【信的正文】
+${draft.body?.trim() || '（还没写）'}
+
+【现在已填的信头】
+${cur}
+
+要求：
+- author 写信人、recipients 收信人（数组）。正文里的称呼和署名最可信；没写的话，通常是用户的角色写给当前聊天的角色。
+- writtenAt 写信日期，格式 YYYY-MM-DD。正文日期行 > 剧情里提到的日期 > 当前剧情日期。实在不知道就留空字符串。
+- placeFrom 寄出地、placeTo 寄往地：写信人和收信人此刻所在的地方，用剧情里的地名，尽量具体到城市或地点。
+- language 两人实际用什么语言通信，如“法语”“英语”；如果是用中文写出来、但人物之间其实说外语，写成“法语（中文显示）”；就是中文写空字符串。
+- travelDays：按故事的时代、两地距离和交通方式，估计这封信路上要走几天（整数）。同城当天或一两天，跨国一周左右，跨洋两三周以上。
+- 推断不出的字段留空字符串，不要编造。
+
+只输出一行 JSON，例如：
+{"author":"E.","recipients":["文森特"],"writtenAt":"1889-06-10","placeFrom":"巴黎","placeTo":"圣雷米","language":"法语（中文显示）","travelDays":3,"note":"一句话说明依据"}`;
+    return { system, prompt };
+}
+
+export function parseFill(text) {
+    const m = String(text || '').match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    let j;
+    try { j = JSON.parse(m[0]); } catch { return null; }
+    const str = v => (typeof v === 'string' ? v.trim() : '');
+    const out = {};
+    if (str(j.author)) out.author = str(j.author);
+    const rs = Array.isArray(j.recipients) ? j.recipients.map(str).filter(Boolean) : str(j.recipients) ? str(j.recipients).split(/[,，、]/).map(s => s.trim()).filter(Boolean) : [];
+    if (rs.length) out.recipients = rs;
+    const d = str(j.writtenAt);
+    if (d && /^\d{1,4}-\d{1,2}(-\d{1,2})?$/.test(d)) out.writtenAt = d;
+    for (const k of ['placeFrom', 'placeTo', 'language']) if (str(j[k])) out[k] = str(j[k]);
+    const n = parseInt(j.travelDays, 10);
+    if (Number.isFinite(n) && n >= 0 && n <= 365) out.travelDays = n;
+    if (str(j.note)) out.note = str(j.note).slice(0, 120);
+    return out;
+}
+
+// ---------- 信的样子：读信的人看得见、摸得着的东西 ----------
+
+const LOOK_PAPER = { plain: '素白的信纸', cream: '奶油色的棉纸', aged: '泛黄的旧纸', lined: '印着横格的信笺', redline: '红色竖格的信笺', blue: '薄薄的淡蓝航空信纸' };
+const LOOK_WEAR = { 1: '纸边有点毛', 2: '纸已经旧了，有折痕和淡淡的污渍', 3: '纸边磨损破损，污渍明显' };
+const LOOK_HAND = { formal: '字迹端正工整', personal: '是平常的手写字', elegant: '字写得讲究、优雅', casual: '字写得潦草随意，像是匆匆写就', typewriter: '是用打字机打出来的' };
+const LOOK_WOBBLE = { 3: '，笔画发抖、歪歪斜斜' };
+const LOOK_SIZE = { sm: '字写得很小、很密', lg: '字写得比较大', xl: '字写得很大，一行只有几个字' };
+const LOOK_ENVELOPE = { ivory: '象牙白的信封', kraft: '牛皮纸信封', blue: '淡蓝色的信封', white: '白信封', airmail: '红蓝斜纹边的航空信封' };
+const LOOK_WAX = { crimson: '朱红色火漆', navy: '藏青色火漆', forest: '墨绿色火漆', black: '黑色火漆', gold: '金色火漆', chop: '朱红的“缄”字印' };
+
+// 信封（转交人和收信人拆信前都看得到）
+export function describeEnvelope(letter) {
+    const a = letter.appearance || {};
+    const env = LOOK_ENVELOPE[a.envelope] || '信封';
+    const seal = a.wax === 'none' ? '用胶水封着口' : `封口压着${LOOK_WAX[a.wax] || '火漆'}`;
+    const thick = (letter.body || '').length > 1500 ? '，摸上去很厚' : '';
+    return `${env}，${seal}${thick}`;
+}
+
+// 信纸、墨水、字迹（拆开以后才看得到）
+export function describeAppearance(letter, person) {
+    const a = letter.appearance || {};
+    const parts = [];
+    const fold = a.orientation === 'landscape' ? '平放在信封里' : '对折了一次';
+    parts.push(`${LOOK_PAPER[a.paper] || '信纸'}，${fold}${LOOK_WEAR[a.wear] ? `，${LOOK_WEAR[a.wear]}` : ''}`);
+    const hand = normalizeHand(a.font);
+    const ink = a.ink === 'custom' ? '' : a.ink === 'faded' ? '墨色已经褪成了褐色' : INKS[a.ink] ? `用${INKS[a.ink].label}墨水写的` : '';
+    const wobble = hand === 'typewriter' ? '' : (LOOK_WOBBLE[effectiveWobble(letter, person)] || '');
+    parts.push([hand === 'typewriter' ? '' : ink, LOOK_HAND[hand] + wobble].filter(Boolean).join('，'));
+    if (LOOK_SIZE[a.size] && hand !== 'typewriter') parts.push(LOOK_SIZE[a.size]);
+    if (a.flourish && hand !== 'typewriter') parts.push('称呼和署名写成了花体');
+    return parts.join('；');
+}
+
+export function lookLines(archive, letter, { envelope = true, paper = true } = {}) {
+    const lines = [];
+    if (envelope) lines.push(`信封：${describeEnvelope(letter)}。`);
+    if (paper) lines.push(`信纸：${describeAppearance(letter, findPerson(archive, letter.author))}。`);
+    if (lines.length) lines.push('这些是读信的人看得见、摸得着的东西，可以自然地带到一两处（比如字迹透露出写信人的状态），不用逐条描写。');
+    return lines;
+}
+
+// ---------- 从剧情（包括 AI 的思考过程）里发现“信到了” ----------
+
+const CN_DIGITS = '〇一二三四五六七八九';
+
+function cnNumber(n) {
+    if (n < 10) return CN_DIGITS[n];
+    if (n < 20) return '十' + (n % 10 ? CN_DIGITS[n % 10] : '');
+    return CN_DIGITS[Math.floor(n / 10)] + '十' + (n % 10 ? CN_DIGITS[n % 10] : '');
+}
+
+// 一个日期在文字里可能的写法
+export function dateMentions(date) {
+    const n = normalizeDate(date);
+    if (!n || n.endsWith('-00')) return [];
+    const [y, m, d] = n.split('-').map(Number);
+    return [
+        n, `${y}/${m}/${d}`, `${y}.${m}.${d}`,
+        `${m}月${d}日`, `${m}月${d}号`, `${String(m).padStart(2, '0')}月${String(d).padStart(2, '0')}日`,
+        `${cnNumber(m)}月${cnNumber(d)}日`, `${cnNumber(m)}月${cnNumber(d)}号`,
+        `${d} ${EN_MONTHS[m - 1]}`, `${EN_MONTHS[m - 1]} ${d}`, `${d} ${FR_MONTHS[m - 1]}`, `${d}er ${FR_MONTHS[m - 1]}`,
+    ];
+}
+
+export function mentionsDate(text, date) {
+    const t = String(text || '').toLowerCase();
+    return dateMentions(date).some(s => {
+        const i = t.indexOf(s.toLowerCase());
+        if (i < 0) return false;
+        // “6月1日”不能匹配进“6月13日”里：后面紧跟的不能是数字
+        const next = t[i + s.length];
+        const prev = t[i - 1];
+        return !(next && /\d/.test(next)) && !(prev && /\d/.test(prev) && /^\d/.test(s));
+    });
+}
+
+export function mentionsName(text, names) {
+    const t = String(text || '').toLowerCase();
+    return names.some(n => n && t.includes(String(n).toLowerCase()));
+}
+
+// “收到信”的说法
+export const RECEIPT_RE = /收到.{0,12}信|来信|信(?:送)?到了|信送到|送来.{0,6}信|拆(?:开)?.{0,8}信|读.{0,4}信|信封|收信|信件|(?:received?|opens?|opened|reads?)\b.{0,30}\bletter|\bletter\b.{0,20}\b(?:arrived?|came)|lettre/i;
+// 转交人有没有在动这封信
+export const LETTER_RE = /信|letter|lettre|envelope|enveloppe/i;
+
+export function mentionsReceipt(text, names) {
+    return mentionsName(text, names) && RECEIPT_RE.test(String(text || ''));
+}
+
+// 每次生成前提醒 AI：哪些信已经送到但还没读、哪些信压在转交人手里。防止 AI 自己编信的内容。
+export function buildPendingHints({ arrived = [], atVia = [], storyDate = '' }) {
+    const lines = [];
+    for (const l of arrived) {
+        const dv = l.delivery || {};
+        lines.push(`- ${dv.reader || l.recipients[0]} 已经收到 ${l.author} 的来信${dv.arrivedAt ? `（${dv.arrivedAt} 送到）` : ''}，还没在剧情里拆开读。`);
+    }
+    for (const l of atVia) {
+        const dv = l.delivery || {};
+        const late = dv.viaDeadline && storyDate && normalizeDate(storyDate) > normalizeDate(dv.viaDeadline);
+        const state = dv.status === 'held' ? '先压着没交' : dv.opened ? '已经拆开看过' : '信是封着的，不知道内容';
+        lines.push(`- ${dv.via} 手里有一封 ${l.author} 托 TA 转交给 ${l.recipients.join('、')} 的信（${state}）。${dv.viaDeadline ? (late ? `本该在 ${dv.viaDeadline} 前转交出去，已经耽搁了。` : `要在 ${dv.viaDeadline} 前转交出去，收信人才能按时收到。`) : ''}`);
+    }
+    if (!lines.length) return '';
+    return ['【未读的信】', ...lines, '如果剧情写到有人拆开、阅读这些信，只写到拆开信封、展开信纸为止，不要编造信的内容，信的原文会另外给出。'].join('\n');
+}
+
+// 收信人在剧情里收到信时，直接把原文放进上下文
+export function inlineLetterBlock(letter, reader, arrival) {
+    return `【${reader} 刚收到的信${arrival ? `（${arrival}）` : ''}，原文如下】\n${letter.body}`;
+}
+
+// 托人转交：转交人最晚哪天要转交出去，收信人才能在希望的日子收到
+export function viaDeadline(target, legDays) {
+    if (!normalizeDate(target)) return '';
+    return addDays(target, -Math.max(0, legDays || 0));
 }

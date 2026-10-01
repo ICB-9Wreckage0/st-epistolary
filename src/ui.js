@@ -12,13 +12,14 @@ import {
     addDays, formatDateLine, guessLang, deliveryEvents, arrivalOf,
     buildReplyPrompt, cleanReply, EXAMPLE_PROFILES,
     buildTranslatePrompt, TRANSLATE_TARGETS, TRANSLATE_STYLES,
-    viaReceivedEvents, VIA_ACTIONS,
+    viaReceivedEvents, VIA_ACTIONS, threadBetween, viaDeadline,
+    HEAD_FIELDS, guessHeadFromThread, buildFillPrompt, parseFill,
 } from './correspondence.js';
 import { detectInChat, chunkChat, buildImportPrompt, parseImportResponse, sliceVerbatim, findDuplicate } from './importer.js';
 import { API_MODES, listProfiles, testConnection, fetchModels } from './api.js';
 import { playSeal, playOpen, WAX_LABELS, ENVELOPE_LABELS } from './envelope.js';
 import { STYLE_PACKS, applyStyle, pickStyle } from './styles.js';
-import { HANDS, ORIENTATIONS, paperClasses, renderBody, analyze, scriptLang, renderOptions, WOBBLE_LABELS, WEAR_LABELS, paperLayer, ensureWearFilters, hashSeed, INKS, inkColor, inkContrast, paperStyle } from './render.js';
+import { HANDS, ORIENTATIONS, paperClasses, renderBody, analyze, scriptLang, renderOptions, WOBBLE_LABELS, WEAR_LABELS, paperLayer, ensureWearFilters, hashSeed, INKS, inkColor, inkContrast, paperStyle, SIZE_LABELS } from './render.js';
 
 const PAPERS = { plain: '素白', cream: '奶油棉纸', aged: '泛黄旧纸', lined: '横格信笺', redline: '红线信笺', blue: '淡蓝航空信纸' };
 const FONTS = Object.fromEntries(Object.entries(HANDS).map(([k, v]) => [k, `字迹：${v.label}`]));
@@ -219,13 +220,92 @@ export class UI {
                 recipients: [this.hooks.getCharName()].filter(Boolean),
                 writtenAt: this.hooks.getStoryDate() || '',
             }, '');
+            // 沿用两人之前通信的地点和语言
+            const g = guessHeadFromThread(this.archive, this.draft.author, this.draft.recipients[0]);
+            for (const k of ['placeFrom', 'placeTo', 'language']) if (g[k]) this.draft[k] = g[k];
             this.applyAuthorHand(this.draft);
             this.draftIsNew = true;
         }
+        // 信头：哪些是自动填的（AI 可以覆盖），哪些是用户自己改过的（不动）
+        this.lhAuto = new Set(id ? [] : HEAD_FIELDS);
+        this.lhAI = new Set();
+        this.draftTravel = null;
+        this.headFilled = false;
         this.draftDirty = false;
         this.fontTouched = false;
         this.presetLang = '';
         this.show('edit');
+        if (!id && this.hooks.hasChat() && this.hooks.getSettings().autoFill !== false) this.aiFillHead({ auto: true });
+    }
+
+    // 让 AI 根据剧情和正文填信头（写信人、收信人、日期、地点、语言），并估算路上几天。
+    // 只覆盖空着的、自动填的、或者上次 AI 填的字段；用户自己改过的不动。
+    async aiFillHead({ auto = false } = {}) {
+        const d = this.draft;
+        if (!d || this.filling) return;
+        this.filling = true;
+        const btn = this.root.querySelector('[data-act="ai-fill"]');
+        if (btn) { btn.disabled = true; btn.textContent = '✨ 填写中…'; }
+        try {
+            const chat = this.hooks.getChat().filter(m => m && !m.is_system && typeof m.mes === 'string').slice(-10);
+            const recentChat = chat.map(m => `${m.name}：${String(m.mes).slice(0, 600)}`).join('\n');
+            const rs = parseNames(d.recipients);
+            const who = () => `${d.author}|${parseNames(d.recipients).join('、')}`;
+            const asked = who();
+            const thread = d.author && rs[0] ? threadBetween(this.archive, d.author, rs[0]).filter(l => l.id !== d.id).slice(-3)
+                .map(l => `${l.writtenAt || '日期不详'}，${l.author} → ${l.recipients.join('、')}，${l.placeFrom || '?'} → ${l.placeTo || '?'}${l.language ? `，${l.language}` : ''}`) : [];
+            const { system, prompt } = buildFillPrompt({
+                draft: { ...d, recipients: rs },
+                userName: this.hooks.getUserName(),
+                charName: this.hooks.getCharName(),
+                storyDate: this.hooks.getStoryDate(),
+                recentChat,
+                people: this.archive.people.map(p => p.name),
+                thread,
+            });
+            const out = parseFill(await this.hooks.callAI(system, prompt, { kind: 'fill' }));
+            if (!out) throw new Error('AI 没有给出能用的结果');
+            if (this.draft !== d) return; // 已经换了一封信
+            if (who() !== asked) {
+                // 等待期间你改了写信人或收信人，AI 的地点和路程是按旧的推断的，不用了
+                const note = this.root.querySelector('[data-role="fill-note"]');
+                if (note) note.textContent = '你刚改了写信人或收信人，再点一次「✨ AI 填写」按新的来填';
+                this.headFilled = false;
+                return;
+            }
+            const filled = [];
+            for (const k of HEAD_FIELDS) {
+                if (!(k in out)) continue;
+                const cur = k === 'recipients' ? parseNames(d[k]).join('、') : String(d[k] || '');
+                const val = k === 'recipients' ? out[k].join('、') : out[k];
+                const free = !cur || this.lhAuto.has(k) || this.lhAI.has(k);
+                if (!free || cur === val) continue;
+                d[k] = k === 'recipients' ? out[k] : val;
+                this.lhAuto.delete(k);
+                this.lhAI.add(k);
+                filled.push(k);
+                const inp = this.root.querySelector(`.epi-letterhead [data-f="${k}"]`);
+                if (inp && inp !== document.activeElement) { inp.value = val; inp.classList.add('epi-lh-ai'); }
+            }
+            if (out.travelDays != null) this.draftTravel = out.travelDays;
+            this.headFilled = true;
+            if (filled.includes('author') && !this.fontTouched) { this.applyAuthorHand(d); this.refreshPaper(); }
+            if (filled.length) {
+                this.setDirty();
+                const note = this.root.querySelector('[data-role="fill-note"]');
+                if (note) note.textContent = `标黄的是 AI 填的，可以直接改${out.travelDays != null ? `；估计路上要走 ${out.travelDays} 天` : ''}${out.note ? `。依据：${out.note}` : ''}`;
+                if (!auto) toastr?.success('信头填好了，标黄的是 AI 填的，可以直接改');
+            } else if (!auto) {
+                toastr?.info('信头已经是 AI 认为对的了，没有改动');
+            }
+        } catch (e) {
+            console.warn('[书信簿] 自动填写信头失败', e);
+            if (!auto) toastr?.error('自动填写失败：' + (e.message || e));
+        } finally {
+            this.filling = false;
+            const b = this.root.querySelector('[data-act="ai-fill"]');
+            if (b) { b.disabled = false; b.textContent = '✨ AI 填写'; }
+        }
     }
 
     // 正文渲染参数：手写随机感的种子和程度
@@ -374,7 +454,7 @@ export class UI {
         const field = (key, label, value, placeholder, hint) => `
             <label class="epi-lh-field" title="${esc(hint)}">
                 <span class="epi-lh-label">${label}</span>
-                <input class="epi-lh-input" data-f="${key}" value="${esc(value)}" placeholder="${esc(placeholder)}">
+                <input class="epi-lh-input ${this.lhAI?.has(key) ? 'epi-lh-ai' : ''}" data-f="${key}" value="${esc(value)}" placeholder="${esc(placeholder)}">
             </label>`;
         const letterhead = `
             <div class="epi-letterhead">
@@ -384,6 +464,10 @@ export class UI {
                 ${field('placeFrom', '寄出地', d.placeFrom, '如 Paris', '从哪里寄出。会写在日期行和信封上。')}
                 ${field('placeTo', '寄往地', d.placeTo, '如 Saint-Rémy', '寄到哪里。会写在信封的地址上。')}
                 ${field('language', '书信语言', d.language, '留空 = 中文', '信实际用什么语言写。影响套语、日期写法、翻译和回信的语言。“法语（中文显示）”表示人物之间用法语通信，但纸上用中文写出来。')}
+                <div class="epi-lh-fill">
+                    <button class="menu_button" data-act="ai-fill" title="让 AI 根据最近的剧情和信的正文，填写信人、收信人、日期、地点和语言，并估算路上要走几天。你自己改过的格子不会被覆盖。">${this.filling ? '✨ 填写中…' : '✨ AI 填写'}</button>
+                    <span class="epi-muted" data-role="fill-note">${this.lhAI?.size ? '标黄的是 AI 填的，可以直接改' : '不想自己填？写完正文点这里，AI 会根据剧情补全'}</span>
+                </div>
             </div>`;
 
         const contrast = inkContrast(a);
@@ -639,6 +723,8 @@ ${list}`;
                 <div class="epi-via-fields">
                     <label>转交人<input class="text_pole" id="${prefix}-via" value="${esc(via)}" placeholder="留空 = 直接寄给收信人"></label>
                     <label>转交人拿到以后，再过<span class="epi-row"><input class="text_pole epi-num" id="${prefix}-leg" type="number" min="0" max="500" value="1"><span>天（按楼层送达时是“层”）送到收信人手里</span></span></label>
+                    <label>希望收信人最晚哪天收到（可选，按剧情日期送达时用）<input class="text_pole" id="${prefix}-target" placeholder="如 1889-06-20；留空 = 不设期限"></label>
+                    <div class="epi-via-plan epi-muted" data-role="via-plan" data-prefix="${prefix}"></div>
                     <small class="epi-muted">信先送到转交人手里。之后拆不拆、看不看、交不交，都由转交人自己决定：转交人是角色的话，切过去看那边的剧情，书信簿会照角色的做法处理；转交人是你的话，在右下角信箱里自己选。转交人没拆的话，只知道有这封信，不知道内容。</small>
                 </div>
             </details>`;
@@ -665,7 +751,31 @@ ${list}`;
             floors: Math.max(1, parseInt(q(`#${prefix}-floors`)?.value, 10) || 8),
             via: q(`#${prefix}-via`)?.value.trim() || '',
             leg: Math.max(0, parseInt(q(`#${prefix}-leg`)?.value, 10) || 0),
+            target: normalizeDate(q(`#${prefix}-target`)?.value.trim()) ? q(`#${prefix}-target`).value.trim() : '',
         };
+    }
+
+    // 托人转交的时间安排：到转交人手里 → 最晚转交 → 收信人收到
+    syncViaPlan(prefix) {
+        const el = this.root.querySelector(`[data-role="via-plan"][data-prefix="${prefix}"]`);
+        if (!el) return;
+        const dv = this.readDelivery(prefix);
+        if (!dv.via) { el.textContent = ''; return; }
+        if (dv.mode === 'floors') {
+            el.textContent = `信先走 ${dv.floors} 层到 ${dv.via} 手里；TA 转交以后再过 ${dv.leg || 1} 层送到。TA 拿着信超过 4 层还没处理，会提醒你。`;
+            return;
+        }
+        const toVia = dv.mode === 'date' ? dv.arrival : (this.hooks.getStoryDate() || '');
+        const earliest = toVia ? addDays(toVia, dv.leg) : '';
+        if (!dv.target) {
+            el.textContent = toVia ? `${toVia} 到 ${dv.via} 手里；TA 当天就转交的话，${earliest} 送到。` : '';
+            return;
+        }
+        const deadline = viaDeadline(dv.target, dv.leg);
+        const tight = toVia && normalizeDate(deadline) < normalizeDate(toVia);
+        el.innerHTML = tight
+            ? `<span class="epi-warn">来不及：${esc(toVia)} 才到 ${esc(dv.via)} 手里，转交后还要走 ${dv.leg} 天，最早 ${esc(earliest)} 才能送到。</span>`
+            : `${esc(toVia || '（日期未定）')} 到 ${esc(dv.via)} 手里 → TA <b>最晚 ${esc(deadline)}</b> 要看完、转交出去 → ${esc(dv.target)} 前送到。到了期限 TA 还没处理，会提醒你。`;
     }
 
     // 转交状态的小标签
@@ -697,7 +807,7 @@ ${list}`;
     }
 
     // 把一封信设为“在途”
-    startTransit(letter, { mode, arrival, floors, via, leg }, extra = {}) {
+    startTransit(letter, { mode, arrival, floors, via, leg, target = '' }, extra = {}) {
         if (via) {
             // 托人转交：第一段送到转交人手里
             letter.delivery = {
@@ -710,6 +820,8 @@ ${list}`;
                 via,
                 stage: 'toVia',
                 leg2: { days: leg ?? 1, floors: Math.max(1, leg || 2) },
+                target: mode === 'date' ? target : '',
+                viaDeadline: mode === 'date' && target ? viaDeadline(target, leg) : '',
                 reader: letter.recipients[0] || '',
                 ...extra,
             };
@@ -734,13 +846,21 @@ ${list}`;
             mode: 'instant', status: 'atVia', eta: '', via: dv.via, stage: 'atVia', viaArrivedAt: arrival,
             chatId: this.hooks.getChatId(), sentFloor: this.hooks.getFloor(),
             leg2: { days: dv.leg ?? 0, floors: Math.max(1, dv.leg || 2) }, reader: letter.recipients[0] || '',
+            target: dv.target || '', viaDeadline: dv.target ? viaDeadline(dv.target, dv.leg) : '',
         };
         letter.events.push(...viaReceivedEvents(letter, dv.via, arrival, letter.events));
     }
 
-    openSendDialog() {
+    async openSendDialog() {
         const d = this.draft;
         if (!d.body.trim()) { toastr?.info('信还是空的'); return; }
+        // 信头还有空着的：先让 AI 补全（每封信只自动补一次）
+        const missing = ['recipients', 'writtenAt', 'placeFrom', 'placeTo'].some(k => !parseNames(d[k]).length);
+        if ((missing || this.draftTravel == null) && !this.headFilled && this.hooks.hasChat() && this.hooks.getSettings().autoFill !== false) {
+            toastr?.info('先让 AI 补全信头……');
+            await this.aiFillHead({ auto: true });
+            this.headFilled = true;
+        }
         const rs = parseNames(d.recipients);
         if (!rs.length) { toastr?.info('先填「收信人」'); return; }
         const s = this.hooks.getSettings();
@@ -753,7 +873,8 @@ ${list}`;
         this.openDialog(`
             <h3>寄出这封信</h3>
             <p>寄给 <b>${esc(rs.join('、'))}</b>${d.writtenAt ? `，写于 ${esc(d.writtenAt)}` : ''}。</p>
-            ${this.deliveryFields('epi-send', { base, arrival: addDays(base, 3) || '', floors: s.delivery.floors, mode: s.delivery.mode, via: d.delivery?.via || '' })}
+            ${this.draftTravel != null ? `<p class="epi-muted">AI 估计从 ${esc(d.placeFrom || '寄出地')} 到 ${esc(d.placeTo || '寄往地')} 路上要走 ${this.draftTravel} 天，下面的送达日期已经按这个算好了，可以改。</p>` : ''}
+            ${this.deliveryFields('epi-send', { base, arrival: addDays(base, this.draftTravel ?? 3) || '', floors: s.delivery.floors, mode: s.delivery.mode, via: d.delivery?.via || '' })}
             <div class="epi-send-later">
                 <label class="checkbox_label"><input type="checkbox" id="epi-send-auto" ${s.delivery.autoSwitch ? 'checked' : ''}> 信到了就自动切过去看 ${esc(reader)} 的收信反应（不勾的话，会先提醒你）</label>
                 <p class="epi-muted">寄出后，你这边的剧情照常继续。${esc(reader)} 在信送到之前不会知道信的内容。</p>
@@ -1104,20 +1225,37 @@ ${list}`;
             <p class="epi-muted">在当前聊天（共 ${n} 条消息）里找出已经写出来的信，逐字存进档案。</p>
             <div class="epi-grid2">
                 <label>范围<select class="text_pole" id="epi-imp-range">
-                    <option value="0">整个聊天</option>
-                    ${[50, 100, 200].filter(k => k < n).map(k => `<option value="${n - k}">最近 ${k} 条</option>`).join('')}
+                    ${[10, 30, 50, 100, 200].filter(k => k < n).map(k => `<option value="${n - k}" data-k="${k}" ${k === (this.impRange || 50) ? 'selected' : ''}>最近 ${k} 条</option>`).join('')}
+                    <option value="0" data-k="all" ${this.impRange === 'all' || n <= 10 ? 'selected' : ''}>整个聊天</option>
                 </select></label>
                 <label>方法<select class="text_pole" id="epi-imp-method">
                     <option value="format">按格式识别：快，不调用 AI</option>
                     <option value="ai">AI 识别：更准，会调用 AI</option>
                 </select></label>
             </div>
+            <p class="epi-muted" id="epi-imp-est"></p>
             <p class="epi-muted">按格式识别：找“称呼……结尾/署名”这样的段落。AI 识别：AI 只负责指出每封信从哪句开始、到哪句结束，正文一律从聊天原文逐字截取，AI 改写过的内容不会进档案。</p>
             <div class="epi-dialog-actions">
                 <button class="menu_button" data-act="dialog-close">取消</button>
                 <button class="menu_button epi-primary" data-act="import-run">开始查找</button>
             </div>
             <div id="epi-imp-result"></div>`, 'epi-dialog-wide');
+        this.updateImportEstimate();
+    }
+
+    // AI 识别时，聊天记录太长会分几批发给 AI：提前告诉用户要调用几次
+    updateImportEstimate() {
+        const el = this.root.querySelector('#epi-imp-est');
+        const rangeSel = this.root.querySelector('#epi-imp-range');
+        if (!el || !rangeSel) return;
+        const k = rangeSel.selectedOptions[0]?.dataset.k;
+        this.impRange = k === 'all' ? 'all' : parseInt(k, 10) || 50;
+        if (this.root.querySelector('#epi-imp-method').value !== 'ai') { el.textContent = ''; return; }
+        const from = parseInt(rangeSel.value, 10) || 0;
+        const batches = chunkChat(this.hooks.getChat(), { from }).length;
+        el.textContent = batches > 1
+            ? `这个范围的聊天记录比较长，AI 识别会分 ${batches} 批，调用 ${batches} 次 AI。`
+            : '这个范围一次就能发给 AI，调用 1 次。';
     }
 
     async runImport() {
@@ -1226,7 +1364,7 @@ ${list}`;
 
     lookSummary(a) {
         const hand = HANDS[a.font]?.label || '';
-        return [ORIENTATIONS[a.orientation]?.replace(/（.*）/, ''), PAPERS[a.paper], a.ink === 'custom' ? '自定义墨色' : INKS[a.ink]?.label, hand && `字迹${hand}`, ENVELOPE_LABELS[a.envelope], WAX_LABELS[a.wax]]
+        return [ORIENTATIONS[a.orientation]?.replace(/（.*）/, ''), PAPERS[a.paper], a.ink === 'custom' ? '自定义墨色' : INKS[a.ink]?.label, hand && `字迹${hand}`, a.size && a.size !== 'md' ? `字号${SIZE_LABELS[a.size].replace(/（.*）/, '')}` : '', ENVELOPE_LABELS[a.envelope], WAX_LABELS[a.wax]]
             .filter(Boolean).join(' · ');
     }
 
@@ -1255,6 +1393,7 @@ ${list}`;
 
             <h4>字</h4>
             ${row('字迹', sel('font', Object.fromEntries(Object.entries(HANDS).map(([k, v]) => [k, `${v.label}：${v.desc}`])), a.font), '这个人的字写成什么样。英文、法文和中文会自动用各自的字体。')}
+            ${row('字号', sel('size', SIZE_LABELS, a.size), '纸上的字写多大。写信和阅读时都按这个显示；也会告诉 AI（字小而密、字写得很大，读信的人能看出来）。')}
             ${row('墨水', `${sel('ink', Object.fromEntries(Object.entries(INKS).map(([k, v]) => [k, v.label])), a.ink)}
                 <input type="color" class="epi-ink-picker" data-f="appearance.inkColor" value="${esc(a.inkColor || inkColor(a))}" title="自定义墨水颜色" ${a.ink === 'custom' ? '' : 'hidden'}>
                 <span class="epi-ink-swatch" style="background:${esc(inkColor(a))}"></span>`, `和纸的对比度 ${inkContrast(a).toFixed(1)}${inkContrast(a) < 4.5 ? '，偏浅，建议换深一点的墨水' : '，清楚'}。`)}
@@ -1396,6 +1535,9 @@ ${list}`;
         const to = esc(l.recipients.join('、'));
         const when = dv.viaArrivedAt ? `${esc(dv.viaArrivedAt)}，` : '';
         const id = esc(l.id);
+        const today = normalizeDate(this.hooks.getStoryDate());
+        const late = dv.viaDeadline && today && today > normalizeDate(dv.viaDeadline);
+        const deadline = dv.viaDeadline ? `<div class="${late ? 'epi-warn' : 'epi-muted'}">⏰ ${late ? `已经过了最晚转交日 ${esc(dv.viaDeadline)}，收信人会晚收到` : `最晚 ${esc(dv.viaDeadline)} 要${dv.opened ? '' : '看完、'}转交出去，${esc(to)} 才能在 ${esc(dv.target)} 前收到`}</div>` : '';
         const btn = (act, text, title = '', cls = '') => `<button class="menu_button ${cls}" data-pb="${act}" data-id="${id}" ${title ? `title="${esc(title)}"` : ''}>${text}</button>`;
         const decide = `
             ${dv.opened ? '' : btn('via-peek', '拆开看', `${dv.via} 拆开了这封信`)}
@@ -1405,6 +1547,7 @@ ${list}`;
         if (this.isMe(dv.via)) {
             return `<div class="epi-pb-item epi-pb-new">
                 <div>🤝 ${when}<b>${esc(l.author)}</b> 托你把一封信转交给 <b>${to}</b>。${dv.opened ? '你已经拆开看过了。' : '信是封着的。'}</div>
+                ${deadline}
                 <div class="epi-pb-actions">${decide}</div></div>`;
         }
         const g = dv.viaGuess;
@@ -1413,7 +1556,7 @@ ${list}`;
         const waiting = dv.awaitingDecision ? `<div class="epi-muted">等 ${via} 那边的剧情写完，会自动判断 ${via} 怎么处理这封信。</div>` : '';
         return `<div class="epi-pb-item epi-pb-new">
             <div>🤝 ${when}<b>${via}</b> 拿到了 ${esc(l.author)} 托 TA 转交给 ${to} 的信${dv.opened ? '，已经拆开看过了' : ''}。</div>
-            ${waiting}${guess}
+            ${deadline}${waiting}${guess}
             <div class="epi-pb-actions">
                 ${dv.viaViewed ? '' : btn('via-switch', `切过去看 ${via} 怎么处理`, `镜头切到 ${dv.via} 那边。TA 不知道信的内容，拆不拆、交不交由 TA 自己决定`)}
                 ${dv.viaViewed || g ? `<details class="epi-pb-manual"><summary>手动决定</summary><div class="epi-pb-actions">${decide}</div></details>` : `<details class="epi-pb-manual"><summary>不看了，直接决定</summary><div class="epi-pb-actions">${decide}</div></details>`}
@@ -1559,6 +1702,9 @@ ${list}`;
                 ${chk('jitter', '手写随机感（阅读时每个字轻微的歪斜和墨色深浅）')}
                 ${chk('onlineFonts', '在线加载中文书信字体（霞鹜文楷、思源宋体、马善政楷书）', '英文和法文字体已随插件附带；中文字体从 jsDelivr 按需加载，只下载用到的字。关闭后用电脑自带的楷体和宋体（刷新后生效）。')}
                 ${chk('autoKeywords', '简单模式下保存信件时，自动用 AI 生成检索关键词')}
+                ${chk('detectArrival', '剧情里写到收信、拆信时，自动把信的原文交给 AI', '角色的回复（包括它的思考过程）或你自己的消息里，写到收信人收到信（名字 + 收信/来信/拆信等说法 + 送达日期，或者信已经到了），就把原文发进聊天让角色读；写到转交人拆信、转交、扣下，也会照办。还会提醒 AI：已经送到但还没读的信不要自己编内容。')}
+                ${chk('describeLook', '读信时把信的样子告诉 AI（信纸、墨水、字迹、字号、信封、封口）', '角色收信、读信时，AI 会知道这封信摸上去、看上去是什么样，比如字写得潦草发抖、纸很旧、封着火漆。正文永远会给。')}
+                ${chk('autoFill', '写新信时让 AI 自动填信头（写信人、收信人、日期、地点、语言）', '根据最近的剧情推断，并估算路上要走几天。你自己改过的格子不会被覆盖。写信页里随时可以点「✨ AI 填写」重新填。')}
             </section>
 
             <section class="epi-sec-card">
@@ -1780,11 +1926,14 @@ ${list}`;
                 break;
             case 'save': this.saveDraft(); this.rerenderKeepScroll(); break;
             case 'send-open': this.openSendDialog(); break;
+            case 'ai-fill': this.aiFillHead(); break;
             case 'days': {
                 const inp = this.root.querySelector(el.dataset.target);
                 if (inp) inp.value = addDays(el.dataset.base, parseInt(el.dataset.days, 10));
                 const radio = inp?.closest('label')?.querySelector('input[type="radio"]');
                 if (radio) { radio.checked = true; this.syncSendDialog(); }
+                const pf = el.dataset.target.slice(1).split('-').slice(0, 2).join('-');
+                this.syncViaPlan(pf);
                 break;
             }
             case 'send-confirm': this.confirmSend(); break;
@@ -1966,7 +2115,13 @@ ${list}`;
         if (this.rendering) return;
         const t = e.target;
         const act = t.dataset.act;
-        if (t.name === 'epi-send-mode' || t.id === 'epi-send-via') { this.syncSendDialog(); return; }
+        if (t.closest?.('.epi-dialog') && /^epi-(send|acc)-(mode|via|leg|target|arrival|floors)$/.test(t.name || t.id || '')) {
+            const prefix = (t.name || t.id).split('-').slice(0, 2).join('-');
+            if (prefix === 'epi-send') this.syncSendDialog();
+            this.syncViaPlan(prefix);
+            return;
+        }
+        if (t.id === 'epi-imp-range' || t.id === 'epi-imp-method') { this.updateImportEstimate(); return; }
         if (t.dataset.s) {
             const key = t.dataset.s;
             let v = t.type === 'checkbox' ? t.checked : t.value;
@@ -2028,6 +2183,11 @@ ${list}`;
         }
         const d = this.draft;
         if (t.dataset.f && d) {
+            if (HEAD_FIELDS.includes(t.dataset.f)) {
+                this.lhAuto?.delete(t.dataset.f);
+                this.lhAI?.delete(t.dataset.f);
+                t.classList.remove('epi-lh-ai');
+            }
             const path = t.dataset.f.split('.');
             if (path.length === 2) d[path[0]][path[1]] = t.value; else d[path[0]] = t.value;
             if (path[0] === 'appearance') {
