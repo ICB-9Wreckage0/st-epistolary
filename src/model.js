@@ -1,5 +1,6 @@
 // 书信簿 · 数据模型
 // 纯函数，不依赖酒馆，也不碰 DOM —— 所以可以在 Node 里单独测试。
+import { normalizeWhereabouts } from './whereabouts.js';
 import { normalizeEnclosures } from './enclosures.js';
 
 export const SCHEMA_VERSION = 1;
@@ -202,7 +203,8 @@ export function normalizeLetter(l, id) {
         source: l.source && typeof l.source === 'object' ? l.source : null,         // 从聊天记录导入时的出处
         translations: l.translations && typeof l.translations === 'object' ? l.translations : {}, // 阅读用的译文缓存
         memories: Array.isArray(l.memories) ? l.memories.map(normalizeMemory).filter(m => m.person && m.text) : [], // 读过的人记得什么
-        recallKeys: parseTags(l.recallKeys),  // 世界书里“想起这封信”的额外关键词
+        recallKeys: parseTags(l.recallKeys),
+        whereabouts: normalizeWhereabouts(l.whereabouts), // 信现在在谁手里（手动 / 剧情里记下的；没有就按寄送状态推算）  // 世界书里“想起这封信”的额外关键词
         notes: l.notes || '',
         createdAt: l.createdAt || now,
         updatedAt: l.updatedAt || now,
@@ -216,6 +218,10 @@ export function normalizeMemory(m = {}) {
         updatedAt: m.updatedAt || new Date().toISOString(),
         wiUid: m.wiUid ?? null,      // 世界书条目编号
         wiBook: m.wiBook || '',      // 写进了哪本世界书
+        gist: String(m.gist || '').trim().slice(0, 120), // 一句话：这个人记得这封信说了什么（用在“来信一览”里）
+        chatId: m.chatId || '',      // 在哪个聊天里读的
+        fromMes: Number.isInteger(m.fromMes) ? m.fromMes : null, // 由哪一层整理出来的（换回复、删消息时撤回）
+        prev: m.prev && typeof m.prev === 'object' ? { text: String(m.prev.text || ''), gist: String(m.prev.gist || ''), fromMes: Number.isInteger(m.prev.fromMes) ? m.prev.fromMes : null } : null, // 这次整理之前的样子
         auto: m.auto !== false,      // AI 整理的（false = 用户手写或改过）
     };
 }

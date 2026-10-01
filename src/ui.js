@@ -22,6 +22,8 @@ import { playSeal, playOpen, WAX_LABELS, ENVELOPE_LABELS } from './envelope.js';
 import { STYLE_PACKS, applyStyle, pickStyle } from './styles.js';
 import { meaningOf, labelWithWarn, lookWarnings } from './meanings.js';
 import { ENCLOSURE_KINDS, normalizeEnclosure, extractEnclosures, enclosureText } from './enclosures.js';
+import { WHERE_STATES, whereNow, whereText } from './whereabouts.js';
+import { correspondentPairs, buildTimeline, pairSummary } from './timeline.js';
 import { HANDS, ORIENTATIONS, paperClasses, renderBody, analyze, scriptLang, renderOptions, WOBBLE_LABELS, WEAR_LABELS, paperLayer, ensureWearFilters, hashSeed, INKS, inkColor, inkContrast, paperStyle, SIZE_LABELS, CJK_SIZE_LABELS } from './render.js';
 
 const PAPERS = { plain: '素白', cream: '奶油棉纸', aged: '泛黄旧纸', lined: '横格信笺', redline: '红线信笺', blue: '淡蓝航空信纸' };
@@ -113,8 +115,8 @@ export class UI {
 
     tabs() {
         return this.expert
-            ? [['list', '信件'], ['edit', '写信'], ['people', '人物'], ['presets', '套语'], ['preview', '注入预览'], ['settings', '⚙ 设置']]
-            : [['list', '信件'], ['edit', '写信'], ['people', '人物'], ['settings', '⚙ 设置']];
+            ? [['list', '信件'], ['timeline', '时间线'], ['edit', '写信'], ['people', '人物'], ['presets', '套语'], ['preview', '注入预览'], ['settings', '⚙ 设置']]
+            : [['list', '信件'], ['timeline', '时间线'], ['edit', '写信'], ['people', '人物'], ['settings', '⚙ 设置']];
     }
 
     open(tab) {
@@ -135,6 +137,7 @@ export class UI {
         this.root.querySelectorAll('.epi-mode button').forEach(b => b.classList.toggle('active', b.dataset.mode === this.hooks.getMode()));
         const r = {
             list: () => this.renderList(),
+            timeline: () => this.renderTimeline(),
             edit: () => this.renderComposer(),
             people: () => this.renderPeople(),
             presets: () => this.renderPresets(),
@@ -165,6 +168,69 @@ export class UI {
         if (!this.root.classList.contains('epi-hidden') && this.tab !== 'edit') this.show(this.tab);
     }
 
+    // ================= 通信时间线 =================
+
+    renderTimeline() {
+        const pairs = correspondentPairs(this.archive);
+        if (!pairs.length) return '<div class="epi-empty">还没有寄出的信。写几封信、或者从聊天记录里找信以后，这里会按日期排出谁和谁的通信。</div>';
+        if (this.tlPair && !pairs.some(p => p.key === this.tlPair) && this.tlPair !== '*') this.tlPair = '';
+        const key = this.tlPair || pairs[0].key;
+        const [a, b] = key === '*' ? ['', ''] : key.split('\u0001');
+        const items = buildTimeline(this.archive, { a, b });
+        const sum = a ? pairSummary(this.archive, a, b) : null;
+        const side = i => (!a ? 'full' : this.isSamePerson(i.from, a) ? 'left' : 'right');
+        const fmtMonth = m => (m ? m.replace(/^(\d{4})-0?(\d+)$/, '$1 年 $2 月') : '日期不详');
+        let lastMonth = null;
+        const rows = items.map(i => {
+            const l = i.letter;
+            const chips = [];
+            if (l.status !== 'sent') chips.push(`<span class="epi-chip">${esc(STATUSES[l.status])}</span>`);
+            if (i.via) chips.push(`<span class="epi-chip">🤝 托 ${esc(i.via)} 转交${i.forwarded ? `（${esc(i.forwarded.date || '已转交')}）` : ''}</span>`);
+            if (i.transit) chips.push(`<span class="epi-chip epi-transit">📮 ${i.stage === 'transit' ? `在路上${i.eta ? ` · 预计 ${esc(i.eta)}` : ''}` : `在 ${esc(i.via)} 手里，还没转交`}</span>`);
+            else if (i.arrivedAt) chips.push(`<span class="epi-chip">📬 ${esc(i.arrivedAt)} 送到</span>`);
+            if (i.readers.length) chips.push(`<span class="epi-chip" title="${esc(i.readers.map(r => `${r.who}${r.date ? ` ${r.date}` : ''}`).join('、'))}">👁 ${esc(i.readers.map(r => r.who).join('、'))} 读过</span>`);
+            if (!i.where.derived || ['burned', 'lost', 'given'].includes(i.where.state)) chips.push(`<span class="epi-chip epi-where-chip">${esc(whereText(i.where))}</span>`);
+            if (l.code) chips.push(`<span class="epi-chip epi-code" data-act="copy-code" data-code="${esc(l.code)}">${esc(l.code)}</span>`);
+            const reply = i.inReplyTo ? `<div class="epi-tl-reply">↩ 回复 <a href="#" data-act="read" data-id="${esc(i.inReplyTo.id)}">${esc(i.inReplyTo.author)} ${esc(i.inReplyTo.writtenAt || '')} 的信</a></div>` : '';
+ const laterSame = items.some(x => x !== i && x.date > i.date && this.isSamePerson(x.from, i.from));
+            const unanswered = a && l.status === 'sent' && !i.answered && !i.transit && !laterSame ? `<div class="epi-tl-owe">${esc(i.to)} 还没回这封</div>` : '';
+            const head = i.month !== lastMonth ? `<div class="epi-tl-month">${esc(fmtMonth(i.month))}</div>` : '';
+            lastMonth = i.month;
+            const gap = i.gap && i.gap > 1 && head === '' ? `<div class="epi-tl-gap">隔了 ${i.gap} 天</div>` : (i.gap && i.gap > 1 ? `<div class="epi-tl-gap">距上一封 ${i.gap} 天</div>` : '');
+            return `${head}${gap}<div class="epi-tl-item epi-tl-${side(i)}">
+                <div class="epi-tl-card" data-act="read" data-id="${esc(l.id)}">
+                    <div class="epi-tl-top"><b>${esc(l.author || '？')} → ${esc(i.to || '？')}</b> <span class="epi-muted">${esc(l.writtenAt || '日期不详')}${l.placeFrom ? ` · ${esc(l.placeFrom)}` : ''}</span></div>
+                    ${reply}
+                    <div class="epi-tl-preview">${l.title ? `「${esc(l.title)}」 ` : ''}${l.shell ? '（正文还没写）' : esc(preview(l.body, 70))}</div>
+                    <div class="epi-tl-chips">${chips.join(' ')}</div>
+                    ${unanswered}
+                </div>
+            </div>`;
+        }).join('');
+        return `<div class="epi-timeline">
+            <div class="epi-tl-bar">
+                <label>看谁和谁的通信<select class="text_pole" data-act="tl-pair">
+                    ${pairs.map(p => `<option value="${esc(p.key)}" ${p.key === key ? 'selected' : ''}>${esc(p.a)} ⇄ ${esc(p.b)}（${p.count} 封）</option>`).join('')}
+                    <option value="*" ${key === '*' ? 'selected' : ''}>所有的信</option>
+                </select></label>
+            </div>
+            ${sum ? `<div class="epi-tl-sum">
+                <span><b>${esc(a)}</b> 写了 ${sum.fromA} 封，<b>${esc(b)}</b> 写了 ${sum.fromB} 封</span>
+                ${sum.last ? `<span>最近一封：${esc(sum.last.letter.writtenAt || '日期不详')} ${esc(sum.last.from)} → ${esc(sum.last.to)}</span>` : ''}
+                ${sum.owes ? `<span class="epi-tl-owe">现在等 ${esc(sum.owes)} 回信</span>` : ''}
+                ${sum.inTransit.length ? `<span class="epi-transit">📮 ${sum.inTransit.length} 封还在路上</span>` : ''}
+            </div>
+            <div class="epi-tl-legend"><span>← ${esc(a)} 写的</span><span>${esc(b)} 写的 →</span></div>` : ''}
+            <div class="epi-tl-list ${a ? '' : 'epi-tl-all'}">${rows}</div>
+        </div>`;
+    }
+
+    isSamePerson(x, y) {
+        const n = s => String(s || '').trim().toLowerCase();
+        const all = name => { const p = this.archive.people.find(q => [q.name, ...(q.aliases || [])].some(v => n(v) === n(name))); return p ? [p.name, ...(p.aliases || [])].map(n) : [n(name)]; };
+        return all(x).includes(n(y));
+    }
+
     // ================= 信件列表 =================
 
     renderList() {
@@ -187,6 +253,8 @@ export class UI {
                         ${ex ? this.viaChip(l) : ''}
                         ${l.shell ? '<span class="epi-chip epi-shell" title="剧情里已经有这封信了，正文还没写。点「编辑」写正文">📄 空壳 · 待写正文</span>' : ''}
                         ${l.inReplyTo ? `<span class="epi-chip">↩ 回信</span>` : ''}
+                        ${l.whereabouts?.current && !whereNow(l).derived ? `<span class="epi-chip epi-where-chip" title="这封信现在">${esc(whereText(whereNow(l)))}</span>` : ''}
+                        ${l.memories?.length ? `<span class="epi-chip" title="读过的人记得什么">🧠 ${esc(l.memories.map(m => m.person).filter((x, i, a) => a.indexOf(x) === i).join('、'))}</span>` : ''}
                         ${ex ? `<span class="epi-muted">${esc(l.id)}</span>` : ''}
                         ${ex && l.authenticity !== 'original' ? `<span class="epi-chip">${esc(AUTHENTICITY[l.authenticity])}</span>` : ''}
                     </div>
@@ -1967,10 +2035,18 @@ ${list}`;
             <section class="epi-sec-card">
                 <h4>🧠 读信的记忆</h4>
                 <p>角色在剧情里读完一封信（用暗号把信交给 AI 的那一轮${ex ? '，或者信送到、转交人偷看' : ''}），书信簿会再请 AI 整理一段“这个人记得什么”：在意的地方、记住的几句原话、当时的联想、读完做了什么。</p>
-                ${chk('memory.auto', '读完信自动整理记忆', '每封信每轮多调用一次上面设置的 AI 接口。关掉以后，也可以在阅读页里手动点“从最近的剧情整理”。')}
+                <label>什么时候自动整理<select class="text_pole" data-s="memory.when">
+                    <option value="first" ${s.memory?.when === 'first' ? 'selected' : ''}>有人第一次读这封信时（省调用，推荐）</option>
+                    <option value="every" ${s.memory?.when === 'every' ? 'selected' : ''}>每次有人读都整理（重读也会补进记忆）</option>
+                    <option value="off" ${s.memory?.when === 'off' ? 'selected' : ''}>不自动，只在阅读页手动整理</option>
+                </select></label>
+                <p class="epi-muted">每整理一封信，调用一次上面设置的 AI 接口。“第一次读时”：这封信在这一轮的回复里出现了还没有记忆的人，才会整理。整理时也会顺便记下信最后放在哪、在谁手里。</p>
                 ${chk('memory.worldbook', '把记忆写进这个聊天的世界书', '写进聊天绑定的世界书；没绑定就自动建一本。每人每封信一条，关键词是“写信人+信”、暗号、标题和你填的关键词，按深度插入。')}
+                ${chk('memory.rereadText', '信还在角色手里时，TA 说要拿出来重读，世界书给出原文', '只在信“收着 / 随身带着”、而且拿着信的人读过它时才有。关键词是“重读 / 拿出 / 翻出……”挨着写信人、暗号或标题。信烧了、丢了、交出去了，就没有这一条，只剩记忆。')}
                 <label>世界书条目插入深度<input class="text_pole epi-num" type="number" min="0" max="50" data-s="memory.depth" value="${esc(s.memory?.depth ?? 4)}"></label>
-                <p class="epi-muted">世界书里只放记忆，不放原文，所以角色“想起来”的是 TA 当时记住的东西，像真人一样会记不全；要逐字读，还是写暗号。记忆在阅读页底部能看、能改、能删，改过的不会被自动整理覆盖。</p>
+                <div class="epi-row"><button class="menu_button" data-act="mem-backfill" ${this.hooks.hasChat() ? '' : 'disabled'} title="找出这个聊天里以前用暗号读过、还没有记忆的信，从当时那几层整理">📜 给过去读过的信补记忆</button></div>
+                <p class="epi-muted">记忆功能之前读过的信：这个按钮会找出这个聊天里用暗号读过的信，从当时那几层补上。没用暗号、是在剧情里直接写出来的信，到那封信的阅读页点“📜 从过去的楼层找”，可以挑楼层，也可以直接填楼层号。</p>
+                <p class="epi-muted">世界书里放的是记忆，所以角色“想起来”的是 TA 当时记住的东西，像真人一样会记不全；只有信还在 TA 手里、TA 拿出来重读时，才给原文。你自己要让 AI 逐字读，还是写暗号。同一个人读过同一位写信人好几封信时，平时只放一份“来信一览”，说到具体哪一封（日期、月份、标题、暗号）才放那封的详细记忆。换回复、删消息时，那一层整理出的记忆会自动撤回。</p>
             </section>
 
             <section class="epi-sec-card" ${ex ? '' : 'hidden'}>
@@ -2191,6 +2267,7 @@ ${list}`;
                 </div>
                 <div class="epi-reader-translation" ${l.translations?.zh?.source === l.body ? '' : 'hidden'}>${l.translations?.zh?.source === l.body ? `<h4>中文译文</h4><div class="epi-tr-read">${esc(l.translations.zh.text)}</div>` : ''}</div>
                 ${replies.length ? `<div class="epi-reader-link">回信：${replies.map(r => `<a href="#" data-act="read" data-id="${esc(r.id)}">${esc(r.author)} ${esc(r.writtenAt)}</a>`).join('　')}</div>` : ''}
+                ${preview ? '' : this.whereHtml(l)}
                 ${preview ? '' : this.memoryHtml(l)}
             </div>`;
         wrap.classList.remove('epi-hidden');
@@ -2199,6 +2276,38 @@ ${list}`;
 
     closeReader() {
         this.root.querySelector('.epi-reader-wrap').classList.add('epi-hidden');
+    }
+
+    // 阅读页：信现在在谁手里
+    whereHtml(l) {
+        const w = whereNow(l);
+        const hist = l.whereabouts?.history || [];
+        const by = { ai: '剧情里写到的', user: '你改的', delivery: '寄送' };
+        return `<div class="epi-where">
+            <div class="epi-where-now"><b>📍 这封信现在</b> <span>${esc(whereText(w))}</span>
+                ${w.derived ? '<span class="epi-chip" title="还没有人记下它放在哪，按寄出、送达、转交的状态推算">按寄送状态推算</span>' : `<span class="epi-chip">${esc(by[w.by] || '')}${w.date ? ` · ${esc(w.date)}` : ''}${w.mes != null ? ` · 第 ${esc(w.mes)} 层` : ''}</span>`}
+                <button class="menu_button epi-mini" data-act="where-edit" data-id="${esc(l.id)}">改</button></div>
+            ${hist.length ? `<details class="epi-where-hist"><summary>之前在哪（${hist.length}）</summary>${hist.slice().reverse().map(h => `<div>${esc(whereText(h))}<span class="epi-muted">${h.date ? ` · ${esc(h.date)}` : ''}${h.mes != null ? ` · 第 ${esc(h.mes)} 层` : ''}</span></div>`).join('')}</details>` : ''}
+        </div>`;
+    }
+
+    openWhereDialog(id) {
+        const l = this.archive.letters[id];
+        if (!l) return;
+        const w = whereNow(l);
+        const people = [...new Set([l.author, ...l.recipients, l.delivery?.via, ...this.archive.people.map(p => p.name), this.hooks.getUserName?.(), this.hooks.getCharName?.()].filter(Boolean))];
+        this.openDialog(`
+            <h3>📍 ${esc(l.author)} 的这封信现在在哪</h3>
+            <p class="epi-muted">记下信的下落。信还在谁手里，TA 想起来时就能拿出来重读；烧了、丢了、交出去了，就只剩记忆。信再寄出、送到、转交时，会自动改成按寄送状态推算。</p>
+            <label>状态<select class="text_pole" id="epi-where-state">${Object.entries(WHERE_STATES).filter(([k]) => k !== 'transit').map(([k, v]) => `<option value="${k}" ${w.state === k ? 'selected' : ''}>${v.icon} ${esc(v.label)}</option>`).join('')}</select></label>
+            <label>在谁手里<input class="text_pole" id="epi-where-holder" list="epi-where-people" value="${esc(w.holder || '')}" placeholder="比如：提奥"></label>
+            <datalist id="epi-where-people">${people.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
+            <label>放在哪（可不填）<input class="text_pole" id="epi-where-place" value="${esc(w.derived ? '' : w.place || '')}" placeholder="比如：画廊办公室书桌左边的抽屉"></label>
+            <label>备注（可不填）<input class="text_pole" id="epi-where-note" value="${esc(w.derived ? '' : w.note || '')}" placeholder="比如：和另外四封放在一起"></label>
+            <div class="epi-dialog-actions">
+                <button class="menu_button" data-act="dialog-close">取消</button>
+                <button class="menu_button epi-primary" data-act="where-save" data-id="${esc(id)}">保存</button>
+            </div>`);
     }
 
     // 阅读页底部：谁读过这封信、记得什么（会写进世界书）
@@ -2221,6 +2330,7 @@ ${list}`;
             </div>`).join('') : '<p class="epi-muted">还没有。角色在剧情里读过这封信以后会自动整理；也可以点下面的按钮。</p>'}
             <div class="epi-mem-bar">
                 <button class="menu_button" data-act="mem-recent" data-id="${esc(l.id)}" title="把最近几层剧情交给 AI，看谁读了这封信、记住了什么">🧠 从最近的剧情整理</button>
+                <button class="menu_button" data-act="mem-past" data-id="${esc(l.id)}" title="在这个聊天以前的楼层里找读过这封信的地方">📜 从过去的楼层找</button>
                 <button class="menu_button" data-act="mem-add" data-id="${esc(l.id)}">＋ 自己写一段</button>
             </div>
             <label class="epi-mem-keys">想起这封信的额外关键词（逗号分开，可不填）
@@ -2228,6 +2338,72 @@ ${list}`;
                 <button class="menu_button epi-mini" data-act="recall-save" data-id="${esc(l.id)}">保存</button></span>
             </label>
         </div>`;
+    }
+
+    // 过去的楼层：列出可能读过这封信的地方，勾选后整理
+    openPastDialog(id) {
+        const l = this.archive.letters[id];
+        if (!l) return;
+        if (!this.hooks.hasChat()) { toastr?.info('先打开读过这封信的那个聊天'); return; }
+        const scenes = this.hooks.findPastScenes(id);
+        const total = this.hooks.getChat().length;
+        const label = r => ({ code: '用暗号读信', source: '信的原文在这层', quote: '引用了原句', mention: '提到了这封信' }[r] || r);
+        this.openDialog(`
+            <h3>📜 从过去的楼层找：${esc(l.author)} 写给 ${esc(l.recipients.join('、'))} 的信</h3>
+            <p class="epi-muted">在这个聊天（共 ${total} 层）里找到下面这些地方可能有人读过、念过或提起这封信。勾上要整理的，每一段会调用一次 AI，从早到晚依次整理，后面的会补进前面的记忆。比较确定的已经勾好了。</p>
+            <div class="epi-past-list">
+                ${scenes.length ? scenes.map((sc, k) => `<label class="epi-past ${sc.strong ? '' : 'epi-weak'}">
+                    <input type="checkbox" data-past="${k}" data-from="${sc.from}" data-to="${sc.to}" ${sc.strong ? 'checked' : ''}>
+                    <span><b>第 ${sc.from}${sc.to !== sc.from ? `–${sc.to}` : ''} 层</b> ${sc.reasons.map(r => `<span class="epi-chip">${esc(label(r))}</span>`).join(' ')}
+                    <br><span class="epi-muted">${esc(sc.snippet)}${sc.snippet.length >= 90 ? '…' : ''}</span></span>
+                </label>`).join('') : '<p class="epi-muted">没找到。可能剧情里用的是别的叫法，可以在下面直接填楼层。</p>'}
+            </div>
+            <label>另外加一段（楼层号就是消息右上角的 #数字）
+                <span class="epi-row">第 <input type="number" class="text_pole epi-num" id="epi-past-from" min="0" max="${total - 1}"> 层 到 第 <input type="number" class="text_pole epi-num" id="epi-past-to" min="0" max="${total - 1}"> 层</span>
+            </label>
+            <div class="epi-dialog-actions">
+                <button class="menu_button" data-act="dialog-close">取消</button>
+                <button class="menu_button epi-primary" data-act="mem-past-run" data-id="${esc(id)}">整理选中的</button>
+            </div>`);
+    }
+
+    async runPast(id) {
+        const ranges = [...this.root.querySelectorAll('.epi-past-list input[type="checkbox"]:checked')].map(c => ({ from: Number(c.dataset.from), to: Number(c.dataset.to) }));
+        const a = this.root.querySelector('#epi-past-from').value, b = this.root.querySelector('#epi-past-to').value;
+        if (a !== '') {
+            const from = parseInt(a, 10), to = b === '' ? from : parseInt(b, 10);
+            if (to - from > 30) { toastr?.warning('一段最多 30 层，太长 AI 容易看漏，分几段填'); return; }
+            ranges.push({ from: Math.min(from, to), to: Math.max(from, to) });
+        }
+        if (!ranges.length) { toastr?.info('还没选楼层'); return; }
+        if (ranges.length > 12 && !confirm(`一共 ${ranges.length} 段，要调用 ${ranges.length} 次 AI。继续吗？`)) return;
+        this.closeDialog();
+        this.busy = true;
+        const t = toastr?.info('', `🧠 整理中 0/${ranges.length}`, { timeOut: 0, extendedTimeOut: 0 });
+        try {
+            const got = await this.hooks.memoriesFromFloors(id, ranges, { onProgress: (k, n) => { const el = t?.[0]?.querySelector?.('.toast-title'); if (el) el.textContent = `🧠 整理中 ${k}/${n}`; } });
+            if (!got.length) toastr?.info('这些楼层里没看到有人读这封信');
+        } finally {
+            this.busy = false;
+            if (t && toastr?.clear) toastr.clear(t);
+        }
+        this.openReader(id);
+    }
+
+    // 设置页：整个聊天里用暗号读过、还没有记忆的信
+    async backfillAll() {
+        if (!this.hooks.hasChat()) { toastr?.info('先打开一个聊天'); return; }
+        const list = this.hooks.codeReadsInChat();
+        if (!list.length) { toastr?.info('这个聊天里没有用暗号读过、还没整理记忆的信'); return; }
+        const n = list.reduce((x, i) => x + i.scenes.length, 0);
+        const names = list.map(i => { const l = this.archive.letters[i.letterId]; return `${l.code} ${l.author}→${l.recipients.join('、')}`; }).join('\n');
+        if (!confirm(`找到 ${list.length} 封信在过去的楼层里被读过：\n${names}\n\n一共要调用 ${n} 次 AI。开始整理吗？`)) return;
+        let k = 0;
+        for (const i of list) {
+            k++;
+            toastr?.info(`${k}/${list.length}`, '🧠 补记忆', { timeOut: 1500 });
+            await this.hooks.memoriesFromFloors(i.letterId, i.scenes);
+        }
     }
 
     openMemoryDialog(id, person = '') {
@@ -2289,10 +2465,11 @@ ${list}`;
             case 'user-reply': this.startUserReply(id); break;
             case 'reply-open-for': this.openReplyDialog(id); break;
             case 'delete':
-                if (confirm('确定删除这封信？此操作不能撤销（档案文件有一份会话开始时的备份）。')) {
+                if (confirm(`确定删除这封信？此操作不能撤销（档案文件有一份会话开始时的备份）。${this.archive.letters[id]?.memories?.length ? '\n\n世界书里这封信的记忆条目也会一起删掉（别的聊天里的，下次打开那个聊天时删）。' : ''}`)) {
                     delete this.archive.letters[id];
                     if (this.draft?.id === id) this.draft = null;
                     this.store.save();
+                    this.hooks.syncWorldBook?.();
                     this.show('list');
                 }
                 break;
@@ -2333,6 +2510,19 @@ ${list}`;
                 break;
             }
             case 'mem-add': this.openMemoryDialog(id); break;
+            case 'mem-past': this.openPastDialog(id); break;
+            case 'where-edit': this.openWhereDialog(id); break;
+            case 'where-save': {
+                const v = k => this.root.querySelector(`#epi-where-${k}`).value.trim();
+                const w = { state: v('state'), holder: v('holder'), place: v('place'), note: v('note') };
+                this.closeDialog();
+                const ok = await this.hooks.saveWhereabouts(id, w);
+                if (!ok) toastr?.info('没有变化');
+                this.openReader(id);
+                break;
+            }
+            case 'mem-past-run': if (!this.busy) await this.runPast(id); break;
+            case 'mem-backfill': await this.backfillAll(); break;
             case 'mem-edit': this.openMemoryDialog(id, el.dataset.person); break;
             case 'mem-del':
                 if (confirm(`删掉 ${el.dataset.person} 对这封信的记忆？世界书里对应的条目也会删掉。`)) {
@@ -2551,6 +2741,7 @@ ${list}`;
             return;
         }
         if (t.id === 'epi-imp-range' || t.id === 'epi-imp-method') { this.updateImportEstimate(); return; }
+        if (act === 'tl-pair') { if (e.type === 'change') { this.tlPair = t.value; this.show('timeline'); } return; }
         if (t.dataset.s) {
             const key = t.dataset.s;
             let v = t.type === 'checkbox' ? t.checked : t.value;

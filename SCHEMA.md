@@ -48,9 +48,18 @@
       "code": "【信1】",           // 暗号：用户消息里出现它，那一轮就把这封信交给 AI（唯一）
       "shell": false,              // 空壳信：剧情里已经有这封信了，正文还没写（写了正文自动变 false）
       "memories": [                // 读过这封信的人记得什么（v0.21）；同步到聊天绑定的世界书
-        { "person": "提奥", "text": "提奥记得……「原话」……", "updatedAt": "…", "wiBook": "书信簿记忆-…", "wiUid": 3, "auto": true }
-        // auto=false：用户改过，自动整理不再覆盖
+        { "person": "提奥", "text": "提奥记得……「原话」……", "gist": "一句话概括", "updatedAt": "…",
+          "chatId": "…", "fromMes": 120, "prev": { "text": "…", "gist": "…", "fromMes": 80 },
+          "wiBook": "书信簿记忆-…", "wiUid": 3, "auto": true }
+        // auto=false：用户改过，自动整理不再覆盖，也不会被撤回
+        // fromMes：由哪一层整理出来；那一层被换掉 / 删掉时退回 prev（没有 prev 就删掉）
       ],
+      "whereabouts": {             // 信现在在谁手里（v0.22）；current 为空就按寄送状态推算
+        "current": { "holder": "提奥", "place": "抽屉", "state": "kept", "note": "", "date": "1890-07-01", "mes": 120, "by": "ai", "stamp": "sent|viewed|" },
+        // state：kept 收着 | carried 随身带着 | given 交给了别人 | burned 烧了 | lost 丢了 | draft | transit | unknown
+        // by：ai 剧情里写到的 | user 手动；stamp 是记下时的寄送状态，寄送状态变了就改回推算
+        "history": []
+      },
       "recallKeys": ["七月的信"],  // 世界书条目的额外关键词
 
       "segments": [
@@ -158,6 +167,10 @@
 ## 以后怎么扩展
 
 新增字段一律在 `migrateArchive()`（`src/model.js`）里补默认值；`schema` 版本号升一级时，在那里写迁移。批注、未回复事项、承诺追踪这类功能，计划做成挂在信件或段落 ID 上的独立列表，不改动信件本身的结构。
+
+## 世界书条目（v0.22）
+
+书信簿只动备注末尾带 `⟨epi:…⟩` 的条目：`mem:信ID:人` 某人对某封信的记忆；`sum:写信人:人` 来信一览（读过同一写信人两封以上时）；`txt:信ID` 信还在某人手里时的原文（重读用）。打开聊天、改记忆、删信时整本对齐。
 
 ## 聊天消息里的标记
 

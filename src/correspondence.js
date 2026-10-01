@@ -733,7 +733,10 @@ export function buildMemoryPrompt(letter, scene, { existing = [], storyDate = ''
 3. 这个人记得的原话：1 到 3 句，必须是**从信的原文里逐字摘出来的**，用「」括起来，可以是外文原句加括号里的中文；
 4. 读的时候想到了什么（剧情里写到的联想、回忆、判断）；
 5. 读完以后做了什么、打算怎么办。
+另外每人写一句 gist：不超过 40 字，这个人会怎么一句话概括这封信（比如“勒鲁说每月寄一封信，托我按时转交”）。
 只写剧情和信里确实有的，不要补充、不要编。剧情里没读这封信的人不要写；写信人自己不算读者，除非剧情里 TA 重读了这封信。
+
+最后看这段剧情结束时，**这封信本身**在哪里：在谁手里（holder）、放在什么地方（place，比如“书桌左边的抽屉”）、状态（state）：kept 收着 | carried 随身带着 | given 交给了别人 | burned 烧了或毁了 | lost 丢了。剧情里没写到信最后放哪，letter 就写 null，不要猜。
 ${prev}
 【信】${letter.author || '？'} 写给 ${(letter.recipients || []).join('、') || '？'}${letter.writtenAt ? `，${letter.writtenAt}` : ''}${letter.code ? `，暗号 ${letter.code}` : ''}
 ${String(letter.body || '').slice(0, 12000)}
@@ -741,23 +744,37 @@ ${String(letter.body || '').slice(0, 12000)}
 【读信的那段剧情】
 ${String(scene || '').slice(0, 12000)}
 
-只输出一个 JSON 数组，例如：
-[{"person": "提奥", "memory": "提奥记得，1890 年 7 月 1 日早上……他记得信里写着「（信里的原句）」……读完以后……"}]
-没有人读这封信就输出 []。`;
+只输出一个 JSON 对象，例如：
+{"memories": [{"person": "提奥", "memory": "提奥记得，1890 年 7 月 1 日早上……他记得信里写着「（信里的原句）」……读完以后……", "gist": "……"}], "letter": {"holder": "提奥", "place": "画廊办公室的抽屉", "state": "kept"}}
+没有人读这封信，memories 就是 []。`;
     return { system, prompt };
 }
 
-export function parseMemories(text) {
-    const m = String(text || '').match(/\[[\s\S]*\]/);
-    if (!m) return [];
-    try {
-        const arr = JSON.parse(m[0]);
-        return (Array.isArray(arr) ? arr : [])
-            .filter(x => x && typeof x === 'object' && String(x.person || '').trim() && String(x.memory || '').trim())
-            .map(x => ({ person: String(x.person).trim().slice(0, 40), text: String(x.memory).trim().slice(0, 1500) }));
-    } catch {
-        return [];
+function cleanMemories(arr) {
+    return (Array.isArray(arr) ? arr : [])
+        .filter(x => x && typeof x === 'object' && String(x.person || '').trim() && String(x.memory || '').trim())
+        .map(x => ({ person: String(x.person).trim().slice(0, 40), text: String(x.memory).trim().slice(0, 1500), gist: String(x.gist || '').trim().slice(0, 120) }));
+}
+
+// { memories: [{person, text, gist}], where: {holder, place, state} | null }
+export function parseMemoryResult(text) {
+    const t = String(text || '');
+    const obj = t.match(/\{[\s\S]*\}/);
+    if (obj && /"memories"/.test(obj[0])) {
+        try {
+            const o = JSON.parse(obj[0]);
+            const w = o.letter && typeof o.letter === 'object' ? o.letter : null;
+            const where = w && (w.holder || w.place || w.state) ? { holder: String(w.holder || ''), place: String(w.place || ''), state: String(w.state || 'kept'), note: String(w.note || '') } : null;
+            return { memories: cleanMemories(o.memories), where };
+        } catch { /* 往下试数组 */ }
     }
+    const arr = t.match(/\[[\s\S]*\]/);
+    if (!arr) return { memories: [], where: null };
+    try { return { memories: cleanMemories(JSON.parse(arr[0])), where: null }; } catch { return { memories: [], where: null }; }
+}
+
+export function parseMemories(text) {
+    return parseMemoryResult(text).memories.map(({ person, text: t }) => ({ person, text: t }));
 }
 
 // 记忆里「」括起来的原话，有没有真的出现在信里（不在的标出来，免得 AI 把编的当原文）
@@ -767,19 +784,71 @@ export function checkQuotes(memory, body) {
     return String(memory || '').replace(/「([^」]{2,200})」/g, (all, q) => (src.includes(flat(q)) ? all : `“${q}”（大意）`));
 }
 
+// 没有 gist 时，从记忆里截一句
+export function gistOf(m) {
+    if (m.gist) return m.gist;
+    const t = String(m.text || '').replace(/^[^，,]{0,12}记得[，,]?/, '');
+    const first = t.split(/[。！？\n]/).find(x => x.trim().length > 4) || t;
+    return first.trim().slice(0, 50) + (first.trim().length > 50 ? '…' : '');
+}
+
+const letterLabel = l => `${l.author || '？'} 写给 ${(l.recipients || []).join('、') || '？'} 的信${l.writtenAt ? `（${l.writtenAt}）` : ''}`;
+
 // 世界书条目：这个人对这封信的记忆
-export function memoryEntryContent(letter, m) {
-    return `【${m.person}的记忆｜${letter.author || '？'} 写给 ${(letter.recipients || []).join('、') || '？'} 的信${letter.writtenAt ? `（${letter.writtenAt}）` : ''}】\n${m.text}\n（这是 ${m.person} 读过这封信以后记得的东西；没读过的人不知道这些。需要逐字读信时以原文为准，暗号 ${letter.code || '无'}。）`;
+export function memoryEntryContent(letter, m, whereLine = '') {
+    return `【${m.person}的记忆｜${letterLabel(letter)}】\n${m.text}\n${whereLine ? `${whereLine}\n` : ''}（这是 ${m.person} 读过这封信以后记得的东西；没读过的人不知道这些。需要逐字读信时以原文为准，暗号 ${letter.code || '无'}。）`;
+}
+
+// 一个人读过同一个写信人的好几封信：平时只放这份一览，点到具体哪封才放那封的详细记忆
+export function summaryEntryContent(person, author, items) {
+    const lines = items.map(({ letter, memory, where }) => `- ${letter.writtenAt || '日期不详'}${letter.title ? `「${letter.title}」` : ''}${letter.code ? ` ${letter.code}` : ''}：${gistOf(memory)}${where ? `（${where}）` : ''}`);
+    return `【${person}读过的 ${author} 来信】\n${person} 一共读过 ${items.length} 封 ${author} 写的信：\n${lines.join('\n')}\n（说起具体哪一封——日期、月份、标题——${person} 会想起那封信更多的细节。没读过的人不知道这些。）`;
+}
+
+const esc = s => String(s).replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+const XIN = '(?<![相自确迷威诚])信(?![任心仰赖号用息])';
+
+// 写信人的名字（含别名）挨着“信”
+export function authorKey(author, names = []) {
+    const who = [...new Set([author, ...names].filter(Boolean))].map(esc).join('|');
+    if (!who) return '';
+    return `/(${who})[^。！？.!?\\n]{0,10}(${XIN}|letter|lettre)|(${XIN}|letter|lettre)[^。！？.!?\\n]{0,10}(${who})/i`;
+}
+
+const ZH_MONTHS = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '十一', '十二'];
+const EN_MONTH_NAMES = EN_MONTHS.map(x => x.toLowerCase());
+
+// 这封信自己的关键词：暗号、标题、月份（“七月那封信”）、自定义
+export function letterOwnKeys(letter) {
+    const keys = [];
+    if (letter.code) keys.push(letter.code);
+    if (letter.title) keys.push(letter.title);
+    const mo = parseInt(String(letter.writtenAt || '').slice(5, 7), 10);
+    if (mo >= 1 && mo <= 12) {
+        const m = `(${ZH_MONTHS[mo - 1]}月|${mo}月|${FR_MONTHS[mo - 1]}|${EN_MONTH_NAMES[mo - 1]})`;
+        keys.push(`/${m}[^。！？.!?\\n]{0,8}(${XIN}|letter|lettre)|(${XIN}|letter|lettre)[^。！？.!?\\n]{0,8}${m}/i`);
+    }
+    for (const k of letter.recallKeys || []) if (k) keys.push(k);
+    return keys;
 }
 
 // 什么时候想起来：提到写信人和“信”，或者暗号、标题、自定义的想起关键词
-export function memoryKeys(letter, names = []) {
-    const esc = s => String(s).replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
-    const who = [...new Set([letter.author, ...names].filter(Boolean))].map(esc).join('|');
+export function memoryKeys(letter, names = [], { withAuthor = true } = {}) {
     const keys = [];
-    if (who) keys.push(`/(${who})[^。！？.!?\\n]{0,10}((?<![相自确迷威诚])信(?![任心仰赖号用息])|letter|lettre)|((?<![相自确迷威诚])信(?![任心仰赖号用息])|letter|lettre)[^。！？.!?\\n]{0,10}(${who})/i`);
-    if (letter.code) keys.push(letter.code);
-    if (letter.title) keys.push(letter.title);
-    for (const k of letter.recallKeys || []) if (k) keys.push(k);
+    const a = withAuthor ? authorKey(letter.author, names) : '';
+    if (a) keys.push(a);
+    for (const k of letterOwnKeys(letter)) if (!keys.includes(k)) keys.push(k);
     return keys;
+}
+
+// “拿出来重读”的说法挨着写信人 / 暗号 / 标题
+export function rereadKey(letter, names = []) {
+    const who = [...new Set([letter.author, ...names, letter.code, letter.title].filter(Boolean))].map(esc).join('|');
+    if (!who) return '';
+    const act = '(重读|再读|又读|重新读|翻出|拿出|找出|取出|展开|摊开|又看了|再看|reread|read again|relire|relut)';
+    return `/${act}[^。！？.!?\\n]{0,15}(${who})|(${who})[^。！？.!?\\n]{0,15}${act}/i`;
+}
+
+export function rereadEntryContent(letter, holder, place = '') {
+    return `【信件原文｜${letterLabel(letter)}｜现在在 ${holder} 手里${place ? `（${place}）` : ''}】\n${String(letter.body || '').trim()}\n【信件完】\n（${holder} 把这封信拿出来重读时，读到的就是上面的原文。没有这封信的人读不到。）`;
 }

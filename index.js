@@ -12,11 +12,14 @@ import {
     viaSceneMessage, viaPeekMessage, buildViaGuidance, buildViaDecisionPrompt, parseViaDecisions,
     viaReceivedEvents, nextEventId, VIA_ACTIONS,
     mentionsReceipt, mentionsDate, mentionsName, buildPendingHints, inlineLetterBlock, inlineGuidance, buildCodeBlock,
-    buildMemoryPrompt, parseMemories, checkQuotes, memoryEntryContent, memoryKeys,
+    buildMemoryPrompt, parseMemoryResult, checkQuotes, memoryEntryContent, memoryKeys,
+    authorKey, summaryEntryContent, rereadKey, rereadEntryContent,
 } from './src/correspondence.js';
+import { whereNow, setWhere, revokeWhere, whereText, whereForPerson, REREADABLE } from './src/whereabouts.js';
 import { playSeal, playOpen } from './src/envelope.js';
 import { detectInMessage, guessRecipient, guessAuthor, findDuplicate, isSalutation } from './src/importer.js';
 import { extractEnclosures } from './src/enclosures.js';
+import { findReadingScenes, sceneText } from './src/memoryscan.js';
 import { callAI, DEFAULT_API } from './src/api.js';
 
 const MODULE = 'epistolary';
@@ -53,9 +56,10 @@ const DEFAULT_SETTINGS = {
         dateEvery: 6,        // 每隔几层推算一次
     },
     memory: {
-        auto: true,          // 角色读完信，让 AI 整理“TA 记得什么”
+        when: 'first',       // 什么时候自动整理：first 有人第一次读这封信时 | every 每次读都整理 | off 不自动
         worldbook: true,     // 记忆写进这个聊天绑定的世界书，角色以后提起这封信时会想起来
         depth: 4,            // 世界书条目插入的深度
+        rereadText: true,    // 信还在某人手里：TA 说要拿出来重读时，世界书给出原文
     },
 };
 
@@ -91,6 +95,8 @@ function settings() {
         delivery: { ...DEFAULT_SETTINGS.delivery, ...(cur.delivery || {}) },
         memory: { ...DEFAULT_SETTINGS.memory, ...(cur.memory || {}) },
     };
+    const mem = all[MODULE].memory;
+    if (!['first', 'every', 'off'].includes(mem.when)) mem.when = mem.auto === false ? 'off' : 'first';
     return all[MODULE];
 }
 
@@ -529,21 +535,22 @@ function freeUid(data) {
     return i;
 }
 
-function memoryEntry(letter, m, uid, old = {}) {
-    const s = settings().memory;
-    const aliases = namesOf(letter.author).filter(n => n !== letter.author);
-    return {
+const EPI_TAG = /⟨epi:([^⟩]+)⟩\s*$/;
+
+function wiEntry(uid, { key, comment, content, tag, order = 100 }, old = null) {
+    const depth = Number(settings().memory.depth) || 4;
+    const e = {
         uid,
-        key: memoryKeys(letter, aliases),
+        key,
         keysecondary: [],
-        comment: `书信簿｜${m.person}读${letter.author || '？'}来信的记忆（${letter.code || letter.id}）`,
-        content: memoryEntryContent(letter, m),
+        comment: `${comment} ⟨epi:${tag}⟩`,
+        content,
         constant: false,
         vectorized: false,
         selective: false,
         selectiveLogic: 0,
         addMemo: true,
-        order: 100,
+        order,
         position: 4,            // 按深度插入
         disable: false,
         ignoreBudget: false,
@@ -552,7 +559,7 @@ function memoryEntry(letter, m, uid, old = {}) {
         delayUntilRecursion: 0,
         probability: 100,
         useProbability: true,
-        depth: Number(s.depth) || 4,
+        depth,
         group: '',
         groupOverride: false,
         groupWeight: 100,
@@ -567,50 +574,145 @@ function memoryEntry(letter, m, uid, old = {}) {
         delay: null,
         triggers: [],
         displayIndex: uid,
-        ...old.characterFilter ? { characterFilter: old.characterFilter } : {},
-        // 用户在世界书里自己改过的开关和位置，保留
-        ...(old.uid !== undefined ? { disable: !!old.disable, order: old.order ?? 100, position: old.position ?? 4, depth: old.depth ?? (Number(s.depth) || 4), probability: old.probability ?? 100 } : {}),
     };
+    if (old) {
+        // 用户在世界书里自己改过的开关、顺序、位置，保留
+        Object.assign(e, { disable: !!old.disable, order: old.order ?? order, position: old.position ?? 4, depth: old.depth ?? depth, probability: old.probability ?? 100, displayIndex: old.displayIndex ?? uid });
+        if (old.characterFilter) e.characterFilter = old.characterFilter;
+        if (old.sticky != null) e.sticky = old.sticky;
+        if (old.cooldown != null) e.cooldown = old.cooldown;
+    }
+    return e;
 }
 
-function isOurEntry(e, letter, person) {
-    return e && typeof e.comment === 'string' && e.comment.startsWith(`书信簿｜${person}读`) && e.comment.endsWith(`（${letter.code || letter.id}）`);
+const isMine = m => {
+    const id = chatId();
+    if (m.chatId) return m.chatId === id;
+    return !!m.wiBook && m.wiBook === ctx().chatMetadata?.world_info; // v0.21 的旧记忆：没记聊天，按世界书认
+};
+const same = (a, b) => sameName(store.archive, a, b) || namesOf(a).some(n => sameName(store.archive, n, b));
+
+// 这个聊天里应该有哪些世界书条目：每人每封信的记忆；同一个人读过同一写信人好几封时加一份“来信一览”；
+// 信在谁手里、那人还留着它时，加一条“拿出来重读”的原文
+function desiredEntries() {
+    const out = [];
+    const letters = Object.values(store.archive.letters).filter(l => (l.memories || []).some(isMine));
+    const groups = new Map(); // author|person → [{letter, memory}]
+    for (const l of letters) {
+        for (const m of l.memories.filter(isMine)) {
+            const gk = [...groups.keys()].find(k => { const [au, pe] = k.split('\u0001'); return au === l.author && same(pe, m.person); }) || `${l.author}\u0001${m.person}`;
+            if (!groups.has(gk)) groups.set(gk, []);
+            groups.get(gk).push({ letter: l, memory: m });
+        }
+    }
+    for (const [gk, items] of groups) {
+        const [author, person] = gk.split('\u0001');
+        const aliases = namesOf(author).filter(n => n !== author);
+        items.sort((x, y) => String(x.letter.writtenAt).localeCompare(String(y.letter.writtenAt)));
+        const many = items.length > 1;
+        if (many) {
+            const k = authorKey(author, aliases);
+            out.push({
+                tag: `sum:${author}:${person}`,
+                key: k ? [k] : [author],
+                comment: `书信簿｜${person}读过的${author}来信一览`,
+                content: summaryEntryContent(person, author, items.map(i => ({ ...i, where: shortWhere(i.letter, i.memory.person) }))),
+                order: 99,
+                memories: [],
+            });
+        }
+        for (const { letter, memory } of items) {
+            out.push({
+                tag: `mem:${letter.id}:${memory.person}`,
+                key: memoryKeys(letter, aliases, { withAuthor: !many }),
+                comment: `书信簿｜${memory.person}读${author || '？'}来信的记忆（${letter.code || letter.id}）`,
+                content: memoryEntryContent(letter, memory, whereForPerson(letter, memory.person, same)),
+                memories: [memory],
+            });
+        }
+    }
+    if (settings().memory.rereadText !== false) {
+        const user = ctx().name1 || '';
+        for (const l of letters) {
+            const w = whereNow(l);
+            if (!REREADABLE.has(w.state) || !w.holder || (user && same(w.holder, user)) || !String(l.body || '').trim()) continue;
+            const read = l.memories.filter(isMine).some(m => same(m.person, w.holder)) || l.recipients.some(r => same(r, w.holder));
+            if (!read) continue;
+            const aliases = namesOf(l.author).filter(n => n !== l.author);
+            out.push({
+                tag: `txt:${l.id}`,
+                key: [rereadKey(l, aliases)].filter(Boolean),
+                comment: `书信簿｜${l.author}来信原文（${l.code || l.id}，在${w.holder}手里，重读时用）`,
+                content: rereadEntryContent(l, w.holder, w.place),
+                order: 101,
+                memories: [],
+            });
+        }
+    }
+    return out;
 }
 
-// 把一封信的所有记忆同步到世界书（新增、更新、删掉不再有的）
-async function syncMemories(letter, { removed = [] } = {}) {
-    if (!settings().memory.worldbook) return false;
-    const book = await memoryBook({ create: (letter.memories || []).length > 0 });
+function shortWhere(letter, person) {
+    const w = whereNow(letter);
+    if (w.state === 'burned') return '信已经烧了';
+    if (w.state === 'lost') return '信丢了';
+    if (w.state === 'transit') return '信在路上';
+    if (w.holder && same(w.holder, person) && REREADABLE.has(w.state)) return `信还在${person}手里${w.place ? `，${w.place}` : ''}`;
+    if (w.holder && !w.derived) return `信在${w.holder}那里`;
+    return '';
+}
+
+// 把这个聊天的世界书和书信簿对齐：新增、更新、删掉过时的（只动书信簿自己写的条目）
+let syncing = Promise.resolve();
+function syncWorldBook() {
+    syncing = syncing.then(syncWorldBookNow).catch(e => { console.warn('[书信簿] 写世界书失败', e); return false; });
+    return syncing;
+}
+
+async function syncWorldBookNow() {
+    if (!hasChat() || !settings().memory.worldbook) return false;
+    const want = desiredEntries();
+    const book = await memoryBook({ create: want.length > 0 });
     if (!book) return false;
     const { name, data } = book;
-    for (const m of letter.memories) {
-        let old = m.wiBook === name && m.wiUid != null ? data.entries[m.wiUid] : null;
-        if (old && !isOurEntry(old, letter, m.person)) old = null;
-        if (!old) old = Object.values(data.entries).find(e => isOurEntry(e, letter, m.person)) || null;
+    const existing = new Map();
+    let changed = false;
+    for (const e of Object.values(data.entries)) {
+        const m = typeof e.comment === 'string' && e.comment.match(EPI_TAG);
+        if (m) existing.set(m[1], e);
+        else if (typeof e.comment === 'string' && e.comment.startsWith('书信簿｜')) { delete data.entries[e.uid]; changed = true; } // v0.21 的旧格式
+    }
+    const keep = new Set();
+    for (const w of want) {
+        keep.add(w.tag);
+        const old = existing.get(w.tag) || null;
         const uid = old ? old.uid : freeUid(data);
-        data.entries[uid] = memoryEntry(letter, m, uid, old || {});
-        m.wiUid = uid;
-        m.wiBook = name;
+        const e = wiEntry(uid, w, old);
+        if (!old || JSON.stringify(old) !== JSON.stringify(e)) { data.entries[uid] = e; changed = true; }
+        for (const m of w.memories) { m.wiUid = uid; m.wiBook = name; }
     }
-    for (const m of removed) {
-        const e = Object.values(data.entries).find(x => isOurEntry(x, letter, m.person));
-        if (e) delete data.entries[e.uid];
+    for (const [tag, e] of existing) if (!keep.has(tag)) { delete data.entries[e.uid]; changed = true; }
+    if (changed) {
+        await ctx().saveWorldInfo(name, data, true);
+        try { ctx().reloadWorldInfoEditor?.(name); } catch { /* 编辑器没开 */ }
     }
-    await ctx().saveWorldInfo(name, data, true);
-    try { ctx().reloadWorldInfoEditor?.(name); } catch { /* 编辑器没开 */ }
     return name;
 }
 
-function upsertMemories(letter, found, { auto = true } = {}) {
+function upsertMemories(letter, found, { auto = true, fromMes = null } = {}) {
     letter.memories = Array.isArray(letter.memories) ? letter.memories : [];
     const changed = [];
+    const now = new Date().toISOString();
     for (const f of found) {
         const text = checkQuotes(f.text, letter.body);
-        const old = letter.memories.find(m => sameName(store.archive, m.person, f.person) || namesOf(m.person).some(n => sameName(store.archive, n, f.person)));
+        const old = letter.memories.find(m => isMine(m) && same(m.person, f.person));
         if (old) {
-            if (!auto || old.auto !== false) { old.text = text; old.updatedAt = new Date().toISOString(); old.auto = auto; changed.push(old); }
+            if (auto && old.auto === false) continue; // 用户改过的，不覆盖
+            if (fromMes == null || old.fromMes !== fromMes) old.prev = { text: old.text, gist: old.gist || '', fromMes: old.fromMes ?? null };
+            Object.assign(old, { text, gist: f.gist || '', updatedAt: now, auto, fromMes, chatId: chatId() });
+            changed.push(old);
         } else {
-            const m = { person: f.person, text, updatedAt: new Date().toISOString(), wiUid: null, wiBook: '', auto };
+            const m = { person: f.person, text, gist: f.gist || '', updatedAt: now, wiUid: null, wiBook: '', auto, fromMes, prev: null, chatId: chatId() };
             letter.memories.push(m);
             changed.push(m);
         }
@@ -618,40 +720,89 @@ function upsertMemories(letter, found, { auto = true } = {}) {
     return changed;
 }
 
-// 让 AI 从一段剧情里整理某封信的记忆
-async function extractMemories(letter, scene, { quiet = false } = {}) {
+// 让 AI 从一段剧情里整理某封信的记忆（顺便看信最后放哪了）
+async function extractMemories(letter, scene, { quiet = false, past = false, fromMes = null } = {}) {
     const { system, prompt } = buildMemoryPrompt(letter, scene, {
-        existing: letter.memories || [],
-        storyDate: getStoryDate(),
+        existing: (letter.memories || []).filter(isMine),
+        storyDate: past ? '' : getStoryDate(),
         userName: ctx().name1 || '',
     });
     const raw = await ai(system, prompt, { kind: 'memory' });
     const user = ctx().name1 || '';
-    const found = parseMemories(raw).filter(f => !user || !sameName(store.archive, f.person, user));
-    const changed = upsertMemories(letter, found);
-    if (!changed.length) return [];
+    const res = parseMemoryResult(raw);
+    const found = res.memories.filter(f => !user || !sameName(store.archive, f.person, user));
+    const changed = upsertMemories(letter, found, { fromMes });
+    let moved = false;
+    if (res.where) {
+        const cur = letter.whereabouts?.current;
+        const now = whereNow(letter);
+        const stale = past && (now.state === 'transit' || (cur && cur.mes != null && fromMes != null && cur.mes > fromMes));
+        if (!stale) moved = setWhere(letter, res.where, { by: 'ai', date: past ? '' : getStoryDate(), mes: fromMes });
+    }
+    if (!changed.length && !moved) return [];
     letter.updatedAt = new Date().toISOString();
     store.save();
-    let book = false;
-    try { book = await syncMemories(letter); } catch (e) { console.warn('[书信簿] 写世界书失败', e); }
-    if (!quiet) toastr.success(`${changed.map(m => m.person).join('、')} 记住了 ${letter.author} 的这封信${book ? `（已写进世界书「${book}」）` : ''}`, '🧠 读信的记忆', { timeOut: 5000 });
+    const book = await syncWorldBook();
+    if (!quiet && changed.length) toastr.success(`${changed.map(m => m.person).join('、')} 记住了 ${letter.author} 的这封信${book ? `（已写进世界书「${book}」）` : ''}`, '🧠 读信的记忆', { timeOut: 5000 });
+    if (!quiet && moved) toastr.info(`${letter.author} 的信：${whereText(whereNow(letter))}`, '📍 信现在在', { timeOut: 4000 });
     ui?.refresh?.();
     return changed;
 }
 
+// “只在第一次读时整理”：这封信在这次回复里有没有新的读者
+function hasNewReader(letter, mesId) {
+    const mine = (letter.memories || []).filter(isMine);
+    if (!mine.length) return true;
+    const m = ctx().chat?.[mesId];
+    const text = `${m?.mes || ''}\n${m?.extra?.reasoning || ''}`;
+    const user = ctx().name1 || '';
+    const cands = new Set([ctx().name2, ...letter.recipients, letter.delivery?.via, ...store.archive.people.map(p => p.name)].filter(Boolean));
+    for (const c of cands) {
+        if ((user && same(c, user)) || mine.some(x => same(x.person, c))) continue;
+        // 名字挨着“读 / 拆 / 念 / 看……信”才算这个人读了
+        const who = namesOf(c).filter(Boolean).map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+        if (who && new RegExp(`(${who})[^。！？\\n]{0,20}(读|拆|念|看|展开|信纸)|(念给|读给|递给)[^。！？\\n]{0,4}(${who})`).test(text)) return true;
+    }
+    return false;
+}
+
 function memoriesAfterReply(mesId) {
     const s = settings();
-    if (!s.enabled || !s.memory.auto || store.mode === 'unloaded') return;
+    const when = s.memory.when;
+    if (!s.enabled || when === 'off' || store.mode === 'unloaded') return;
     const m = ctx().chat?.[mesId];
     if (!m || m.is_user || m.is_system || m.extra?.epistolary) return;
-    const letters = lettersReadAt(mesId);
+    let letters = lettersReadAt(mesId);
+    if (when === 'first') letters = letters.filter(l => hasNewReader(l, mesId));
     if (!letters.length) return;
     const scene = sceneAround(mesId);
     memoryQueue = memoryQueue.then(async () => {
         for (const l of letters) {
-            try { await extractMemories(l, scene); } catch (e) { console.warn('[书信簿] 整理记忆失败', e); }
+            try { await extractMemories(l, scene, { fromMes: mesId }); } catch (e) { console.warn('[书信簿] 整理记忆失败', e); }
         }
     });
+}
+
+// 换了回复、删了消息：从这一层起整理出来的记忆和位置撤回
+async function revokeFrom(mesFrom) {
+    if (!hasChat() || store.mode === 'unloaded') return;
+    let n = 0;
+    for (const l of Object.values(store.archive.letters)) {
+        let touched = revokeWhere(l, mesFrom);
+        for (const m of [...(l.memories || [])]) {
+            if (!isMine(m) || m.auto === false || m.fromMes == null || m.fromMes < mesFrom) continue;
+            if (m.prev && (m.prev.fromMes == null || m.prev.fromMes < mesFrom)) Object.assign(m, { text: m.prev.text, gist: m.prev.gist, fromMes: m.prev.fromMes, prev: null });
+            else l.memories.splice(l.memories.indexOf(m), 1);
+            touched = true;
+            n++;
+        }
+        if (touched) l.updatedAt = new Date().toISOString();
+    }
+    if (!n) return;
+    store.save();
+    await syncWorldBook();
+    toastr.info(`那一层整理出的 ${n} 段读信记忆已撤回${settings().memory.when !== 'off' ? '，新的回复出来后会重新整理' : ''}`, '🧠 书信簿', { timeOut: 4000 });
+    ui?.refresh?.();
 }
 
 // 阅读页的按钮：从最近几层剧情里整理这封信的记忆
@@ -659,21 +810,64 @@ async function memoriesFromRecent(letterId, depth = 6) {
     const letter = store.archive.letters[letterId];
     if (!letter || !hasChat()) return [];
     const chat = ctx().chat || [];
-    return extractMemories(letter, sceneAround(chat.length - 1, { before: depth - 1 }));
+    return extractMemories(letter, sceneAround(chat.length - 1, { before: depth - 1 }), { fromMes: chat.length - 1 });
+}
+
+// 过去的楼层：哪些地方可能有人读过这封信
+function findPastScenes(letterId) {
+    const letter = store.archive.letters[letterId];
+    if (!letter || !hasChat()) return [];
+    const aliases = namesOf(letter.author).filter(n => n !== letter.author);
+    return findReadingScenes(ctx().chat || [], letter, { names: aliases, chatId: chatId() });
+}
+
+// 按选好的楼层范围，一段一段整理（从早到晚，后面的会补进前面的记忆）
+async function memoriesFromFloors(letterId, ranges, { onProgress } = {}) {
+    const letter = store.archive.letters[letterId];
+    if (!letter || !hasChat()) return [];
+    const chat = ctx().chat || [];
+    const sorted = [...ranges].filter(r => Number.isInteger(r.from) && Number.isInteger(r.to)).sort((a, b) => a.from - b.from);
+    const people = new Set();
+    for (let k = 0; k < sorted.length; k++) {
+        onProgress?.(k + 1, sorted.length);
+        const r = sorted[k];
+        const from = Math.min(r.from, r.to), to = Math.max(r.from, r.to);
+        const text = sceneText(chat, from, to);
+        if (!text.trim()) continue;
+        try {
+            const got = await extractMemories(letter, text, { quiet: true, past: true, fromMes: to });
+            got.forEach(m => people.add(m.person));
+        } catch (e) { console.warn('[书信簿] 整理记忆失败', e); toastr.error(String(e?.message || e), `第 ${r.from}–${r.to} 层整理失败`); }
+    }
+    const book = letter.memories.find(m => m.wiBook)?.wiBook;
+    if (people.size) toastr.success(`${[...people].join('、')} 记住了 ${letter.author} 的这封信${book ? `（已写进世界书「${book}」）` : ''}`, '🧠 从过去的楼层整理好了', { timeOut: 6000 });
+    return [...people];
+}
+
+// 整个聊天里用暗号读过的信，还没有记忆的：列出来
+function codeReadsInChat() {
+    if (!hasChat()) return [];
+    const out = [];
+    for (const l of Object.values(store.archive.letters)) {
+        if (!l.code || (l.memories || []).some(isMine) || l.shell) continue;
+        const scenes = findPastScenes(l.id).filter(s => s.reasons.includes('code') || s.reasons.includes('source'));
+        if (scenes.length) out.push({ letterId: l.id, scenes });
+    }
+    return out;
 }
 
 async function saveMemoryEdit(letterId, person, text) {
     const letter = store.archive.letters[letterId];
     if (!letter) return;
-    const removed = [];
     letter.memories = letter.memories || [];
-    const i = letter.memories.findIndex(m => m.person === person);
-    if (i >= 0 && !String(text || '').trim()) removed.push(...letter.memories.splice(i, 1));
-    else if (i >= 0) Object.assign(letter.memories[i], { text: String(text).trim(), auto: false, updatedAt: new Date().toISOString() });
-    else if (person && String(text || '').trim()) letter.memories.push({ person, text: String(text).trim(), auto: false, updatedAt: new Date().toISOString(), wiUid: null, wiBook: '' });
+    const i = letter.memories.findIndex(m => m.person === person && isMine(m));
+    const t = String(text || '').trim();
+    if (i >= 0 && !t) letter.memories.splice(i, 1);
+    else if (i >= 0) Object.assign(letter.memories[i], { text: t, gist: '', auto: false, prev: null, updatedAt: new Date().toISOString() });
+    else if (person && t) letter.memories.push({ person, text: t, gist: '', auto: false, updatedAt: new Date().toISOString(), wiUid: null, wiBook: '', fromMes: null, prev: null, chatId: chatId() });
     letter.updatedAt = new Date().toISOString();
     store.save();
-    try { await syncMemories(letter, { removed }); } catch (e) { console.warn('[书信簿] 写世界书失败', e); }
+    await syncWorldBook();
 }
 
 async function saveRecallKeys(letterId, keys) {
@@ -681,7 +875,19 @@ async function saveRecallKeys(letterId, keys) {
     if (!letter) return;
     letter.recallKeys = keys;
     store.save();
-    if (letter.memories?.length) try { await syncMemories(letter); } catch (e) { console.warn('[书信簿] 写世界书失败', e); }
+    await syncWorldBook();
+}
+
+// 手动改信的位置
+async function saveWhereabouts(letterId, w) {
+    const letter = store.archive.letters[letterId];
+    if (!letter) return false;
+    const ok = setWhere(letter, w, { by: 'user', date: getStoryDate() });
+    if (!ok) return false;
+    letter.updatedAt = new Date().toISOString();
+    store.save();
+    await syncWorldBook();
+    return true;
 }
 
 // ---------- 寄送 ----------
@@ -1608,8 +1814,13 @@ jQuery(async () => {
         postSceneReturn,
         postReplyToChat,
         memoriesFromRecent,
+        findPastScenes,
+        memoriesFromFloors,
+        codeReadsInChat,
         saveMemoryEdit,
         saveRecallKeys,
+        saveWhereabouts,
+        syncWorldBook,
         getMemoryBook: () => (hasChat() ? ctx().chatMetadata?.world_info || '' : ''),
         deliverNow,
         inferStoryDate,
@@ -1636,6 +1847,8 @@ jQuery(async () => {
         ui.renderPostbox();
         setTimeout(reapplySeals, 300);
         setTimeout(foldAll, 300);
+        // 删掉的信、换了位置的信：世界书里对应的条目对齐一下
+        setTimeout(() => { if (store.mode !== 'unloaded' && hasChat() && ctx().chatMetadata?.world_info) syncWorldBook(); }, 1200);
     });
     if (eventTypes.MESSAGE_RECEIVED) eventSource.on(eventTypes.MESSAGE_RECEIVED, mesId => {
         setTimeout(async () => {
@@ -1661,6 +1874,12 @@ jQuery(async () => {
         const m = ctx().chat?.[mesId];
         if (m?.extra?.epistolarySeal && !m.extra.epistolarySeal.opened) delete m.extra.epistolarySeal;
         removeSeal(mesId);
+        revokeFrom(Number(mesId));
+    });
+    if (eventTypes.MESSAGE_DELETED) eventSource.on(eventTypes.MESSAGE_DELETED, len => {
+        // 删了消息：酒馆传来的是删完以后聊天还剩几层
+        const n = Number.isInteger(len) ? len : (ctx().chat || []).length;
+        revokeFrom(n);
     });
     // 暗号：发送前改输入框（最早）→ 酒馆助手直接生成 → 消息进了聊天以后（兜底）
     if (eventTypes.GENERATION_AFTER_COMMANDS) {

@@ -35,7 +35,7 @@ const ctx = {
     extensionSettings: state.extensionSettings || {},
     extensionPrompts: {},
     eventSource,
-    eventTypes: { CHAT_CHANGED: 'chat_changed', MESSAGE_RECEIVED: 'message_received', MESSAGE_SENT: 'message_sent', USER_MESSAGE_RENDERED: 'user_message_rendered', MESSAGE_UPDATED: 'message_updated' },
+    eventTypes: { CHAT_CHANGED: 'chat_changed', MESSAGE_RECEIVED: 'message_received', MESSAGE_SENT: 'message_sent', USER_MESSAGE_RENDERED: 'user_message_rendered', MESSAGE_UPDATED: 'message_updated', MESSAGE_SWIPED: 'message_swiped', MESSAGE_DELETED: 'message_deleted' },
     get characters() { return [{ name: ctx.name2, description: `${ctx.name2}（演示用的角色卡）`, personality: '', scenario: '' }]; },
     getCurrentChatId: () => 'demo-chat',
     getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
@@ -229,10 +229,11 @@ globalThis.__epistolaryDemoMock = async ({ prompt, kind, target }) => {
         const scene = prompt.split('【读信的那段剧情】')[1] || '';
         const body = (prompt.split('【信】')[1] || '').split('【读信的那段剧情】')[0].split('\n').slice(1).join('\n');
         const reader = [ctx.name2, '提奥', '文森特'].find(n => new RegExp(`${n}[^\\n]{0,20}(读|拆|看)`).test(scene));
-        if (!reader) return '[]';
+        if (!reader) return '{"memories": [], "letter": null}';
         const lines = body.split(/\n+/).map(x => x.trim()).filter(x => x.length > 6 && !/^亲爱的|^[^\s]{1,6}$/.test(x));
         const q = lines[0] || '';
-        return JSON.stringify([{ person: reader, memory: `${reader}记得，他是在剧情里拆开这封信读的（演示）。信里写着「${q.slice(0, 20)}」，他读到这里停了一下。还有一句他记成了「这句话信里没有」。读完以后，他把信折好收了起来。` }]);
+        const where = /抽屉/.test(scene) ? { holder: reader, place: '书桌的抽屉', state: 'kept' } : /烧/.test(scene) ? { holder: reader, place: '', state: 'burned' } : /调色板/.test(scene) ? { holder: reader, place: '调色板底下', state: 'kept' } : null;
+        return JSON.stringify({ memories: [{ person: reader, memory: `${reader}记得，他是在剧情里拆开这封信读的（演示）。信里写着「${q.slice(0, 20)}」，他读到这里停了一下。还有一句他记成了「这句话信里没有」。读完以后，他把信折好收了起来。`, gist: `（演示）${q.slice(0, 16)}` }], letter: where });
     }
     if (kind === 'reply') {
         const m = prompt.match(/§\d+ ([^\n]{4,40})/g) || [];

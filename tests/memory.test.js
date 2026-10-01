@@ -61,3 +61,24 @@ test('“相信”“信任”不算提到信', () => {
     assert.ok(re.test('勒鲁寄来的信'));
     assert.ok(re.test('那封信是勒鲁写的'));
 });
+
+test('新格式：记忆 + gist + 信的位置', async () => {
+    const { parseMemoryResult, summaryEntryContent, letterOwnKeys, rereadKey } = await import('../src/correspondence.js');
+    const r = parseMemoryResult('```json\n{"memories":[{"person":"提奥","memory":"提奥记得……","gist":"每月一封"}],"letter":{"holder":"提奥","place":"抽屉","state":"kept"}}\n```');
+    assert.equal(r.memories[0].gist, '每月一封');
+    assert.equal(r.where.place, '抽屉');
+    assert.equal(parseMemoryResult('{"memories": [], "letter": null}').where, null);
+    const a = createArchive();
+    const l = createLetter(a, { author: '勒鲁', recipients: ['文森特'], writtenAt: '1890-07-01', body, status: 'sent' });
+    const month = letterOwnKeys(l).find(k => k.startsWith('/'));
+    const re = new RegExp(month.match(/^\/(.*)\/i$/)[1], 'i');
+    assert.ok(re.test('七月那封信'));
+    assert.ok(re.test('la lettre de juillet'));
+    assert.ok(!re.test('八月那封信'));
+    const rr = new RegExp(rereadKey(l).match(/^\/(.*)\/i$/)[1], 'i');
+    assert.ok(rr.test('他从抽屉里翻出勒鲁的信'));
+    assert.ok(!rr.test('勒鲁走了进来'));
+    const sum = summaryEntryContent('提奥', '勒鲁', [{ letter: l, memory: { text: '提奥记得，信里说每月寄一封。', gist: '' }, where: '' }]);
+    assert.match(sum, /一共读过 1 封/);
+    assert.match(sum, /信里说每月寄一封/);
+});
