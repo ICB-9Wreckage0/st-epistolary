@@ -81,12 +81,23 @@ export const SIZES = {
 };
 export const SIZE_LABELS = Object.fromEntries(Object.entries(SIZES).map(([k, v]) => [k, v.label]));
 
+// 外文信里夹着的中文（比如括号里的翻译）单独的字号：相对正常中文的大小
+export const CJK_SIZES = {
+    xs: { label: '很小（像旁注）', scale: 0.7 },
+    sm: { label: '小', scale: 0.85 },
+    md: { label: '和正文中文一样', scale: 1 },
+    lg: { label: '大', scale: 1.15 },
+};
+export const CJK_SIZE_LABELS = Object.fromEntries(Object.entries(CJK_SIZES).map(([k, v]) => [k, v.label]));
+
 export function paperStyle(letter) {
     const a = letter.appearance || {};
     const out = [];
     if (a.ink === 'custom' && /^#[0-9a-f]{6}$/i.test(a.inkColor || '')) out.push(`--ink:${a.inkColor}`);
     const sc = SIZES[a.size]?.scale;
     if (sc && sc !== 1) out.push(`--fs:${sc}`);
+    const cj = CJK_SIZES[a.cjkSize]?.scale;
+    if (cj && cj !== 1) out.push(`--cjk:${cj}`);
     return out.join(';');
 }
 
@@ -298,8 +309,22 @@ function wobbleLine(text, rand, level, hand, state) {
             ink *= 1 - 0.16 * (state.n / state.len) * (level / 3 + 0.34);
         }
         ink = Math.max(0.45, Math.min(1, ink));
-        return `<span class="j" style="--r:${rot.toFixed(2)}deg;--y:${y.toFixed(3)}em;--s:${(1 + sc).toFixed(3)};--o:${ink.toFixed(2)}">${esc(t.text)}</span>`;
+        const zh = CJK.test(t.text) ? ' zh' : '';
+        return `<span class="j${zh}" style="--r:${rot.toFixed(2)}deg;--y:${y.toFixed(3)}em;--s:${(1 + sc).toFixed(3)};--o:${ink.toFixed(2)}">${esc(t.text)}</span>`;
     }).join('');
+}
+
+// 把连续的中日韩文字（连同中文标点）包进 <span class="zh">：外文信里夹着中文时，中文单独定字号
+const CJK_RUN = /[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af\u3000-\u303f\uff00-\uffef“”‘’]+/g;
+function markCjk(text) {
+    let out = '';
+    let last = 0;
+    for (const m of String(text).matchAll(CJK_RUN)) {
+        if (!CJK.test(m[0])) continue; // 只有标点没有字的，不算
+        out += esc(text.slice(last, m.index)) + `<span class="zh">${esc(m[0])}</span>`;
+        last = m.index + m[0].length;
+    }
+    return out + esc(text.slice(last));
 }
 
 /**
@@ -314,7 +339,7 @@ export function renderBody(body, opts = {}) {
     return analyze(body).map(p => {
         const lines = p.lines.map(l => {
             const cls = l.role !== 'body' ? ` class="epi-l-${l.role}"` : '';
-            const inner = level ? wobbleLine(l.text, rand, level, opts.hand, state) : esc(l.text);
+            const inner = level ? wobbleLine(l.text, rand, level, opts.hand, state) : markCjk(l.text);
             return `<div${cls}>${inner || '&nbsp;'}</div>`;
         }).join('');
         return `<div class="epi-p epi-p-${p.role}">${lines}</div>`;

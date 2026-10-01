@@ -22,7 +22,7 @@ import { playSeal, playOpen, WAX_LABELS, ENVELOPE_LABELS } from './envelope.js';
 import { STYLE_PACKS, applyStyle, pickStyle } from './styles.js';
 import { meaningOf, labelWithWarn, lookWarnings } from './meanings.js';
 import { ENCLOSURE_KINDS, normalizeEnclosure, extractEnclosures, enclosureText } from './enclosures.js';
-import { HANDS, ORIENTATIONS, paperClasses, renderBody, analyze, scriptLang, renderOptions, WOBBLE_LABELS, WEAR_LABELS, paperLayer, ensureWearFilters, hashSeed, INKS, inkColor, inkContrast, paperStyle, SIZE_LABELS } from './render.js';
+import { HANDS, ORIENTATIONS, paperClasses, renderBody, analyze, scriptLang, renderOptions, WOBBLE_LABELS, WEAR_LABELS, paperLayer, ensureWearFilters, hashSeed, INKS, inkColor, inkContrast, paperStyle, SIZE_LABELS, CJK_SIZE_LABELS } from './render.js';
 
 const PAPERS = { plain: '素白', cream: '奶油棉纸', aged: '泛黄旧纸', lined: '横格信笺', redline: '红线信笺', blue: '淡蓝航空信纸' };
 const FONTS = Object.fromEntries(Object.entries(HANDS).map(([k, v]) => [k, `字迹：${v.label}`]));
@@ -1602,6 +1602,7 @@ ${list}`;
             <h4>字</h4>
             ${row('字迹', sel('font', Object.fromEntries(Object.entries(HANDS).map(([k, v]) => [k, `${v.label}：${v.desc}`])), a.font), mean('font', '这个人的字写成什么样。英文、法文和中文会自动用各自的字体。'))}
             ${row('字号', sel('size', SIZE_LABELS, a.size), '纸上的字写多大。写信和阅读时都按这个显示；也会告诉 AI（字小而密、字写得很大，读信的人能看出来）。')}
+            ${scriptLang(d.language) === 'lat' ? row('中文字号', sel('cjkSize', CJK_SIZE_LABELS, a.cjkSize), '外文信里夹着的中文（比如括号里的翻译）单独的大小。外文手写体为了看得清会放大，中文不跟着放大；觉得中文还是太大，就选“小”或“很小”。只影响阅读和信封动画，写信页是普通文字。') : ''}
             ${row('墨水', `${sel('ink', labelWithWarn('ink', Object.fromEntries(Object.entries(INKS).map(([k, v]) => [k, v.label]))), a.ink)}
                 <input type="color" class="epi-ink-picker" data-f="appearance.inkColor" value="${esc(a.inkColor || inkColor(a))}" title="自定义墨水颜色" ${a.ink === 'custom' ? '' : 'hidden'}>
                 <span class="epi-ink-swatch" style="background:${esc(inkColor(a))}"></span>`, mean('ink', `和纸的对比度 ${inkContrast(a).toFixed(1)}${inkContrast(a) < 4.5 ? '，偏浅，建议换深一点的墨水' : '，清楚'}。`))}

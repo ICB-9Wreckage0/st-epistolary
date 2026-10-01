@@ -1274,3 +1274,7 @@ button.epi-chip.epi-code { padding: 0 8px; border-radius: 999px; border: 1px sol
 .epi-sealed-info { flex: 1; min-width: 0; }
 .epi-sealed-card .menu_button { width: auto !important; white-space: nowrap; margin: 0; }
 .mes .epi-letter-hidden { display: none !important; }
+
+/* ---- 外文信里夹着的中文：不跟着外文手写体放大，单独定字号 ---- */
+.epi-paper.script-lat .zh { font-size: calc(var(--cjk, 1) / var(--hs, 1) * 1em); }
+.epi-paper.script-lat .j.zh { font-size: calc(var(--cjk, 1) / var(--hs, 1) * 1em); }
