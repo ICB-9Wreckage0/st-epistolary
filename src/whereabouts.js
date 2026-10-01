@@ -26,6 +26,8 @@ export function normalizeWhere(w) {
         date: String(w.date || '').trim(),
         mes: Number.isInteger(w.mes) ? w.mes : null,
         by: ['ai', 'user'].includes(w.by) ? w.by : 'user',
+        chatId: String(w.chatId || ''),
+        swipe: Number.isInteger(w.swipe) ? w.swipe : null,
     };
     return out.holder || out.place || out.state !== 'unknown' ? out : null;
 }
@@ -59,8 +61,8 @@ export function setWhere(letter, w, { date = '' } = {}) {
 }
 
 // AI 从剧情里看出来的位置：只当建议
-export function suggestWhere(letter, w, { date = '', mes = null } = {}) {
-    const next = normalizeWhere({ ...w, by: 'ai', date, mes });
+export function suggestWhere(letter, w, { date = '', mes = null, chatId = '', swipe = null } = {}) {
+    const next = normalizeWhere({ ...w, by: 'ai', date, mes, chatId, swipe });
     if (!next) return false;
     letter.whereabouts = normalizeWhereabouts(letter.whereabouts);
     const cur = letter.whereabouts.current;
@@ -84,11 +86,11 @@ export function dismissSuggestion(letter) {
 }
 
 // 换了回复 / 删了消息：那一层来的建议作废
-export function revokeWhere(letter, mesFrom) {
+export function revokeWhere(letter, mesFrom, chatId = '') {
     const s = letter.whereabouts?.suggest;
-    if (!s || s.mes == null || s.mes < mesFrom) return false;
+    if (!s || s.mes == null || s.mes < mesFrom || (s.chatId && chatId && s.chatId !== chatId)) return null;
     letter.whereabouts.suggest = null;
-    return true;
+    return s;
 }
 
 export function whereText(w) {
@@ -136,9 +138,11 @@ export function deliveryText(letter) {
         case 'transit': return `📮 已寄出，在路上${via && d.stage === 'toVia' ? `（先寄给转交人 ${via}）` : ''}${d.eta ? ` · 预计 ${d.eta} 到` : ''}`;
         case 'atVia': return `🤝 在转交人 ${via || '？'} 那里，还没转交${d.status === 'withheld' ? '（扣下了）' : ''}`;
         default: {
-            const known = !!(d.arrivedAt || d.status);
+            const rec = (letter.events || []).find(e => e.type === 'received');
+            const known = !!(d.arrivedAt || d.status || rec);
             if (!known) return `📬 已寄出（没记送到）`;
-            return `📬 已送到 ${to}${d.arrivedAt ? ` · ${d.arrivedAt}` : ''}${letter.placeTo ? ` · ${letter.placeTo}` : ''}${via ? `（经 ${via} 转交）` : ''}`;
+            const when = d.arrivedAt || rec?.date || '';
+            return `📬 已送到 ${d.reader || rec?.who || to}${when ? ` · ${when}` : ''}${letter.placeTo ? ` · ${letter.placeTo}` : ''}${via ? `（经 ${via} 转交）` : ''}`;
         }
     }
 }

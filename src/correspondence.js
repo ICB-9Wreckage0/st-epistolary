@@ -910,7 +910,7 @@ export function parseStatusResponse(text) {
             receivedPlace: String(x.receivedPlace || '').trim(),
             readers: Array.isArray(x.readers) ? x.readers.map(r => String(r).trim()).filter(Boolean) : [],
             where: x.where && typeof x.where === 'object' && (x.where.holder || x.where.place || x.where.state) ? { holder: String(x.where.holder || ''), place: String(x.where.place || ''), state: String(x.where.state || 'kept') } : null,
-            mes: Number.isInteger(Number(x.mes)) ? Number(x.mes) : null,
+            mes: x.mes !== '' && x.mes != null && Number.isInteger(Number(x.mes)) ? Number(x.mes) : null,
         }));
     } catch {
         return [];

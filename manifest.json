@@ -5,9 +5,9 @@
     "optional": [],
     "js": "index.js",
     "css": "style.css",
-    "author": "",
-    "version": "0.27.0",
-    "homePage": "",
+    "author": "ICB-9Wreckage0",
+    "version": "0.30.1",
+    "homePage": "https://github.com/ICB-9Wreckage0/st-epistolary",
     "auto_update": false,
     "generate_interceptor": "epistolaryInterceptor"
 }

@@ -1,1 +1,5 @@
-{"type":"module"}
+{
+  "type": "module",
+  "name": "st-epistolary",
+  "license": "MIT"
+}

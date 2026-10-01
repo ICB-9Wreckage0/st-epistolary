@@ -708,7 +708,7 @@ async function syncWorldBookNow() {
         const uid = old ? old.uid : freeUid(data);
         const e = wiEntry(uid, w, old);
         if (!old || JSON.stringify(old) !== JSON.stringify(e)) { data.entries[uid] = e; changed = true; }
-        for (const m of w.memories) { m.wiUid = uid; m.wiBook = name; }
+        for (const m of w.memories) { if (m.wiUid !== uid || m.wiBook !== name) { m.wiUid = uid; m.wiBook = name; store.save(); } }
     }
     for (const [tag, e] of existing) if (!keep.has(tag)) { delete data.entries[e.uid]; changed = true; }
     if (changed) {
@@ -717,6 +717,9 @@ async function syncWorldBookNow() {
     }
     return name;
 }
+
+// 那一层现在显示的是第几个回复
+const swipeOf = mes => (Number.isInteger(mes) ? (ctx().chat?.[mes]?.swipe_id ?? 0) : null);
 
 function upsertMemories(letter, found, { auto = true, fromMes = null } = {}) {
     letter.memories = Array.isArray(letter.memories) ? letter.memories : [];
@@ -727,11 +730,11 @@ function upsertMemories(letter, found, { auto = true, fromMes = null } = {}) {
         const old = letter.memories.find(m => isMine(m) && same(m.person, f.person));
         if (old) {
             if (auto && old.auto === false) continue; // 用户改过的，不覆盖
-            if (fromMes == null || old.fromMes !== fromMes) old.prev = { text: old.text, gist: old.gist || '', fromMes: old.fromMes ?? null };
-            Object.assign(old, { text, gist: f.gist || '', updatedAt: now, auto, fromMes, chatId: chatId() });
+            if (fromMes == null || old.fromMes !== fromMes) old.prev = { text: old.text, gist: old.gist || '', fromMes: old.fromMes ?? null, fromSwipe: old.fromSwipe ?? null };
+            Object.assign(old, { text, gist: f.gist || '', updatedAt: now, auto, fromMes, fromSwipe: swipeOf(fromMes), chatId: chatId() });
             changed.push(old);
         } else {
-            const m = { person: f.person, text, gist: f.gist || '', updatedAt: now, wiUid: null, wiBook: '', auto, fromMes, prev: null, chatId: chatId() };
+            const m = { person: f.person, text, gist: f.gist || '', updatedAt: now, wiUid: null, wiBook: '', auto, fromMes, fromSwipe: swipeOf(fromMes), prev: null, chatId: chatId() };
             letter.memories.push(m);
             changed.push(m);
         }
@@ -747,12 +750,12 @@ function applyStoryEvents(letter, events, { fromMes = null, past = false, manual
         const mes = e.mes != null && e.mes >= 0 && e.mes < f ? e.mes : fromMes;
         const date = e.date || (past ? '' : getStoryDate());
         if (!manual && (letter.events || []).some(x => x.type === e.type && same(x.who || '？', e.who || '？') && ((mes != null && x.mes === mes) || (date && x.date === date)))) continue;
-        const ev = { id: nextEventId(letter.events), type: e.type, who: e.who, date, segments: null, to: e.to || '', note: e.note || '', place: e.place || '', mes: manual ? null : mes, auto: !manual };
+        const ev = { id: nextEventId(letter.events), type: e.type, who: e.who, date, segments: null, to: e.to || '', note: e.note || '', place: e.place || '', mes: manual ? null : mes, auto: !manual, chatId: chatId(), src: manual ? null : (fromMes ?? mes), swipe: manual ? null : swipeOf(fromMes ?? mes) };
         letter.events.push(ev);
         added.push(ev);
         const st = deliveryState(letter);
         const d = letter.delivery || {};
-        const snap = () => !manual && letter.autoDelivery.push({ mes: mes ?? f, status: letter.status, delivery: letter.delivery ? JSON.parse(JSON.stringify(letter.delivery)) : null, placeTo: letter.placeTo });
+        const snap = () => !manual && letter.autoDelivery.push({ mes: fromMes ?? mes ?? f, swipe: swipeOf(fromMes ?? mes ?? f), chatId: chatId(), status: letter.status, delivery: letter.delivery ? JSON.parse(JSON.stringify(letter.delivery)) : null, placeTo: letter.placeTo });
         const isRecipient = !e.who || letter.recipients.some(r => same(r, e.who));
         if (e.type === 'sent' && (st === 'draft' || st === 'unsent')) {
             snap();
@@ -792,7 +795,7 @@ async function extractMemories(letter, scene, { quiet = false, past = false, fro
     if (!past && res.storyDate && (!normalizeDate(getStoryDate()) || res.storyDate > normalizeDate(getStoryDate()))) setStoryDate(res.storyDate);
     // 信最后放哪：只当建议，等你在阅读页确认
     let moved = false;
-    if (res.where) moved = suggestWhere(letter, res.where, { date: past ? '' : getStoryDate(), mes: fromMes });
+    if (res.where) moved = suggestWhere(letter, res.where, { date: past ? '' : getStoryDate(), mes: fromMes, chatId: chatId(), swipe: swipeOf(fromMes) });
     if (!changed.length && !moved && !happened.length) return [];
     letter.updatedAt = new Date().toISOString();
     store.save();
@@ -841,34 +844,120 @@ function memoriesAfterReply(mesId) {
     });
 }
 
-// 换了回复、删了消息：从这一层起整理出来的记忆和位置撤回
-async function revokeFrom(mesFrom) {
-    if (!hasChat() || store.mode === 'unloaded') return;
-    let n = 0;
+// 换了回复、删了消息：从这一层起（这个聊天里）AI 记下的记忆、经过、寄送改动、位置建议都撤回。
+// 换回复时撤下来的东西按“第几层第几个回复”收起来；划回那个旧回复时再放回去。
+function revokeStash() {
+    const meta = chatMeta();
+    meta.revoked = meta.revoked && typeof meta.revoked === 'object' ? meta.revoked : {};
+    return meta.revoked;
+}
+
+async function revokeFrom(mesFrom, { stash = false, quiet = false } = {}) {
+    if (!hasChat() || store.mode === 'unloaded') return 0;
+    const cid = chatId();
+    let n = 0, any = false;
+    const box = stash ? revokeStash() : null;
+    const keep = (mes, swipe, item) => {
+        if (!box || mes == null) return;
+        const k = `${mes}:${swipe ?? 0}`;
+        (box[k] = box[k] || []).push({ ...item, at: Date.now() });
+    };
     for (const l of Object.values(store.archive.letters)) {
-        let touched = revokeWhere(l, mesFrom);
-        const before = (l.events || []).length;
-        l.events = (l.events || []).filter(e => !(e.auto && e.mes != null && e.mes >= mesFrom));
-        if (l.events.length !== before) { touched = true; n += before - l.events.length; }
-        while (l.autoDelivery?.length && l.autoDelivery.at(-1).mes >= mesFrom) {
+        let touched = false;
+        const sug = revokeWhere(l, mesFrom, cid);
+        if (sug) { touched = true; keep(sug.mes, sug.swipe, { letterId: l.id, kind: 'sug', data: sug }); }
+        const gone = (l.events || []).filter(e => e.auto && (e.src ?? e.mes) != null && (e.src ?? e.mes) >= mesFrom && e.chatId === cid);
+        if (gone.length) {
+            l.events = l.events.filter(e => !gone.includes(e));
+            for (const e of gone) keep(e.src ?? e.mes, e.swipe, { letterId: l.id, kind: 'ev', data: e });
+            touched = true; n += gone.length;
+        }
+        while (l.autoDelivery?.length && l.autoDelivery.at(-1).mes >= mesFrom && l.autoDelivery.at(-1).chatId === cid) {
             const p = l.autoDelivery.pop();
+            keep(p.mes, p.swipe, { letterId: l.id, kind: 'dv', data: { snap: p, now: { status: l.status, delivery: l.delivery, placeTo: l.placeTo } } });
             l.status = p.status; l.delivery = p.delivery; l.placeTo = p.placeTo ?? l.placeTo;
             touched = true;
         }
         for (const m of [...(l.memories || [])]) {
             if (!isMine(m) || m.auto === false || m.fromMes == null || m.fromMes < mesFrom) continue;
-            if (m.prev && (m.prev.fromMes == null || m.prev.fromMes < mesFrom)) Object.assign(m, { text: m.prev.text, gist: m.prev.gist, fromMes: m.prev.fromMes, prev: null });
+            keep(m.fromMes, m.fromSwipe, { letterId: l.id, kind: 'mem', data: JSON.parse(JSON.stringify(m)) });
+            if (m.prev && (m.prev.fromMes == null || m.prev.fromMes < mesFrom)) Object.assign(m, { text: m.prev.text, gist: m.prev.gist, fromMes: m.prev.fromMes, fromSwipe: m.prev.fromSwipe ?? null, prev: null });
             else l.memories.splice(l.memories.indexOf(m), 1);
             touched = true;
             n++;
         }
-        if (touched) l.updatedAt = new Date().toISOString();
+        if (touched) { l.updatedAt = new Date().toISOString(); any = true; }
     }
-    if (!n) return;
+    if (box) {
+        // 只留最近 30 个回复的
+        const keys = Object.keys(box);
+        for (const k of keys.slice(0, Math.max(0, keys.length - 30))) delete box[k];
+        saveMeta();
+    }
+    if (!any) return 0;
     store.save();
     await syncWorldBook();
-    toastr.info(`那一层记下的 ${n} 条读信记忆 / 剧情记录已撤回${settings().memory.when !== 'off' ? '，新的回复出来后会重新整理' : ''}`, '🧠 书信簿', { timeOut: 4000 });
+    if (!quiet && n) toastr.info(`那一层记下的 ${n} 条读信记忆 / 经过已撤回`, '🧠 书信簿', { timeOut: 3500 });
     ui?.refresh?.();
+    return n;
+}
+
+// 划回之前的某个回复：把当时撤下来的放回去
+async function restoreStash(mes, swipe) {
+    const box = revokeStash();
+    const k = `${mes}:${swipe ?? 0}`;
+    const cleared = settings().memory.clearedAt || 0;
+    const items = (box[k] || []).filter(it => (it.at || 0) >= cleared);
+    delete box[k];
+    saveMeta();
+    if (!items.length) return 0;
+    // 寄送快照是从新到旧撤下来的：倒过来放回去，状态用最新的那一个
+    const dvs = items.filter(it => it.kind === 'dv');
+    const dvDone = new Set();
+    for (const it of [...dvs].reverse()) {
+        const l = store.archive.letters[it.letterId];
+        if (!l) continue;
+        l.autoDelivery.push(it.data.snap);
+    }
+    for (const it of dvs) {
+        if (dvDone.has(it.letterId)) continue;
+        dvDone.add(it.letterId);
+        const l = store.archive.letters[it.letterId];
+        if (!l) continue;
+        l.status = it.data.now.status; l.delivery = it.data.now.delivery; l.placeTo = it.data.now.placeTo;
+    }
+    for (const it of items) {
+        const l = store.archive.letters[it.letterId];
+        if (!l) continue;
+        if (it.kind === 'ev' && !(l.events || []).some(e => e.id === it.data.id && e.auto && e.mes === it.data.mes && e.type === it.data.type)) {
+            const ev = { ...it.data };
+            if ((l.events || []).some(e => e.id === ev.id)) ev.id = nextEventId(l.events); // 编号被你后来记的占了
+            l.events.push(ev);
+        }
+        if (it.kind === 'sug') { l.whereabouts = l.whereabouts || { current: null, suggest: null, history: [] }; l.whereabouts.suggest = it.data; }
+        if (it.kind === 'mem') {
+            const i = l.memories.findIndex(m => isMine(m) && same(m.person, it.data.person));
+            if (i >= 0) { if (l.memories[i].auto !== false) l.memories[i] = it.data; } else l.memories.push(it.data);
+        }
+        l.updatedAt = new Date().toISOString();
+    }
+    store.save();
+    await syncWorldBook();
+    toastr.info('划回了之前的回复，当时记下的读信记忆和经过也放回来了', '🧠 书信簿', { timeOut: 3500 });
+    ui?.refresh?.();
+    return items.length;
+}
+
+// 你手动改了寄送：换回复时不再拿旧快照覆盖
+function dropStashedDelivery(letterId) {
+    if (!hasChat()) return;
+    const box = revokeStash();
+    let changed = false;
+    for (const k of Object.keys(box)) {
+        const keep = box[k].filter(it => !(it.kind === 'dv' && it.letterId === letterId));
+        if (keep.length !== box[k].length) { box[k] = keep; changed = true; }
+    }
+    if (changed) saveMeta();
 }
 
 // 阅读页的按钮：从最近几层剧情里整理这封信的记忆
@@ -936,6 +1025,40 @@ async function saveMemoryEdit(letterId, person, text) {
     await syncWorldBook();
 }
 
+// 清除记忆：读后记忆 / AI 记下的经过 / 位置建议；scope = chat 只清这个聊天 | all 所有聊天
+async function clearMemories({ memories = true, events = false, suggestions = false, scope = 'chat' } = {}) {
+    const cid = chatId();
+    const inScope = x => scope === 'all' || (x && x.chatId === cid) || (x && !x.chatId && x.wiBook && x.wiBook === ctx().chatMetadata?.world_info);
+    try { await store.backupNow({ note: '清除记忆前' }); } catch (e) { console.warn('[书信簿] 清除前备份失败', e); }
+    let n = 0;
+    for (const l of Object.values(store.archive.letters)) {
+        let touched = false;
+        if (memories && l.memories?.length) {
+            const keep = l.memories.filter(m => !inScope(m));
+            n += l.memories.length - keep.length;
+            if (keep.length !== l.memories.length) { l.memories = keep; touched = true; }
+        }
+        if (events && l.events?.length) {
+            const keep = l.events.filter(e => !(e.auto && (scope === 'all' || e.chatId === cid)));
+            n += l.events.length - keep.length;
+            if (keep.length !== l.events.length) { l.events = keep; touched = true; }
+            const ad = (l.autoDelivery || []).filter(x => !(scope === 'all' || x.chatId === cid));
+            if (ad.length !== (l.autoDelivery || []).length) { l.autoDelivery = ad; touched = true; }
+        }
+        if (suggestions && l.whereabouts?.suggest && (scope === 'all' || !l.whereabouts.suggest.chatId || l.whereabouts.suggest.chatId === cid)) {
+            l.whereabouts.suggest = null; n++; touched = true;
+        }
+        if (touched) l.updatedAt = new Date().toISOString();
+    }
+    // 换回复时收起来的旧记录也作废，免得划回旧回复时又放回来
+    if (hasChat()) { const meta = chatMeta(); if (meta.revoked) { meta.revoked = {}; saveMeta(); } }
+    if (scope === 'all') { settings().memory.clearedAt = Date.now(); saveSettings(); }
+    store.save();
+    if (hasChat()) await syncWorldBook();
+    ui?.refresh?.();
+    return n;
+}
+
 async function saveRecallKeys(letterId, keys) {
     const letter = store.archive.letters[letterId];
     if (!letter) return;
@@ -952,9 +1075,9 @@ async function saveDelivery(letterId, o) {
     const via = String(o.via || '').trim();
     const reader = String(o.reader || '').trim() || l.recipients[0] || '';
     switch (o.state) {
-        case 'draft': l.status = 'draft'; break;
-        case 'unsent': l.status = 'unsent'; break;
-        case 'lost': l.status = 'lost'; break;
+        case 'draft': l.status = 'draft'; l.delivery = null; break;
+        case 'unsent': l.status = 'unsent'; l.delivery = null; break;
+        case 'lost': l.status = 'lost'; if (l.delivery) l.delivery = { ...d, status: 'lost' }; break;
         case 'transit':
             l.status = 'sent';
             l.delivery = { ...d, mode: d.mode === 'floors' ? 'floors' : 'date', status: 'transit', eta: o.eta || d.eta || '', via, stage: via ? (d.stage === 'toRecipient' ? 'toRecipient' : 'toVia') : '', reader, sentFloor: d.sentFloor ?? floor(), floors: d.floors || 0 };
@@ -974,6 +1097,8 @@ async function saveDelivery(letterId, o) {
         default: return false;
     }
     if (o.placeTo !== undefined) l.placeTo = String(o.placeTo).trim();
+    l.autoDelivery = []; // 你手动改过：之后换回复不会把它退回去
+    dropStashedDelivery(letterId);
     l.updatedAt = new Date().toISOString();
     store.save();
     ui.renderPostbox();
@@ -985,6 +1110,7 @@ async function addEvent(letterId, e) {
     const l = store.archive.letters[letterId];
     if (!l) return false;
     applyStoryEvents(l, [{ ...e, date: normalizeDate(e.date) ? e.date : '' }], { manual: true, past: true });
+    if (['sent', 'received', 'forwarded'].includes(e.type)) { l.autoDelivery = []; dropStashedDelivery(letterId); }
     l.updatedAt = new Date().toISOString();
     store.save();
     ui.renderPostbox();
@@ -1040,7 +1166,7 @@ const STATUS_ZH = { draft: '草稿', sealed: '封好了没寄', unsent: '写了�
 function lettersForStatus(text) {
     const out = [];
     for (const l of Object.values(store.archive.letters)) {
-        if (l.status === 'draft') continue;
+        if (l.status === 'draft' && !isSimple()) continue;
         const dv = l.delivery;
         const pending = dv && ['transit', 'atVia', 'held', 'arrived'].includes(dv.status);
         const names = [l.author, ...l.recipients, dv?.via].filter(Boolean).flatMap(n => namesOf(n));
@@ -1051,13 +1177,16 @@ function lettersForStatus(text) {
 }
 
 // 让 AI 看一段剧情，更新这几封信：收到了没有、谁读了、信放哪（建议）
-async function statusPass(letters, story, end, changes, onStep) {
+async function statusPass(letters, story, end, changes, onStep, rng = null) {
         const items = letters.map((letter, i) => ({ n: i + 1, letter, now: statusLine(letter) }));
         const { system, prompt } = buildStatusPrompt(items, story, { storyDate: getStoryDate(), userName: ctx().name1 || '' });
         const res = parseStatusResponse(await ai(system, prompt, { kind: 'status' }));
         const user = ctx().name1 || '';
         const toRemember = [];
+        const lo = rng?.from ?? 0, hi = rng?.to ?? end;
         for (const r of res) {
+            // AI 给的楼层号不在这一段里，就当没给，用这一段的最后一层
+            if (!(Number.isInteger(r.mes) && r.mes >= lo && r.mes <= hi)) r.mes = null;
             const l = items.find(x => x.n === r.n)?.letter;
             if (!l) continue;
             const label = `${l.author} → ${l.recipients.join('、')}${l.code ? ` ${l.code}` : ''}`;
@@ -1066,16 +1195,13 @@ async function statusPass(letters, story, end, changes, onStep) {
             // 收到了
             if (r.received === true && !(l.delivery && ['viewed', 'arrived'].includes(l.delivery.status) && l.delivery.arrivedAt)) {
                 const reader = r.receivedBy || l.recipients[0] || '';
-                if (l.delivery?.status === 'transit' || l.delivery?.status === 'atVia') {
-                    if (l.delivery.status === 'atVia') { l.delivery.stage = 'done'; }
-                    l.events.push(...deliveryEvents(l, when, l.events));
-                    l.delivery = { ...l.delivery, status: 'viewed', arrivedAt: when, reader, detected: true };
-                } else {
-                    if (!(l.events || []).some(e => e.type === 'received')) l.events.push(...deliveryEvents(l, when, l.events));
-                    l.delivery = { mode: 'instant', ...(l.delivery || {}), status: 'viewed', arrivedAt: when, reader };
-                }
+                const at = r.mes ?? hi;
+                l.autoDelivery.push({ mes: at, swipe: swipeOf(at), chatId: chatId(), status: l.status, delivery: l.delivery ? JSON.parse(JSON.stringify(l.delivery)) : null, placeTo: l.placeTo });
+                const d = l.delivery || {};
+                l.status = 'sent';
+                l.delivery = { ...d, mode: d.mode || 'instant', status: 'viewed', stage: d.via ? 'done' : (d.stage || ''), arrivedAt: when, reader, detected: true };
                 if (r.receivedPlace && !l.placeTo) l.placeTo = r.receivedPlace;
-                if (!(l.events || []).some(e => e.type === 'received' && e.mes != null && e.mes === r.mes)) l.events.push({ id: nextEventId(l.events), type: 'received', who: reader, date: when, segments: null, to: '', note: '', place: r.receivedPlace || '', mes: r.mes, auto: true });
+                l.events.push({ id: nextEventId(l.events), type: 'received', who: reader, date: when, segments: null, to: '', note: '', place: r.receivedPlace || '', mes: at, auto: true, chatId: chatId(), swipe: swipeOf(at) });
                 changes.push(`${label}：${reader} ${when ? `${when} ` : ''}收到了${r.receivedPlace ? `（${r.receivedPlace}）` : ''}`);
             }
             // 谁读了
@@ -1084,7 +1210,7 @@ async function statusPass(letters, story, end, changes, onStep) {
                 if (user && sameName(store.archive, who, user)) continue;
                 const hasMemory = (l.memories || []).some(m => isMine(m) && same(m.person, who));
                 if ([...readBefore].some(x => same(x, who)) && hasMemory) continue;
-                if (!(l.events || []).some(e => ['read', 'heard'].includes(e.type) && same(e.who, who))) l.events.push({ id: nextEventId(l.events), type: 'read', who, date: getStoryDate(), segments: null, to: '', note: '', place: '', mes: r.mes, auto: r.mes != null });
+                if (!(l.events || []).some(e => ['read', 'heard'].includes(e.type) && same(e.who, who))) l.events.push({ id: nextEventId(l.events), type: 'read', who, date: getStoryDate(), segments: null, to: '', note: '', place: '', mes: r.mes ?? hi, auto: true, chatId: chatId(), swipe: swipeOf(r.mes ?? hi) });
                 if (hasMemory) continue;
                 newReaders.push(who);
             }
@@ -1093,7 +1219,7 @@ async function statusPass(letters, story, end, changes, onStep) {
                 if (r.mes != null) toRemember.push({ letter: l, mes: r.mes });
             }
             // 在哪
-            if (r.where && suggestWhere(l, r.where, { date: getStoryDate(), mes: r.mes })) changes.push(`${label}：AI 觉得信${whereText(l.whereabouts.suggest).replace(/^\S+\s/, '')}（只是建议，到这封信上面点“采用”才记下）`);
+            if (r.where && suggestWhere(l, r.where, { date: getStoryDate(), mes: r.mes ?? hi, chatId: chatId(), swipe: swipeOf(r.mes ?? hi) })) changes.push(`${label}：AI 觉得信${whereText(l.whereabouts.suggest).replace(/^\S+\s/, '')}（只是建议，到这封信上面点“采用”才记下）`);
             l.updatedAt = new Date().toISOString();
         }
         store.save();
@@ -1110,11 +1236,145 @@ async function statusPass(letters, story, end, changes, onStep) {
     
 }
 
-async function refreshStatuses({ onStep, letterIds = null } = {}) {
+// 暗号在这个聊天的哪几层出现过（扫一遍聊天，顺便记到信上）
+function scanCodeFloors() {
+    const chat = ctx().chat || [];
+    const cid = chatId();
+    const map = new Map();
+    chat.forEach((m, i) => {
+        // 只看你写的消息（角色的回复里不会写暗号）
+        if (!m || !m.is_user || m.is_system || typeof m.mes !== 'string' || !m.mes.includes('【') && !/[\[〖〔［（(「『《<]/.test(m.mes)) return;
+        for (const l of lettersByCode(store.archive, m.mes)) {
+            if (!map.has(l.id)) map.set(l.id, []);
+            map.get(l.id).push(i);
+        }
+    });
+    let changed = false;
+    for (const l of Object.values(store.archive.letters)) {
+        const found = map.get(l.id) || [];
+        const others = (l.codeFloors || []).filter(x => x.chatId !== cid);
+        const mine = found.map(mes => ({ chatId: cid, mes }));
+        const next = [...others, ...mine].slice(-50);
+        if (JSON.stringify(l.codeFloors || []) !== JSON.stringify(next)) { l.codeFloors = next; changed = true; }
+    }
+    if (changed) store.save();
+    return map;
+}
+
+function recordCodeFloor(mesId) {
+    const m = ctx().chat?.[mesId];
+    if (!m || !m.is_user || typeof m.mes !== 'string') return;
+    const cid = chatId();
+    let changed = false;
+    for (const l of lettersByCode(store.archive, m.mes)) {
+        l.codeFloors = l.codeFloors || [];
+        if (!l.codeFloors.some(x => x.chatId === cid && x.mes === mesId)) { l.codeFloors.push({ chatId: cid, mes: mesId }); changed = true; }
+    }
+    if (changed) store.save();
+}
+
+function codeFloorsHere(letter) {
+    const cid = chatId();
+    return (letter.codeFloors || []).filter(x => x.chatId === cid).map(x => x.mes).sort((a, b) => a - b);
+}
+
+// 这封信要看的楼层：暗号出现的那几层；没写过暗号的，用剧情里引用原句 / 原文所在的那几层
+// 一次更新（或对话框开着的这段时间）里只扫一遍聊天
+let floorCache = { key: '', floors: new Map() };
+function floorKey() { return `${chatId()}|${(ctx().chat || []).length}|${Object.keys(store.archive.letters).length}`; }
+function freshFloors() {
+    const key = floorKey();
+    if (floorCache.key !== key) { scanCodeFloors(); floorCache = { key, floors: new Map() }; }
+}
+function letterFloors(l) {
+    freshFloors();
+    if (floorCache.floors.has(l.id)) return floorCache.floors.get(l.id);
+    let out = codeFloorsHere(l);
+    if (!out.length) {
+        const aliases = namesOf(l.author).filter(n => n !== l.author);
+        out = findReadingScenes(ctx().chat || [], l, { names: aliases, chatId: chatId() }).filter(x => x.strong).map(x => x.from);
+    }
+    floorCache.floors.set(l.id, out);
+    return out;
+}
+
+const mergeRanges = ranges => {
+    const out = [];
+    for (const r of [...ranges].sort((x, y) => x.from - y.from)) {
+        const last = out.at(-1);
+        if (last && r.from <= last.to + 1) last.to = Math.max(last.to, r.to); else out.push({ ...r });
+    }
+    return out;
+};
+
+// 把几段楼层切成每批不超过 maxChars 字的几份
+function storyChunks(chat, ranges, maxChars = 40000) {
+    const chunks = [];
+    let cur = [], size = 0;
+    for (const r of ranges) {
+        for (let i = r.from; i <= r.to; i++) {
+            const m = chat[i];
+            const len = m && typeof m.mes === 'string' ? Math.min(m.mes.length, 6000) + 40 : 0;
+            if (cur.length && size + len > maxChars) { chunks.push(cur); cur = []; size = 0; }
+            const last = cur.at(-1);
+            if (last && last.to === i - 1) last.to = i; else cur.push({ from: i, to: i });
+            size += len;
+        }
+    }
+    if (cur.length) chunks.push(cur);
+    return chunks;
+}
+
+// 更新状态的范围设置。mode：code 暗号出现的那层和之后几层 | recent 最近几层 | range 第几层到第几层 | since 上次更新以后
+const DEFAULT_STATUS_SCOPE = { mode: 'code', after: 3, recent: 20, from: null, to: null };
+
+// 按范围设置算出：要看的信、每封信要看的楼层（不调用 AI，对话框里预估用）
+function planStatus({ letterIds = null, scope = {} } = {}) {
+    const chat = ctx().chat || [];
+    const end = chat.length - 1;
+    const sc = { ...DEFAULT_STATUS_SCOPE, ...(settings().statusScope || {}), ...scope };
+    const after = Math.max(0, Math.min(30, Number(sc.after) || 0));
+    freshFloors();
+    let letters, ranges = [];
+    if (sc.mode === 'code') {
+        letters = (letterIds ? letterIds.map(id => store.archive.letters[id]) : Object.values(store.archive.letters)).filter(l => l && (letterIds ? letterFloors(l) : codeFloorsHere(l)).length);
+        for (const l of letters) for (const f of letterFloors(l)) ranges.push({ from: f, to: Math.min(end, f + after) });
+    } else {
+        let from, to = end;
+        if (sc.mode === 'recent') from = Math.max(0, end - Math.max(1, Number(sc.recent) || 20) + 1);
+        else if (sc.mode === 'range') { from = Math.max(0, Math.min(end, Number(sc.from) || 0)); to = Math.max(from, Math.min(end, Number.isInteger(Number(sc.to)) && sc.to !== '' && sc.to != null ? Number(sc.to) : end)); }
+        else from = Math.max(0, Math.min(end - 9, Math.max(chatMeta().lastStatusFloor ?? 0, end - 39)));
+        ranges = [{ from, to }];
+        const text = sceneText(chat, from, to);
+        letters = letterIds ? letterIds.map(id => store.archive.letters[id]).filter(Boolean) : lettersForStatus(text);
+    }
+    letters = letters.filter(l => String(l.body || '').trim() || l.shell);
+    return { letters, ranges: mergeRanges(ranges), end, scope: sc };
+}
+
+function estimateStatus(opts) {
+    const chat = ctx().chat || [];
+    const p = planStatus(opts);
+    if (!p.letters.length || !p.ranges.length) return { letters: 0, floors: 0, calls: 0 };
+    const floors = p.ranges.reduce((x, r) => x + r.to - r.from + 1, 0);
+    let calls;
+    if (p.scope.mode === 'code') {
+        calls = 0;
+        for (let k = 0; k < p.letters.length; k += 12) {
+            const batch = p.letters.slice(k, k + 12);
+            const rs = mergeRanges(batch.flatMap(l => letterFloors(l).map(f => ({ from: f, to: Math.min(p.end, f + (Number(p.scope.after) || 0)) }))));
+            calls += storyChunks(chat, rs).length;
+        }
+    } else calls = Math.ceil(p.letters.length / 12) * storyChunks(chat, p.ranges).length;
+    return { letters: p.letters.length, floors, calls, ranges: p.ranges };
+}
+
+async function refreshStatuses({ onStep, letterIds = null, scope = null } = {}) {
     if (!hasChat() || store.mode === 'unloaded') return { changes: [], none: true };
     const changes = [];
     const chat = ctx().chat || [];
     const meta = chatMeta();
+    if (scope) { settings().statusScope = { ...DEFAULT_STATUS_SCOPE, ...scope }; saveSettings(); }
     // ① 高级模式：推算剧情日期、到日子的信送到
     if (!isSimple() && mailInChat().length && aiOn()) {
         onStep?.('推算剧情日期');
@@ -1129,45 +1389,30 @@ async function refreshStatuses({ onStep, letterIds = null } = {}) {
             if (l?.delivery?.status !== 'transit') changes.push(`${l.author} → ${l.recipients.join('、')}：${l.delivery.status === 'atVia' ? `到了 ${l.delivery.via} 手里` : '送到了'}`);
         }
     }
-    const end = chat.length - 1;
-    let from = Math.max(0, Math.min(end - 9, Math.max(meta.lastStatusFloor ?? 0, end - 39)));
-    if (letterIds) {
-        // ② 一个文件夹里的信：每封信在剧情里出现过的几段 + 最近 10 层，一批最多 12 封
-        const letters = letterIds.map(id => store.archive.letters[id]).filter(l => l && l.status !== 'draft');
-        for (let k = 0; k < letters.length; k += 12) {
-            const batch = letters.slice(k, k + 12);
-            const ranges = [{ from: Math.max(0, end - 9), to: end }];
-            for (const l of batch) {
-                const aliases = namesOf(l.author).filter(n => n !== l.author);
-                const sc = findReadingScenes(chat, l, { names: aliases, chatId: chatId() });
-                const strong = sc.filter(x => x.strong);
-                for (const x of (strong.length ? strong : sc).slice(-3)) ranges.push({ from: x.from, to: x.to });
-                for (const e of l.events || []) if (Number.isInteger(e.mes)) ranges.push({ from: Math.max(0, e.mes - 1), to: Math.min(end, e.mes + 1) });
-            }
-            ranges.sort((x, y) => x.from - y.from);
-            const merged = [];
-            for (const r of ranges) { const lastR = merged.at(-1); if (lastR && r.from <= lastR.to + 1) lastR.to = Math.max(lastR.to, r.to); else merged.push({ ...r }); }
-            const story = merged.map(r => sceneText(chat, r.from, r.to)).join('\n\n……\n\n');
-            from = merged[0]?.from ?? from;
-            onStep?.(`AI 查看 ${batch.length} 封信（${k + 1}–${k + batch.length}/${letters.length}）`);
-            await statusPass(batch, story, end, changes, onStep);
+    // ② 按范围设置，一批最多 12 封信、每份剧情最多约 4 万字
+    const p = planStatus({ letterIds, scope: scope || {} });
+    const { letters, end } = p;
+    let n = 0;
+    for (let k = 0; k < letters.length; k += 12) {
+        const batch = letters.slice(k, k + 12);
+        const rs = p.scope.mode === 'code'
+            ? mergeRanges(batch.flatMap(l => letterFloors(l).map(f => ({ from: f, to: Math.min(end, f + (Number(p.scope.after) || 0)) }))))
+            : p.ranges;
+        const chunks = storyChunks(chat, rs);
+        for (const ch of chunks) {
+            n++;
+            const story = ch.map(r => sceneText(chat, r.from, r.to)).join('\n\n……\n\n');
+            if (!story.trim()) continue;
+            onStep?.(`AI 查看第 ${ch[0].from}–${ch.at(-1).to} 层（${batch.length} 封信）`);
+            await statusPass(batch, story, end, changes, onStep, { from: ch[0].from, to: ch.at(-1).to });
         }
-        await syncWorldBook();
-        ui?.renderPostbox?.();
-        return { changes, from, end, checked: letters.length, folder: true };
     }
-    // ② 让 AI 看从上次更新以后的剧情（至少最近 10 层，最多 40 层）
-    const story = sceneText(chat, from, end);
-    const letters = lettersForStatus(story);
-    if (letters.length && story.trim()) {
-        onStep?.(`AI 查看第 ${from}–${end} 层`);
-        await statusPass(letters, story, end, changes, onStep);
-        await syncWorldBook();
-    }
+    if (letters.length) await syncWorldBook();
     meta.lastStatusFloor = chat.length;
     saveMeta();
     ui?.renderPostbox?.();
-    return { changes, from, end, checked: letters.length };
+    const from = p.ranges[0]?.from ?? 0, to = p.ranges.at(-1)?.to ?? end;
+    return { changes, from, end: to, checked: letters.length, calls: n, scope: p.scope };
 }
 
 // ---------- 寄送 ----------
@@ -1484,7 +1729,7 @@ function namesOf(name) {
 
 function mailInChat() {
     const cid = chatId();
-    return Object.values(store.archive.letters).filter(l => l.delivery && (!l.delivery.chatId || l.delivery.chatId === cid));
+    return Object.values(store.archive.letters).filter(l => l.status === 'sent' && l.delivery && (!l.delivery.chatId || l.delivery.chatId === cid));
 }
 
 // 转交人在动这封信的说法（比单个“信”字严格，免得“相信”“信任”也算）
@@ -1819,7 +2064,7 @@ async function sealIncoming(mesId) {
         const letter = createLetter(store.archive, {
             author: guessAuthor(f.signoff) || m.name,
             recipients: [c.name1],
-            writtenAt: getStoryDate(),
+            writtenAt: isSimple() ? '' : getStoryDate(),
             body: f.text,
             status: 'sent',
             appearance: { font: findPerson(store.archive, m.name)?.hand || 'personal' },
@@ -2032,7 +2277,7 @@ function bindSettings() {
     const s = settings();
     const $ = sel => document.querySelector(sel);
     $('#epi-enabled').checked = s.enabled;
-    $('#epi-enabled').addEventListener('change', e => { s.enabled = e.target.checked; saveSettings(); });
+    $('#epi-enabled').addEventListener('change', e => { settings().enabled = e.target.checked; saveSettings(); syncWorldBook(); ui?.refresh?.(); });
     $('#epi-storydate').addEventListener('input', e => { if (hasChat()) setStoryDate(e.target.value); });
     $('#epi-open').addEventListener('click', () => ui.open('list'));
     $('#epi-open-settings').addEventListener('click', () => ui.open('settings'));
@@ -2102,12 +2347,16 @@ jQuery(async () => {
         codeReadsInChat,
         saveMemoryEdit,
         saveRecallKeys,
+        clearMemories,
         saveWhereabouts,
         saveDelivery,
         addEvent,
         deleteEvent,
         whereSuggestion,
         refreshStatuses,
+        estimateStatus,
+        getStatusScope: () => ({ ...DEFAULT_STATUS_SCOPE, ...(settings().statusScope || {}) }),
+        getCodeFloors: id => (store.archive.letters[id] ? codeFloorsHere(store.archive.letters[id]) : []),
         getBackups: () => store.backups || [],
         loadBackups: () => store.loadBackupIndex(),
         backupNow: () => store.backupNow(),
@@ -2138,6 +2387,7 @@ jQuery(async () => {
     store.onChange(refreshStatus);
     await store.load();
     if (store.mode !== 'unloaded' && ensureCodes(store.archive)) store.save();
+    if (store.mode !== 'unloaded' && hasChat()) setTimeout(() => { try { scanCodeFloors(); } catch { /* */ } }, 1500);
     // 每天第一次打开：自动备份一份档案
     store.autoBackup(Number(settings().backup.keep) || 0)
         .then(made => { if (made) console.info(`[书信簿] 已自动备份档案：${made}`); ui?.refresh?.(); })
@@ -2155,6 +2405,8 @@ jQuery(async () => {
         setTimeout(foldAll, 300);
         // 删掉的信、换了位置的信：世界书里对应的条目对齐一下
         setTimeout(() => { if (store.mode !== 'unloaded' && hasChat() && ctx().chatMetadata?.world_info) syncWorldBook(); }, 1200);
+        // 暗号在这个聊天的哪几层出现过
+        setTimeout(() => { if (store.mode !== 'unloaded' && hasChat()) try { scanCodeFloors(); } catch (e) { console.warn('[书信簿] 扫描暗号楼层失败', e); } }, 1500);
     });
     if (eventTypes.MESSAGE_RECEIVED) eventSource.on(eventTypes.MESSAGE_RECEIVED, mesId => {
         setTimeout(async () => {
@@ -2180,12 +2432,23 @@ jQuery(async () => {
         const m = ctx().chat?.[mesId];
         if (m?.extra?.epistolarySeal && !m.extra.epistolarySeal.opened) delete m.extra.epistolarySeal;
         removeSeal(mesId);
-        revokeFrom(Number(mesId));
+        // 撤下这一层旧回复记下的东西（收起来）；如果划到的是之前已经有的回复，把它当时记下的放回去
+        (async () => {
+            const id = Number(mesId);
+            await revokeFrom(id, { stash: true, quiet: true });
+            const msg = ctx().chat?.[id];
+            const sw = msg?.swipe_id ?? 0;
+            const existing = Array.isArray(msg?.swipes) && sw < msg.swipes.length && String(msg.swipes[sw] || '').trim();
+            if (existing) await restoreStash(id, sw);
+        })();
     });
     if (eventTypes.MESSAGE_DELETED) eventSource.on(eventTypes.MESSAGE_DELETED, len => {
         // 删了消息：酒馆传来的是删完以后聊天还剩几层
         const n = Number.isInteger(len) ? len : (ctx().chat || []).length;
         revokeFrom(n);
+        const box = revokeStash();
+        for (const k of Object.keys(box)) if (parseInt(k, 10) >= n) delete box[k];
+        saveMeta();
     });
     // 暗号：发送前改输入框（最早）→ 酒馆助手直接生成 → 消息进了聊天以后（兜底）
     if (eventTypes.GENERATION_AFTER_COMMANDS) {
@@ -2208,6 +2471,7 @@ jQuery(async () => {
     if (eventTypes.MESSAGE_SENT) eventSource.on(eventTypes.MESSAGE_SENT, mesId => setTimeout(async () => {
         const id = Number.isInteger(mesId) ? mesId : (ctx().chat || []).length - 1;
         const m = ctx().chat?.[id];
+        recordCodeFloor(id);
         if (m?.is_user && !m.extra?.epistolary) await detectMyReceipt(m.mes || '', { fromUser: true });
         checkMail();
     }, 300));

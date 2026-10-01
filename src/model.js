@@ -250,6 +250,7 @@ export function normalizeLetter(l, id) {
         translations: l.translations && typeof l.translations === 'object' ? l.translations : {}, // 阅读用的译文缓存
         memories: Array.isArray(l.memories) ? l.memories.map(normalizeMemory).filter(m => m.person && m.text) : [], // 读过的人记得什么
         recallKeys: parseTags(l.recallKeys),
+        codeFloors: Array.isArray(l.codeFloors) ? l.codeFloors.filter(x => x && Number.isInteger(x.mes)).map(x => ({ chatId: String(x.chatId || ''), mes: x.mes })).slice(-50) : [], // 暗号在哪几层出现过
         whereabouts: normalizeWhereabouts(l.whereabouts), // 信现在在谁手里（手动 / 剧情里记下的；没有就按寄送状态推算）  // 世界书里“想起这封信”的额外关键词
         notes: l.notes || '',
         createdAt: l.createdAt || now,
@@ -267,6 +268,7 @@ export function normalizeMemory(m = {}) {
         gist: String(m.gist || '').trim().slice(0, 120), // 一句话：这个人记得这封信说了什么（用在“来信一览”里）
         chatId: m.chatId || '',      // 在哪个聊天里读的
         fromMes: Number.isInteger(m.fromMes) ? m.fromMes : null, // 由哪一层整理出来的（换回复、删消息时撤回）
+        fromSwipe: Number.isInteger(m.fromSwipe) ? m.fromSwipe : null, // 那一层的第几个回复
         prev: m.prev && typeof m.prev === 'object' ? { text: String(m.prev.text || ''), gist: String(m.prev.gist || ''), fromMes: Number.isInteger(m.prev.fromMes) ? m.prev.fromMes : null } : null, // 这次整理之前的样子
         auto: m.auto !== false,      // AI 整理的（false = 用户手写或改过）
     };
@@ -295,6 +297,9 @@ function normalizeEvent(e) {
         place: e.place || '',                                  // 在哪（剧情里看得出来时）
         mes: Number.isInteger(e.mes) ? e.mes : null,           // 第几层（剧情里记下的）
         auto: !!e.auto,                                        // AI 从剧情里记下的（换回复、删消息时撤回）
+        chatId: e.chatId || '',                                // 在哪个聊天里记下的
+        src: Number.isInteger(e.src) ? e.src : null,           // 由哪一层的回复整理出来的（换回复、删消息按这个撤回）
+        swipe: Number.isInteger(e.swipe) ? e.swipe : null,     // 那一层的第几个回复
     };
 }
 

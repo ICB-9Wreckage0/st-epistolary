@@ -1,4 +1,4 @@
-# 书信簿 · 数据结构（schema 1，v0.16）
+# 书信簿 · 数据结构（schema 1，v0.30）
 
 整个档案是一个 JSON 文件。原则只有三条：
 
@@ -46,6 +46,7 @@
         // kind：money 钱 | sketch 速写 | photo 照片 | flower 压花 | gift 礼物 | document 附页 | letter 另一封信（letterRef = 信的编号）| other
       ],
       "code": "【信1】",           // 暗号：用户消息里出现它，那一轮就把这封信交给 AI（唯一）
+      "codeFloors": [{ "chatId": "…", "mes": 120 }], // 暗号在哪个聊天的哪几层（你的消息）出现过
       "folder": "勒鲁的月信",      // 文件夹（空 = 未分类）；档案顶层 folders 是文件夹的顺序
       "shell": false,              // 空壳信：剧情里已经有这封信了，正文还没写（写了正文自动变 false）
       "memories": [                // 读过这封信的人记得什么（v0.21）；同步到聊天绑定的世界书
