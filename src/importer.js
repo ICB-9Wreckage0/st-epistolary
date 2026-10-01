@@ -184,14 +184,25 @@ export function detectInChat(chat, { from = 0 } = {}) {
 // ---------- AI 识别 ----------
 
 // 把聊天切成几块，每块不超过 maxChars
-export function chunkChat(chat, { from = 0, maxChars = 9000 } = {}) {
+// 这条消息里可能有信吗（粗筛：有称呼、落款、或者提到信）。AI 识别前先筛掉明显没有信的，省调用
+const LETTERISH = /信|笺|便条|明信片|电报|letter|lettre|brief|note|亲爱的|敬爱的|尊敬的|见字如面|此致|敬上|顺颂|紧握|吻你|你的朋友|dear|cher|chère|mon ami|ma chère|lieber|liebe|sincerely|yours|bien à (toi|vous)|je t'embrasse|poignée de main|P\.?S\.?|又及/i;
+export function mayContainLetter(text) {
+    const t = String(text || '');
+    // 单独一行的“提奥：”“Vincent,”这样的称呼
+    return LETTERISH.test(t) || /^\s*[^\n：:,，]{1,16}[：:,，]\s*$/m.test(t);
+}
+
+// 把聊天记录分批发给 AI。maxChars：每批最多多少字；maxMsgs：每批最多几条消息（0 = 不限）
+// 一条消息比 maxChars 还长时，单独一批，不截断（最多 60000 字）
+export function chunkChat(chat, { from = 0, to = Infinity, maxChars = 30000, maxMsgs = 0, onlyLikely = false } = {}) {
     const chunks = [];
     let cur = [], size = 0;
     chat.forEach((m, idx) => {
-        if (idx < from || !m || m.is_system || typeof m.mes !== 'string' || m.extra?.epistolary) return;
-        const t = clean(m.mes);
-        if (size + t.length > maxChars && cur.length) { chunks.push(cur); cur = []; size = 0; }
-        cur.push({ idx, name: m.name, text: t.length > maxChars ? t.slice(0, maxChars) : t });
+        if (idx < from || idx > to || !m || m.is_system || typeof m.mes !== 'string' || m.extra?.epistolary) return;
+        if (onlyLikely && !mayContainLetter(m.mes)) return;
+        const t = clean(m.mes).slice(0, 60000);
+        if (cur.length && (size + t.length > maxChars || (maxMsgs > 0 && cur.length >= maxMsgs))) { chunks.push(cur); cur = []; size = 0; }
+        cur.push({ idx, name: m.name, text: t });
         size += t.length;
     });
     if (cur.length) chunks.push(cur);

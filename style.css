@@ -1373,3 +1373,6 @@ details.epi-fold[open] { padding-bottom: 8px; }
 .epi-tl-all::before { display: none; }
 .epi-tl-full .epi-tl-card { border-left: 3px solid rgba(200, 180, 140, .6); }
 @media (max-width: 760px) { .epi-tl-legend { display: none; } }
+.epi-imp-batch { border: 1px solid var(--epi-border, rgba(255,255,255,.15)); border-radius: 6px; padding: 6px 10px; margin: 6px 0; display: flex; flex-direction: column; gap: 4px; }
+.epi-imp-batch[hidden], .epi-imp-custom[hidden] { display: none; }
+.epi-imp-custom { margin: 4px 0; }

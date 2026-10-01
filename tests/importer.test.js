@@ -122,3 +122,18 @@ test('边想边写：信中间的旁白不进正文', () => {
     const q = '他坐下来写信。\n\n> 亲爱的 E.：\n>\n> 你好吗？这里的天气很好，我在画麦田，每天都很忙。\n\n他顿了顿，没有写下去。\n\n> 想念你。\n>\n> 紧握你的手，\n> 文森特';
     assert.ok(!detectInMessage(q)[0].text.includes('顿了顿'));
 });
+
+test('分批：按字数、按条数、只发可能有信的消息、长消息不截断', async () => {
+    const { chunkChat, mayContainLetter } = await import('../src/importer.js');
+    const long = 'x'.repeat(8700);
+    const chat = Array.from({ length: 30 }, (_, i) => ({ name: 'A', mes: i % 3 === 0 ? `亲爱的提奥：${long}` : long }));
+    assert.equal(chunkChat(chat, { maxChars: 9000 }).length, 30);
+    assert.equal(chunkChat(chat, { maxChars: 30000 }).length, 10);
+    assert.equal(chunkChat(chat, { maxChars: 120000, maxMsgs: 5 }).length, 6);
+    const likely = chunkChat(chat, { maxChars: 120000, onlyLikely: true });
+    assert.equal(likely.flat().length, 10);
+    assert.equal(chunkChat(chat, { from: 10, to: 19, maxChars: 1e9 }).flat().length, 10);
+    assert.equal(chunkChat([{ name: 'A', mes: 'y'.repeat(50000) }], { maxChars: 10000 })[0][0].text.length, 50000);
+    assert.ok(mayContainLetter('Mon cher Vincent,'));
+    assert.ok(!mayContainLetter('他走进了画廊，外面在下雨。'));
+});

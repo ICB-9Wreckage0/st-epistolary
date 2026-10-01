@@ -1410,12 +1410,27 @@ ${list}`;
                 <label>范围<select class="text_pole" id="epi-imp-range">
                     ${[10, 30, 50, 100, 200].filter(k => k < n).map(k => `<option value="${n - k}" data-k="${k}" ${k === (this.impRange || 50) ? 'selected' : ''}>最近 ${k} 条</option>`).join('')}
                     <option value="0" data-k="all" ${this.impRange === 'all' || n <= 10 ? 'selected' : ''}>整个聊天</option>
+                    <option value="custom" data-k="custom" ${this.impRange === 'custom' ? 'selected' : ''}>自定义楼层…</option>
                 </select></label>
                 <label>方法<select class="text_pole" id="epi-imp-method">
                     <option value="format">按格式识别：快，不调用 AI</option>
                     <option value="ai">AI 识别：更准，会调用 AI</option>
                     ${this.expert ? '<option value="shell">找空壳信：剧情里提到了、正文还没写的信（AI）</option>' : ''}
                 </select></label>
+            </div>
+            <div class="epi-imp-custom" ${this.impRange === 'custom' ? '' : 'hidden'}>
+                <span class="epi-row">第 <input type="number" class="text_pole epi-num" id="epi-imp-from" min="0" max="${n - 1}" value="${esc(this.impOpts?.from ?? Math.max(0, n - 30))}"> 条 到 第 <input type="number" class="text_pole epi-num" id="epi-imp-to" min="0" max="${n - 1}" value="${esc(this.impOpts?.to ?? n - 1)}"> 条（楼层号就是消息右上角的 #数字）</span>
+            </div>
+            <div class="epi-imp-batch">
+                <b>分批</b>
+                <div class="epi-grid2">
+                    <label>每批最多多少字<select class="text_pole" id="epi-imp-chars">
+                        ${[[10000, '1 万字'], [20000, '2 万字'], [30000, '3 万字（默认）'], [50000, '5 万字'], [80000, '8 万字'], [120000, '12 万字']].map(([v, t]) => `<option value="${v}" ${(this.impOpts?.maxChars || 30000) === v ? 'selected' : ''}>${t}</option>`).join('')}
+                    </select></label>
+                    <label>每批最多几条消息（0 = 不限）<input type="number" class="text_pole" id="epi-imp-msgs" min="0" max="500" value="${esc(this.impOpts?.maxMsgs ?? 0)}"></label>
+                </div>
+                <label class="checkbox_label"><input type="checkbox" id="epi-imp-likely" ${this.impOpts?.onlyLikely === false ? '' : 'checked'}> 只发可能有信的消息（有称呼、落款，或者提到“信”的）——明显没有信的不发，省调用</label>
+                <p class="epi-muted">一批越大，调用次数越少，但要求模型能读那么长：大多数模型 3 万到 5 万字没问题；用 DeepSeek、Gemini、Claude 这类长上下文模型可以开到 8 万、12 万字。一批太长，有的模型会漏看。</p>
             </div>
             <p class="epi-muted" id="epi-imp-est"></p>
             <p class="epi-muted" ${this.expert ? '' : 'hidden'}>空壳信：比如“他写了五封信交给提奥保管”，信已经存在，但正文没出现在聊天里。会建好这几封信、记下在谁手里、哪天该送到，正文之后再写。</p>
@@ -1428,34 +1443,65 @@ ${list}`;
         this.updateImportEstimate();
     }
 
+    // 范围和分批设置
+    importOpts() {
+        const q = sel => this.root.querySelector(sel);
+        const n = this.hooks.getChat().length;
+        const rangeSel = q('#epi-imp-range');
+        const custom = rangeSel?.value === 'custom';
+        let from = custom ? parseInt(q('#epi-imp-from').value, 10) : parseInt(rangeSel?.value, 10);
+        let to = custom ? parseInt(q('#epi-imp-to').value, 10) : n - 1;
+        if (!Number.isFinite(from)) from = 0;
+        if (!Number.isFinite(to)) to = n - 1;
+        if (from > to) [from, to] = [to, from];
+        const o = {
+            from: Math.max(0, from),
+            to: Math.min(n - 1, to),
+            maxChars: parseInt(q('#epi-imp-chars')?.value, 10) || 30000,
+            maxMsgs: Math.max(0, parseInt(q('#epi-imp-msgs')?.value, 10) || 0),
+            onlyLikely: !!q('#epi-imp-likely')?.checked,
+        };
+        this.impOpts = { ...(this.impOpts || {}), ...o, ...(custom ? {} : { from: undefined, to: undefined }) };
+        return o;
+    }
+
     // AI 识别时，聊天记录太长会分几批发给 AI：提前告诉用户要调用几次
     updateImportEstimate() {
         const el = this.root.querySelector('#epi-imp-est');
         const rangeSel = this.root.querySelector('#epi-imp-range');
         if (!el || !rangeSel) return;
         const k = rangeSel.selectedOptions[0]?.dataset.k;
-        this.impRange = k === 'all' ? 'all' : parseInt(k, 10) || 50;
-        if (this.root.querySelector('#epi-imp-method').value === 'format') { el.textContent = ''; return; }
-        const from = parseInt(rangeSel.value, 10) || 0;
-        const batches = chunkChat(this.hooks.getChat(), { from }).length;
-        el.textContent = batches > 1
-            ? `这个范围的聊天记录比较长，AI 识别会分 ${batches} 批，调用 ${batches} 次 AI。`
-            : '这个范围一次就能发给 AI，调用 1 次。';
+        this.impRange = k === 'all' ? 'all' : k === 'custom' ? 'custom' : parseInt(k, 10) || 50;
+        this.root.querySelector('.epi-imp-custom').hidden = k !== 'custom';
+        const method = this.root.querySelector('#epi-imp-method').value;
+        this.root.querySelector('.epi-imp-batch').hidden = method === 'format';
+        const o = this.importOpts();
+        const chat = this.hooks.getChat();
+        const inRange = chat.slice(o.from, o.to + 1).filter(m => m && !m.is_system && typeof m.mes === 'string' && !m.extra?.epistolary);
+        const chars = inRange.reduce((x, m) => x + m.mes.length, 0);
+        const fmt = c => (c >= 10000 ? `${(c / 10000).toFixed(1)} 万` : `${c} `);
+        const head = `第 ${o.from}–${o.to} 条，共 ${inRange.length} 条消息、约 ${fmt(chars)}字（平均每条 ${fmt(Math.round(chars / Math.max(1, inRange.length)))}字）。`;
+        if (method === 'format') { el.textContent = `${head}按格式识别不调用 AI。`; return; }
+        const chunks = chunkChat(chat, o);
+        const sent = chunks.reduce((x, c) => x + c.length, 0);
+        const skipped = inRange.length - sent;
+        el.textContent = `${head}${o.onlyLikely && skipped ? `筛掉明显没有信的 ${skipped} 条，` : ''}${chunks.length ? `分 ${chunks.length} 批，调用 ${chunks.length} 次 AI。` : '没有要发给 AI 的消息。'}`;
     }
 
     async runImport() {
         const chat = this.hooks.getChat();
-        const from = parseInt(this.root.querySelector('#epi-imp-range').value, 10) || 0;
+        const opts = this.importOpts();
+        const from = opts.from;
         const method = this.root.querySelector('#epi-imp-method').value;
         const box = this.root.querySelector('#epi-imp-result');
         const btn = this.root.querySelector('[data-act="import-run"]');
         btn.disabled = true;
         this.importMode = method;
-        if (method === 'shell') { await this.runShellImport(chat, from, box, btn); return; }
+        if (method === 'shell') { await this.runShellImport(chat, opts, box, btn); return; }
         let found = [];
         try {
             if (method === 'ai') {
-                const chunks = chunkChat(chat, { from });
+                const chunks = chunkChat(chat, opts);
                 for (let i = 0; i < chunks.length; i++) {
                     btn.textContent = `AI 识别中 ${i + 1}/${chunks.length}……`;
                     const { system, prompt } = buildImportPrompt(chunks[i]);
@@ -1470,7 +1516,7 @@ ${list}`;
                     }
                 }
             } else {
-                found = detectInChat(chat, { from });
+                found = detectInChat(chat, { from }).filter(f => f.mesIndex <= opts.to);
             }
         } catch (e) {
             console.error(e);
@@ -1507,10 +1553,10 @@ ${list}`;
     }
 
     // 空壳信：AI 只找“提到了的信”，不写内容
-    async runShellImport(chat, from, box, btn) {
+    async runShellImport(chat, opts, box, btn) {
         let found = [];
         try {
-            const chunks = chunkChat(chat, { from });
+            const chunks = chunkChat(chat, opts);
             for (let i = 0; i < chunks.length; i++) {
                 btn.textContent = `AI 查找中 ${i + 1}/${chunks.length}……`;
                 const { system, prompt } = buildShellPrompt(chunks[i], { userName: this.hooks.getUserName(), storyDate: this.hooks.getStoryDate() });
@@ -2740,7 +2786,7 @@ ${list}`;
             this.syncViaPlan(prefix);
             return;
         }
-        if (t.id === 'epi-imp-range' || t.id === 'epi-imp-method') { this.updateImportEstimate(); return; }
+        if (/^epi-imp-(range|method|from|to|chars|msgs|likely)$/.test(t.id || '')) { this.updateImportEstimate(); return; }
         if (act === 'tl-pair') { if (e.type === 'change') { this.tlPair = t.value; this.show('timeline'); } return; }
         if (t.dataset.s) {
             const key = t.dataset.s;
