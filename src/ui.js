@@ -74,6 +74,7 @@ export class UI {
         const root = document.createElement('div');
         root.id = 'epi-root';
         root.className = 'epi-hidden';
+        root.style.setProperty('--edit', String(this.editZoom()));
         root.innerHTML = `
             <div class="epi-window" role="dialog" aria-label="书信簿">
                 <div class="epi-header">
@@ -447,6 +448,7 @@ export class UI {
                     <button class="epi-rbtn epi-primary" data-act="save" title="保存（Ctrl+S）">💾 保存</button>
                     ${d.aiDraft || !ex ? '' : `<button class="epi-rbtn" data-act="send-open" title="把信寄出去：选择路上走多久，到了以后再切过去看收信反应">✉ 寄出</button>`}
                     ${canAskReply ? `<button class="epi-rbtn" data-act="reply-open" title="让收信人用自己的口吻写回信">↩ 让对方回信</button>` : ''}
+                    <button class="epi-rbtn" data-act="preview" title="不用保存，先看看写好以后在信纸上的样子，还能回放封缄、拆信动画">👁 预览</button>
                     <button class="epi-rbtn" data-act="translate-open" title="把这封信翻译成另一种语言，比如中文草稿译成法语">🌐 翻译</button>
                 </div>
                 <div class="epi-rgroup">
@@ -458,6 +460,12 @@ export class UI {
                     <button class="epi-rbtn" data-act="ins-dateline" title="按书信语言的习惯，插入“地点，日期”一行">日期行</button>
                     <button class="epi-rbtn" data-act="ins-ps" title="在光标处插入“又及 / P.S.”">附言</button>
                     <label class="epi-rinline" title="上面几个下拉菜单里列出哪种语言的套语">套语语言 <select class="epi-rsel" data-act="preset-lang">${options(LANGS, this.currentLang())}</select></label>
+                </div>
+                <div class="epi-rgroup epi-rgroup-zoom" title="写信时信纸上的字看起来多大。只影响你写信时看的效果，不改这封信的字号（信的字号在「外观与款式」里）">
+                    <span class="epi-rlabel">编辑字号</span>
+                    <button class="epi-rbtn" data-act="edit-zoom" data-step="-1" title="小一点">A−</button>
+                    <span class="epi-zoom-val" data-role="zoom">${Math.round(this.editZoom() * 100)}%</span>
+                    <button class="epi-rbtn" data-act="edit-zoom" data-step="1" title="大一点">A+</button>
                 </div>
                 <div class="epi-rgroup epi-rgroup-look">
                     <button class="epi-rbtn epi-primary" data-act="style-open" title="信纸、墨水、字迹、信封、封缄，以及一键套用的款式包">✦ 外观与款式</button>
@@ -675,6 +683,27 @@ export class UI {
                     ${mentions ? '<span class="epi-warn">正文里提到了随信附上的东西，点「从正文里找」记下来。</span>' : ''}
                 </div>
             </div>`;
+    }
+
+    // ================= 编辑时的字号 =================
+
+    editZoom() {
+        const z = Number(this.hooks.getSettings().editZoom);
+        return z >= 0.5 && z <= 1.6 ? z : 0.9;
+    }
+
+    applyEditZoom() {
+        this.root?.style.setProperty('--edit', String(this.editZoom()));
+        const el = this.root?.querySelector('[data-role="zoom"]');
+        if (el) el.textContent = `${Math.round(this.editZoom() * 100)}%`;
+        this.fitPage?.();
+    }
+
+    stepEditZoom(step) {
+        const z = Math.round(Math.min(1.6, Math.max(0.5, this.editZoom() + step * 0.1)) * 10) / 10;
+        this.hooks.getSettings().editZoom = z;
+        this.hooks.saveSettings();
+        this.applyEditZoom();
     }
 
     // 复制暗号
@@ -1942,6 +1971,7 @@ ${list}`;
 
             <section class="epi-sec-card">
                 <h4>🖋 显示</h4>
+                <label>写信时的字号<select class="text_pole" data-s="editZoom">${[0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.3].map(z => `<option value="${z}" ${Math.abs(this.editZoom() - z) < 0.01 ? 'selected' : ''}>${Math.round(z * 100)}%${z === 0.9 ? '（默认）' : ''}</option>`).join('')}</select></label>
                 <label>模式<select class="text_pole" data-s="mode"><option value="simple" ${s.mode === 'simple' ? 'selected' : ''}>简单：存档信件 + 暗号</option><option value="expert" ${s.mode === 'expert' ? 'selected' : ''}>高级：寄送、转交、知情过滤、自动注入，以及段落、流转、注入预览</option></select></label>
                 ${chk('animations', '寄信时的封缄动画、收信时的拆信动画')}
                 ${chk('jitter', '手写随机感（阅读时每个字轻微的歪斜和墨色深浅）')}
@@ -2074,8 +2104,38 @@ ${list}`;
         this.openReader(id);
     }
 
-    openReader(id) {
-        const l = this.archive.letters[id];
+    // 预览正在写的信：不保存，按阅读页的样子渲染（手写随机感、花体、随信附上都有），还可以回放动画
+    previewLetter() {
+        const d = this.draft;
+        if (!d) return null;
+        const l = normalizeLetter(clone(d), d.id || '（预览）');
+        l.enclosures = (l.enclosures || []).filter(e => e.name || e.letterRef);
+        return l;
+    }
+
+    openPreview() {
+        const l = this.previewLetter();
+        if (!l) return;
+        if (!l.body.trim()) { toastr?.info('信还是空的，先写几句再预览'); return; }
+        this.openReader(null, l);
+    }
+
+    async playPreviewAnim(kind) {
+        const l = this.previewLetter();
+        if (!l) return;
+        const wrap = this.root.querySelector('.epi-reader-wrap');
+        this.root.classList.add('epi-hidden');
+        try {
+            if (kind === 'seal') await playSeal(l, { flyOut: true, render: this.renderOpts(l) });
+            else await playOpen(l, { render: this.renderOpts(l) });
+        } finally {
+            this.root.classList.remove('epi-hidden');
+            wrap?.classList.remove('epi-hidden');
+        }
+    }
+
+    openReader(id, preview = null) {
+        const l = preview || this.archive.letters[id];
         if (!l) return;
         const wrap = this.root.querySelector('.epi-reader-wrap');
         const a = l.appearance || {};
@@ -2088,7 +2148,7 @@ ${list}`;
         }).join('')}</div>` : '';
         const showSign = l.signature && !l.body.trim().endsWith(l.signature.trim());
         const orig = l.inReplyTo ? this.archive.letters[l.inReplyTo] : null;
-        const replies = Object.values(this.archive.letters).filter(x => x.inReplyTo === l.id);
+        const replies = preview ? [] : Object.values(this.archive.letters).filter(x => x.inReplyTo === l.id);
         const recipient = l.recipients[0];
         wrap.innerHTML = `
             <div class="epi-reader">
@@ -2097,12 +2157,16 @@ ${list}`;
                         ${l.status !== 'sent' ? `<span class="epi-chip">${esc(STATUSES[l.status])}</span>` : ''}
                         ${l.authenticity !== 'original' ? `<span class="epi-chip">${esc(AUTHENTICITY[l.authenticity])}</span>` : ''}</span>
                     <span class="epi-reader-actions">
+                        ${preview ? `<span class="epi-chip">👁 预览 · 还没保存</span>
+                        <button class="menu_button" data-act="preview-seal" title="回放寄信时的封缄动画：信纸折好装进信封、封口、飞走">▶ 封缄动画</button>
+                        <button class="menu_button" data-act="preview-open" title="回放收信时的拆信动画">▶ 拆信动画</button>
+                        <button class="menu_button epi-primary" data-act="reader-close">继续写</button>` : `
                         ${l.code ? `<button class="menu_button epi-code" data-act="copy-code" data-code="${esc(l.code)}" title="在聊天里写上这个暗号，那一轮 AI 就会读到这封信。点一下复制">暗号 ${esc(l.code)}</button>` : ''}
                         <button class="menu_button" data-act="user-reply" data-id="${esc(l.id)}" title="以 ${esc(recipient || '收件人')} 的身份写回信">✎ 回复这封信</button>
                         ${recipient ? `<button class="menu_button" data-act="reply-open-for" data-id="${esc(l.id)}">↩ 让 ${esc(recipient)} 回信</button>` : ''}
                         ${scriptLang(l.language) === 'lat' ? `<button class="menu_button" data-act="reader-translate" data-id="${esc(l.id)}" title="用 AI 翻译成中文看（只是给你看，不改原信）">🌐 中文译文</button>` : ''}
                         <button class="menu_button" data-act="edit" data-id="${esc(l.id)}">编辑</button>
-                        <button class="menu_button" data-act="reader-close">关闭</button>
+                        <button class="menu_button" data-act="reader-close">关闭</button>`}
                     </span>
                 </div>
                 ${orig ? `<div class="epi-reader-link">↩ 这是对 <a href="#" data-act="read" data-id="${esc(orig.id)}">${esc(orig.author)} ${esc(orig.writtenAt)} 来信</a> 的回复</div>` : ''}
@@ -2177,6 +2241,10 @@ ${list}`;
             case 'save': this.saveDraft(); this.rerenderKeepScroll(); break;
             case 'send-open': this.openSendDialog(); break;
             case 'ai-fill': this.aiFillHead(); break;
+            case 'edit-zoom': this.stepEditZoom(parseInt(el.dataset.step, 10)); break;
+            case 'preview': this.openPreview(); break;
+            case 'preview-seal': this.playPreviewAnim('seal'); break;
+            case 'preview-open': this.playPreviewAnim('open'); break;
             case 'enc-add':
                 this.draft.enclosures.push(normalizeEnclosure({ kind: 'other', name: '' }, this.draft.enclosures.length));
                 this.draft.enclosures.at(-1).id = `ENC${Date.now().toString(36)}`;
@@ -2393,8 +2461,9 @@ ${list}`;
             const key = t.dataset.s;
             let v = t.type === 'checkbox' ? t.checked : t.value;
             if (t.type === 'number') v = Number(v);
-            if (key === 'position') v = Number(v);
+            if (key === 'position' || key === 'editZoom') v = Number(v);
             this.setS(key, v);
+            if (key === 'editZoom') this.applyEditZoom();
             if (e.type === 'change' && ['api.mode', 'mode', 'viewpointMode'].includes(key)) {
                 const y = this.body.scrollTop;
                 this.show('settings');

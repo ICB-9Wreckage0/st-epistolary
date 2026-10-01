@@ -5,7 +5,7 @@
 import { Store } from './src/store.js';
 import { UI } from './src/ui.js';
 import { retrieve, DEFAULT_RETRIEVAL } from './src/retrieval.js';
-import { sameName, normalizeDate, findPerson, lettersByCode, ensureCodes, createLetter } from './src/model.js';
+import { sameName, normalizeDate, findPerson, lettersByCode, unknownCodes, ensureCodes, createLetter } from './src/model.js';
 import {
     buildReactionGuidance, replyChatMessage, sceneSwitchMessage, sceneReturnMessage,
     deliveryEvents, buildDatePrompt, parseStoryDate, addDays,
@@ -29,6 +29,7 @@ const DEFAULT_SETTINGS = {
     mode: 'simple',          // simple 简单模式：存档 + 暗号 | expert 高级模式：寄送、转交、知情过滤、自动注入
     autoKeywords: true,      // 简单模式下，保存时自动让 AI 生成关键词
     autoFill: true,          // 写新信时让 AI 根据剧情填信头
+    editZoom: 0.9,           // 写信页信纸上的字看起来多大（不改信本身的字号）
     describeLook: true,
     sealIncoming: true,      // 角色回复里出现寄给你的信：先封起来，拆信动画以后才显示
     detectArrival: true,     // 剧情里（包括 AI 的思考）写到收信人收到信、转交人动了信，就自动处理      // 收信反应时，把信纸、墨水、字迹、字号、信封、封口告诉 AI
@@ -225,14 +226,38 @@ function reactionGuidance() {
 }
 
 // 最近一条用户消息里写了哪些信的暗号
-function codeLetters() {
+function lastUserMessage() {
     const chat = ctx().chat || [];
     for (let i = chat.length - 1; i >= 0; i--) {
         const m = chat[i];
         if (!m || m.is_system) continue;
-        if (m.is_user) return lettersByCode(store.archive, m.mes);
+        if (m.is_user) return m;
     }
-    return [];
+    return null;
+}
+
+function codeLetters() {
+    const m = lastUserMessage();
+    return m ? lettersByCode(store.archive, m.mes) : [];
+}
+
+// 告诉用户这一轮交给 AI 的是哪几封；写了像暗号的东西却对不上，也提醒一下
+let lastCodeToast = '';
+function codeFeedback(type) {
+    const m = lastUserMessage();
+    if (!m) return;
+    const hit = lettersByCode(store.archive, m.mes);
+    const miss = unknownCodes(store.archive, m.mes);
+    const key = `${ctx().chat.length}|${type}|${hit.map(l => l.id).join(',')}|${miss.join(',')}`;
+    if (key === lastCodeToast) return;
+    lastCodeToast = key;
+    if (hit.length) toastr.success(hit.map(l => `${l.code} ${l.author} → ${l.recipients.join('、')}`).join('<br>'), '✉ 这一轮把信交给了 AI', { timeOut: 4000, escapeHtml: false });
+    if (!hit.length && !miss.length) {
+        // 写了“信1”却没带括号
+        const bare = Object.values(store.archive.letters).find(l => l.code && new RegExp(`(^|[^【\\[])${l.code.replace(/^【|】$/g, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\d】\\]])`).test(m.mes || ''));
+        if (bare && /^【信\d+】$/.test(bare.code)) toastr.info(`如果你是想用 ${bare.code} 那封信，暗号要连括号一起写：${bare.code}`, '书信簿', { timeOut: 6000 });
+    }
+    if (miss.length) toastr.warning(`档案里没有 ${miss.join('、')} 这个暗号。打开书信簿看看那封信的暗号是什么（信件列表里每封信前面那个）。`, '书信簿', { timeOut: 8000 });
 }
 
 function codeInjection() {
@@ -1061,12 +1086,13 @@ globalThis.epistolaryInterceptor = async function (_chat, _contextSize, _abort, 
             c.setExtensionPrompt(PROMPT_KEY, '', s.position, s.depth);
             c.setExtensionPrompt(REACTION_KEY, '', 1, 0);
             c.setExtensionPrompt(PENDING_KEY, '', 1, 1);
-            c.setExtensionPrompt(CODE_KEY, '', 1, 1);
+            c.setExtensionPrompt(CODE_KEY, '', 1, 0);
             return;
         }
-        // 暗号：两种模式都有。放在最新那条消息之前
+        // 暗号：两种模式都有。放在最新那条消息之后，AI 最先看到
         const code = codeInjection();
-        c.setExtensionPrompt(CODE_KEY, code, 1, 1, false, 0);
+        c.setExtensionPrompt(CODE_KEY, code, 1, 0, false, 0);
+        codeFeedback(type);
         if (isSimple()) {
             // 简单模式：只认暗号，不做别的
             lastInjection = code;
@@ -1088,7 +1114,7 @@ globalThis.epistolaryInterceptor = async function (_chat, _contextSize, _abort, 
         c.setExtensionPrompt(PROMPT_KEY, '', s.position, s.depth);
         c.setExtensionPrompt(REACTION_KEY, '', 1, 0);
         c.setExtensionPrompt(PENDING_KEY, '', 1, 1);
-        c.setExtensionPrompt(CODE_KEY, '', 1, 1);
+        c.setExtensionPrompt(CODE_KEY, '', 1, 0);
     }
 };
 

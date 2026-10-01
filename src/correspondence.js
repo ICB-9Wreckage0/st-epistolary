@@ -714,6 +714,8 @@ export function buildCodeBlock(archive, letter, { look = false } = {}) {
         lines.push('原文：', letter.body, '【原文完】');
     }
     if (letter.enclosures?.length) lines.push(enclosuresForAI(letter, archive));
-    lines.push(`用户在消息里写了 ${letter.code}，表示这一轮剧情要用到这封信（比如有人读它、提起它、拿着它）。按剧情需要使用，可以引用信里的句子，不要整封复述，也不要在回复里写出“${letter.code}”这个暗号本身。`);
+    lines.push(`用户在消息里写了 ${letter.code}，指的就是上面这封信，这一轮剧情要用到它（比如有人拆开读它、提起它、拿着它）。`);
+    lines.push(`**这封信已经写好了，内容以上面的原文为准。** 剧情里有人读这封信时，读到的就是这些字句——可以直接引用原文里的句子，不要另编一封信，不要改写、增删信的内容，也不要替写信人补写信里没有的话。`);
+    lines.push(`回复里不要写出“${letter.code}”这个暗号本身。`);
     return lines.filter(Boolean).join('\n');
 }

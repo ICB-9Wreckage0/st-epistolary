@@ -245,11 +245,27 @@ export function nextCode(archive) {
     for (let n = 1; ; n++) if (!used.has(`【信${n}】`)) return `【信${n}】`;
 }
 
+// 比对暗号时宽松一点：各种括号都当成【】，全角数字字母当成半角，忽略空格
+export function looseCode(text) {
+    return String(text || '')
+        .replace(/[\uff01-\uff5e]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+        .replace(/[\[〖〔［\{（(「『《<]/g, '【')
+        .replace(/[\]〗〕］\}）)」』》>]/g, '】')
+        .replace(/\s+/g, '');
+}
+
 // 一段文字里出现了哪些信的暗号
 export function lettersByCode(archive, text) {
-    const t = String(text || '');
+    const t = looseCode(text);
     if (!t) return [];
-    return Object.values(archive.letters).filter(l => l.code && t.includes(l.code));
+    return Object.values(archive.letters).filter(l => l.code && t.includes(looseCode(l.code)));
+}
+
+// 文字里写了像暗号的东西（【……】），但档案里没有对应的信
+export function unknownCodes(archive, text) {
+    const t = looseCode(text);
+    const known = new Set(Object.values(archive.letters).map(l => looseCode(l.code)).filter(Boolean));
+    return [...new Set((t.match(/【[^【】]{1,12}】/g) || []))].filter(c => !known.has(c) && /^【信/.test(c));
 }
 
 // 旧档案里没有暗号的信，按编号顺序补上
