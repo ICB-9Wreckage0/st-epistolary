@@ -1241,3 +1241,7 @@
 /* ---- 字号：整张纸一起缩放 ---- */
 .epi-paper { font-size: calc(17px * var(--fs, 1)); }
 @media (max-width: 760px) { .epi-paper { font-size: calc(16px * var(--fs, 1)); } }
+
+/* ---- 外观选项的含义 ---- */
+.epi-meaning { display: inline-block; margin-top: 2px; opacity: 0.9; }
+.epi-meaning-warn { color: #e0a24a; opacity: 1; }

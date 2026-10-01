@@ -256,7 +256,13 @@ export function buildReactionGuidance(archive, letter, reader, arrival, extra = 
         return lines.join('\n');
     }
     lines.push(`【收信】${arrival ? `${arrival}，` : ''}${reader} 收到了 ${letter.author || '某人'} 寄来的信（信的全文就是上一条消息）。`);
-    if (dv.via) lines.push(`这封信是托 ${dv.via} 转交的。${dv.tampered ? `信封的封口有被拆开过、又粘回去的痕迹，${reader} 可能注意到，也可能没注意到。` : ''}`);
+    if (dv.via) {
+        let how = '';
+        if (dv.openly) how = `${dv.via} 拆阅过这封信，而且没有隐瞒，信封上看得出来${dv.viaNote ? `，还写着：「${dv.viaNote}」` : ''}。`;
+        else if (dv.tampered) how = `信封的封口有被拆开过、又粘回去的痕迹，${reader} 可能注意到，也可能没注意到。`;
+        else if (dv.viaNote) how = `${dv.via} 在信封上写着：「${dv.viaNote}」。`;
+        lines.push(`这封信是托 ${dv.via} 转交的。${how}`);
+    }
     lines.push(`请描写 ${reader} 收信和读信的过程，以及真实的反应：`);
     lines.push(
         `- 收信时的情境：当时在哪里、在做什么，信是怎么到手上的，拆信、读信的样子。`,
@@ -274,11 +280,12 @@ export function buildReactionGuidance(archive, letter, reader, arrival, extra = 
 
 // 发到聊天里的“寄出的信”那条消息
 // 镜头切到收信人那边：作为一段旁白发进聊天，后面跟着信的全文
-export function sceneSwitchMessage(letter, reader, arrival) {
+export function sceneSwitchMessage(letter, reader, arrival, { body = true } = {}) {
     const where = letter.placeTo ? `${letter.placeTo}，` : '';
     const when = arrival ? `${arrival}。` : '';
     const via = letter.delivery?.via ? `经 ${letter.delivery.via} 转交，` : '';
-    return `*（镜头切到${where}${when}${via}${reader || '收信人'}收到了${letter.author ? ` ${letter.author} 的` : '一封'}来信。）*\n\n${letter.body}`;
+    const line = `*（镜头切到${where}${when}${via}${reader || '收信人'}收到了${letter.author ? ` ${letter.author} 的` : '一封'}来信。）*`;
+    return body ? `${line}\n\n${letter.body}` : line;
 }
 
 // ---------- 托人转交 ----------
@@ -313,15 +320,26 @@ export function buildViaGuidance(archive, letter, via, arrival, { look = false }
 export const VIA_ACTIONS = { forward: '转交', later: '先留着', withhold: '不转交' };
 
 // 让 AI 从转交人那一段剧情里判断：拆没拆、打算怎么办
-export function buildViaDecisionPrompt(via, recipient, text) {
+export function buildViaDecisionPrompt(via, recipient, text, { opened = false, held = false } = {}) {
     const system = '你是剧情记录员，只输出 JSON。';
-    const prompt = `下面是一段角色扮演的剧情。${via} 收到一封托${via}转交给 ${recipient} 的信。请判断：
-1. ${via} 有没有拆开这封信（偷看也算）？
-2. ${via} 打算怎么处理：forward（转交，现在或稍后去送都算）、later（先压着，还没决定或者暂时不交）、withhold（不交了、扣下、烧掉、退回）、unclear（看不出来）。
-3. 如果拆开过，${via} 有没有把封口弄回原样、让人看不出被拆过（resealed）？
+    const known = [
+        opened ? `${via} 之前已经拆开读过这封信了。` : '',
+        held ? `${via} 之前已经决定先把信留着。` : '',
+    ].filter(Boolean).join('');
+    const prompt = `下面是一段角色扮演的最近剧情（可能包括角色的思考过程）。${via} 手里有一封别人托 TA 转交给 ${recipient} 的信。${known}
+请根据剧情判断 ${via} 现在的状态：
+1. opened：${via} 有没有拆开这封信（拆开、划开、偷看都算；只是隔着信封对光看、摸厚度不算）？
+2. action：${via} 对这封信的打算——
+   - forward：转交。已经寄出、交给送信人、亲手送去，或者已经准备好要送（重新封好、在信封上写了给收信人的话、放进要寄的信里）都算。
+   - later：先压着、放回抽屉、等某个日子再说。
+   - withhold：不交了、扣下、烧掉、退回。
+   - unclear：剧情里还看不出来。
+3. resealed：拆开过的话，有没有把封口弄回原样、让人看不出被拆过？
+4. openly：拆开过的话，是不是光明正大、不打算隐瞒（比如有写信人的授权、在信封上注明自己拆阅过、换上自己的火漆印）？
+5. envelopeNote：${via} 在信封上写的字或附上的字条（照原文抄，外语就抄外语原文和括号里的翻译），没有就空字符串。
+6. note：一句中文概括。
 
-只输出一行 JSON，例如：{"opened": false, "resealed": false, "action": "forward", "note": "他决定明天一早送过去"}
-note 用一句中文概括。
+只输出一行 JSON，例如：{"opened": true, "resealed": false, "openly": true, "action": "forward", "envelopeNote": "已由 T. 拆阅核验。", "note": "他拆阅后用自己的火漆重新封好，准备转交"}
 
 【剧情】
 ${text}`;
@@ -334,7 +352,11 @@ export function parseViaDecision(text) {
     try {
         const j = JSON.parse(m[0]);
         const action = ['forward', 'later', 'withhold'].includes(j.action) ? j.action : 'unclear';
-        return { opened: !!j.opened, resealed: !!j.resealed, action, note: String(j.note || '').slice(0, 80) };
+        return {
+            opened: !!j.opened, resealed: !!j.resealed, openly: !!j.openly, action,
+            envelopeNote: String(j.envelopeNote || '').slice(0, 300),
+            note: String(j.note || '').slice(0, 80),
+        };
     } catch {
         return null;
     }
@@ -637,8 +659,14 @@ export function buildPendingHints({ arrived = [], atVia = [], storyDate = '' }) 
 }
 
 // 收信人在剧情里收到信时，直接把原文放进上下文
-export function inlineLetterBlock(letter, reader, arrival) {
-    return `【${reader} 刚收到的信${arrival ? `（${arrival}）` : ''}，原文如下】\n${letter.body}`;
+export function inlineLetterBlock(letter, reader, arrival, { peek = false } = {}) {
+    const head = peek ? `【${reader} 拆开的这封信（本来要转交给 ${(letter.recipients || []).join('、')}），原文如下】` : `【${reader} 收到的信${arrival ? `（${arrival}）` : ''}，原文如下】`;
+    return `${head}\n${letter.body}\n【原文完】\n这封信的原文没有出现在聊天记录里，是直接给你的。描写读信时可以引用其中的句子，但不要整封复述。`;
+}
+
+// 收信 / 拆信引导里，“信的全文就是上一条消息”改成“原文见上”
+export function inlineGuidance(text) {
+    return String(text || '').replace('（信的全文就是上一条消息）', '（原文见上）').replace('，信的全文就是上一条消息', '，原文见上');
 }
 
 // 托人转交：转交人最晚哪天要转交出去，收信人才能在希望的日子收到

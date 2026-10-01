@@ -100,7 +100,7 @@ test('托人转交：转交人只知道有信，拆看后才知道内容，收�
 });
 
 test('托人转交：解析转交人的决定', () => {
-    assert.deepEqual(parseViaDecision('好的：{"opened": true, "resealed": true, "action": "forward", "note": "明天送去"}'), { opened: true, resealed: true, action: 'forward', note: '明天送去' });
+    assert.deepEqual(parseViaDecision('好的：{"opened": true, "resealed": true, "action": "forward", "note": "明天送去"}'), { opened: true, resealed: true, openly: false, action: 'forward', envelopeNote: '', note: '明天送去' });
     assert.equal(parseViaDecision('{"opened": false, "action": "burn"}').action, 'unclear');
     assert.equal(parseViaDecision('不知道'), null);
 });
@@ -176,4 +176,14 @@ test('未读的信提醒：不让 AI 编内容', () => {
     const h = buildPendingHints({ atVia: [l], storyDate: '1890-01-06' });
     assert.match(h, /C 手里/); assert.match(h, /耽搁/); assert.match(h, /不要编造/); assert.ok(!h.includes('秘密'));
     assert.equal(buildPendingHints({}), '');
+});
+
+test('转交人公开拆阅：收信人那边看得到说明', () => {
+    const a = mkArchive();
+    const l = mkLetter(a, { author: '勒鲁', recipients: ['文森特'], writtenAt: '1890-06-27', body: '正文', status: 'sent' });
+    l.delivery = { via: '提奥', opened: true, openly: true, viaNote: '已由 T. v. G. 拆阅核验。' };
+    const g = brg(a, l, '文森特', '1890-07-02', {});
+    assert.match(g, /没有隐瞒/); assert.match(g, /拆阅核验/);
+    const p = parseViaDecision('{"opened":true,"openly":true,"action":"forward","envelopeNote":"Lees rustig."}');
+    assert.equal(p.openly, true); assert.equal(p.envelopeNote, 'Lees rustig.');
 });

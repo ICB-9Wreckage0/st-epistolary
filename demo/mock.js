@@ -96,6 +96,16 @@ function demoReply() {
     const last = lastUserText();
     const inj = ctx.extensionPrompts.epistolary_letters?.value || '';
     const reaction = ctx.extensionPrompts.epistolary_reaction?.value || '';
+    // 书信簿直接注入的信（原文不在聊天里）
+    const peekM = reaction.match(/【(.+?) 拆开的这封信/);
+    if (peekM) {
+        const v = peekM[1];
+        return `*（演示回复：${v}读这封不是写给他的信。信的原文是书信簿直接交给 AI 的，没有发进聊天。）*\n\n${v}读完，沉默了一会儿，用一点胶水把封口重新粘好，决定明天一早把信送过去。`;
+    }
+    const readM = reaction.match(/【(.+?) 收到的信/);
+    if (readM) {
+        return `*（演示回复：${readM[1]}读信的反应。信的原文是书信簿直接交给 AI 的，没有发进聊天；提醒原文见“本轮注入给 AI 的内容”。）*`;
+    }
     if (last?.extra?.epistolary?.kind === 'via') {
         const v = last.extra.epistolary.via;
         return `*（演示回复：真实使用时，这里是 AI 扮演的${v}拿到信以后怎么做，全由他自己决定。）*\n\n${v}把信封翻过来看了看，犹豫了很久，终于还是用裁纸刀轻轻挑开了封口。`;
@@ -175,9 +185,14 @@ globalThis.__epistolaryDemoMock = async ({ prompt, kind, target }) => {
         return JSON.stringify({ author: 'E.', recipients: [to], writtenAt: date, placeFrom: to === '提奥' ? '巴黎（另一区）' : '巴黎', placeTo: where, language: '法语（中文显示）', travelDays: to === '提奥' ? 1 : 3, note: `演示：E. 在巴黎，${to} 在${where}；1889 年铁路邮政大约要 ${to === '提奥' ? 1 : 3} 天` });
     }
     if (kind === 'via') {
-        if (prompt.includes('决定明天一早把信送过去')) return '{"opened": true, "resealed": true, "action": "forward", "note": "读完重新封好，明天一早送过去"}';
-        if (prompt.includes('挑开了封口')) return '{"opened": true, "resealed": false, "action": "unclear", "note": "拆开了信"}';
-        return '{"opened": false, "action": "forward", "note": "照常转交"}';
+        globalThis.__viaJudgeCalls = (globalThis.__viaJudgeCalls || 0) + 1;
+        const story = prompt.split('【剧情】')[1] || '';
+        const was = prompt.includes('之前已经拆开读过');
+        if (/送过去|重新封好|重新粘好|火漆/.test(story) && was) return JSON.stringify({ opened: true, resealed: !/火漆/.test(story), openly: /火漆|拆阅/.test(story), action: 'forward', envelopeNote: /拆阅核验/.test(story) ? '已由 T. v. G. 拆阅核验。未见恶兆。请宽心阅读。' : '', note: '读完封好，准备转交' });
+        if (/挑开了封口|割开/.test(story) && !was) return '{"opened": true, "action": "unclear", "note": "拆开了信"}';
+        if (/放回抽屉|推了回去/.test(story)) return JSON.stringify({ opened: was, action: 'later', note: '先放着' });
+        if (/照常转交/.test(story)) return '{"opened": false, "action": "forward", "note": "照常转交"}';
+        return JSON.stringify({ opened: was, action: 'unclear', note: '还看不出来' });
     }
     if (kind === 'reply') {
         const m = prompt.match(/§\d+ ([^\n]{4,40})/g) || [];
@@ -212,7 +227,8 @@ export function showInjection() {
     const el = document.getElementById('demo-injection');
     const letters = ctx.extensionPrompts.epistolary_letters?.value || '';
     const reaction = ctx.extensionPrompts.epistolary_reaction?.value || '';
-    el.textContent = [letters, reaction].filter(Boolean).join('\n\n') || '（这一轮没有注入任何内容）';
+    const pending = ctx.extensionPrompts.epistolary_pending?.value || '';
+    el.textContent = [letters, pending, reaction].filter(Boolean).join('\n\n') || '（这一轮没有注入任何内容）';
 }
 
 export function rerenderChat() {

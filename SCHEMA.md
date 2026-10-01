@@ -1,4 +1,4 @@
-# 书信簿 · 数据结构（schema 1，v0.10）
+# 书信簿 · 数据结构（schema 1，v0.12）
 
 整个档案是一个 JSON 文件。原则只有三条：
 
@@ -110,6 +110,9 @@
         "viaGuess": null,          // AI 的判断 { opened, resealed, action: forward|later|withhold|unclear, note }
         "opened": false,           // 转交人拆看过
         "tampered": false,         // 拆过而且没封好，收信人可能看得出来
+        "openly": false,           // 光明正大地拆阅（有授权、注明拆阅过），收信人那边知道
+        "viaNote": "",             // 转交人在信封上写的话 / 附的字条
+        "lastJudged": 0,           // 上次判断转交人决定时的楼层（同一层只判断一次）
         "viaFollowup": false       // 信箱里显示“回到写信人这边”
       },
       "source": { "chatId": "…", "mes": 17 },  // 从聊天记录导入的信：出自哪条消息
@@ -155,3 +158,13 @@
 ```
 
 最近一条用户消息如果是 `kind: "letter"`，下一次生成（包括重新生成）会注入收信反应的提醒；出现在最近几条消息里的信件，不会再被检索重复注入。
+
+## 聊天元数据里的“待读的信”（v0.12）
+
+每个聊天的 `chatMetadata.epistolary.inbox`：下一次生成时要把原文直接交给 AI 的信（原文不进聊天记录）。
+
+```jsonc
+[{ "letterId": "LETTER-0012", "reader": "提奥", "arrival": "1890-06-30", "peek": true, "queuedAt": 652, "answeredAt": 0 }]
+```
+
+`answeredAt` 是角色读完回复的楼层；在这一层重新生成或换回复时，仍会带上这封信。

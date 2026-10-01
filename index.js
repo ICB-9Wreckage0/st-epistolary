@@ -11,7 +11,7 @@ import {
     deliveryEvents, buildDatePrompt, parseStoryDate, addDays,
     viaSceneMessage, viaPeekMessage, buildViaGuidance, buildViaDecisionPrompt, parseViaDecision,
     viaReceivedEvents, nextEventId, VIA_ACTIONS,
-    mentionsReceipt, mentionsDate, mentionsName, buildPendingHints, inlineLetterBlock,
+    mentionsReceipt, mentionsDate, mentionsName, buildPendingHints, inlineLetterBlock, inlineGuidance,
 } from './src/correspondence.js';
 import { playSeal, playOpen } from './src/envelope.js';
 import { callAI, DEFAULT_API } from './src/api.js';
@@ -44,7 +44,6 @@ const DEFAULT_SETTINGS = {
         autoSwitch: false,   // 信到了自动切过去看收信反应
         autoDate: true,      // 有在途的信时，自动推算剧情日期
         dateEvery: 6,        // 每隔几层推算一次
-        viaAuto: true,       // 托人转交：转交人在剧情里做的决定（拆不拆、交不交）自动生效
     },
 };
 
@@ -156,17 +155,57 @@ function pendingReaction() {
     return null;
 }
 
+// ---------- 要直接交给 AI 的信（原文不进聊天，只在生成时注入） ----------
+
+function inbox() {
+    const meta = chatMeta();
+    meta.inbox = Array.isArray(meta.inbox) ? meta.inbox : [];
+    return meta.inbox;
+}
+
+// 排队：下一次生成时把这封信的原文交给 AI
+function queueLetter(letter, { reader, arrival = '', peek = false }) {
+    const box = inbox();
+    if (box.some(i => i.letterId === letter.id && i.reader === reader && !i.answeredAt)) return;
+    box.push({ letterId: letter.id, reader, arrival, peek, queuedAt: floor(), answeredAt: 0 });
+    // 只留最近的几条
+    while (box.length > 12) box.shift();
+    saveMeta();
+    ui?.renderPostbox();
+}
+
+// 这一次生成要带上的：还没被回应过的；或者重新生成/换一个回复时，刚才回应过的那几封
+function activeInbox() {
+    const f = floor();
+    return inbox().filter(i => !i.answeredAt || f <= i.answeredAt);
+}
+
+// 角色回复了：排队的信算是读过了
+function markInboxAnswered() {
+    const f = floor();
+    let changed = false;
+    for (const i of inbox()) if (!i.answeredAt && f > i.queuedAt) { i.answeredAt = f; changed = true; }
+    if (changed) saveMeta();
+}
+
 function reactionGuidance() {
-    const info = pendingReaction();
-    if (!info) return '';
-    const letter = store.archive.letters[info.letterId];
-    if (!letter) return '';
     const look = settings().describeLook !== false;
-    if (info.kind === 'via') return buildViaGuidance(store.archive, letter, info.via, info.arrival, { look });
-    const g = buildReactionGuidance(store.archive, letter, info.reader, info.arrival, { peek: !!info.peek, look });
-    // 剧情里自己写到收信的：信不在聊天里，原文直接放进上下文
-    if (info.inline) return `${inlineLetterBlock(letter, info.reader, info.arrival)}\n\n${g.replace('（信的全文就是上一条消息）', '（原文见上）').replace('，信的全文就是上一条消息', '，原文见上')}`;
-    return g;
+    const parts = [];
+    for (const i of activeInbox()) {
+        const letter = store.archive.letters[i.letterId];
+        if (!letter) continue;
+        const g = buildReactionGuidance(store.archive, letter, i.reader, i.arrival, { peek: i.peek, look });
+        parts.push(`${inlineLetterBlock(letter, i.reader, i.arrival, { peek: i.peek })}\n\n${inlineGuidance(g)}`);
+    }
+    // 旧版本：信的原文在聊天消息里
+    const info = pendingReaction();
+    const letter = info && store.archive.letters[info.letterId];
+    if (letter && !activeInbox().some(i => i.letterId === letter.id)) {
+        if (info.kind === 'via') parts.push(buildViaGuidance(store.archive, letter, info.via, info.arrival, { look }));
+        else if (info.kind === 'letter') parts.push(buildReactionGuidance(store.archive, letter, info.reader, info.arrival, { peek: !!info.peek, look }));
+        else if (info.inline) parts.push(`${inlineLetterBlock(letter, info.reader, info.arrival)}\n\n${inlineGuidance(buildReactionGuidance(store.archive, letter, info.reader, info.arrival, { peek: !!info.peek, look }))}`);
+    }
+    return parts.join('\n\n');
 }
 
 function runRetrieval() {
@@ -176,7 +215,7 @@ function runRetrieval() {
     // 用原始聊天记录（带消息附加信息），而不是拦截器拿到的副本
     const msgs = recentMessages(ctx().chat, s.scanDepth);
     const texts = msgs.map(m => m.mes).reverse();
-    const exclude = new Set(msgs.map(m => m.extra?.epistolary?.letterId).filter(Boolean));
+    const exclude = new Set([...msgs.map(m => m.extra?.epistolary?.letterId), ...activeInbox().map(i => i.letterId)].filter(Boolean));
     const result = retrieve(store.archive, { texts, viewer, storyDate, settings: s, exclude });
     return { viewer, storyDate, texts, result, enabled: s.enabled, reaction: reactionGuidance() };
 }
@@ -282,20 +321,17 @@ async function letViaRead(letter, { post = true } = {}) {
     ui.renderPostbox();
     ui.refresh();
     if (!post || !hasChat() || ui.isMe(via)) return;
-    if (settings().animations) await playOpen(letter, { render: ui.renderOpts(letter) });
+    // 原文不发进聊天：下一次生成时直接交给 AI，TA 读完以后再判断怎么处理
     dv.awaitingDecision = true;
     dv.decisionFrom = floor();
     store.save();
-    await pushMessage({
-        name: ctx().name1, is_user: true, is_system: false, send_date: nowStamp(),
-        mes: viaPeekMessage(letter, via),
-        extra: { epistolary: { kind: 'letter', letterId: letter.id, reader: via, arrival: date, peek: true } },
-    }, { generate: true });
+    queueLetter(letter, { reader: via, arrival: date, peek: true });
+    toastr.info(`${via} 拆开了信。下一次生成时，信的原文会直接交给 AI（不发进聊天）`, '✉ 拆信');
     ui.renderPostbox();
 }
 
 // 转交人把信交出去：开始第二段路程
-function forwardLetter(letter, { mode, arrival, floors } = {}, { resealed = false } = {}) {
+function forwardLetter(letter, { mode, arrival, floors } = {}, { resealed = false, openly = false, note = '' } = {}) {
     const dv = letter.delivery;
     const via = viaOf(letter);
     const today = getStoryDate() || dv.viaArrivedAt || '';
@@ -304,7 +340,7 @@ function forwardLetter(letter, { mode, arrival, floors } = {}, { resealed = fals
     mode = mode || (dv.mode === 'instant' ? (today && normalizeDate(today) && leg.days > 0 ? 'date' : 'instant') : dv.mode);
     if (mode === 'date' && !arrival) arrival = addDays(today, leg.days ?? 1) || today;
     if (mode === 'floors' && !floors) floors = leg.floors || 2;
-    letter.events.push({ id: nextEventId(letter.events), type: 'forwarded', who: via, date: today, segments: null, to: letter.recipients.join('、'), note: dv.opened ? (resealed ? '拆看后重新封好' : '拆看过') : '' });
+    letter.events.push({ id: nextEventId(letter.events), type: 'forwarded', who: via, date: today, segments: null, to: letter.recipients.join('、'), note: dv.opened ? (openly ? `公开拆阅${note ? `，信封上写着：${note}` : ''}` : resealed ? '拆看后重新封好' : '拆看过') : '' });
     Object.assign(dv, {
         stage: 'toRecipient',
         status: 'transit',
@@ -312,7 +348,9 @@ function forwardLetter(letter, { mode, arrival, floors } = {}, { resealed = fals
         eta: mode === 'date' ? arrival : '',
         floors: mode === 'floors' ? floors : 0,
         sentFloor: floor(),
-        tampered: !!dv.opened && !resealed,
+        tampered: !!dv.opened && !resealed && !openly,
+        openly: !!dv.opened && !!openly,
+        viaNote: note || '',
         awaitingDecision: false,
         viaGuess: null,
         reader: letter.recipients[0] || '',
@@ -340,16 +378,27 @@ function setViaAction(letter, action) {
     ui.refresh();
 }
 
-// 转交人那段剧情写完以后，让 AI 判断他拆没拆、打算怎么办
-async function judgeViaDecision(letter, onlyText = '') {
+// 最近几条剧情（包括 AI 的思考），给“判断转交人的决定”用。信的原文略去，免得干扰判断。
+function storyWindow(fromIdx) {
+    const chat = ctx().chat || [];
+    const start = Math.max(0, fromIdx ?? 0, chat.length - 4);
+    return chat.slice(start)
+        .filter(m => m && !m.is_system && typeof m.mes === 'string')
+        .map(m => {
+            const info = m.extra?.epistolary;
+            const body = info?.kind === 'letter' ? String(m.mes).split('\n')[0] + '（后面是信的原文，略）' : String(m.mes).slice(0, 2500);
+            const think = m.extra?.reasoning ? `\n（${m.name} 的思考：${String(m.extra.reasoning).slice(0, 1500)}）` : '';
+            return `${m.name}：${body}${think}`;
+        }).join('\n\n');
+}
+
+// 让 AI 读最近的剧情，判断转交人拆没拆、打算怎么办
+async function judgeViaDecision(letter, text = '') {
     const dv = letter.delivery;
     const via = viaOf(letter);
-    const chat = ctx().chat || [];
-    const text = onlyText || chat.slice(Math.max(0, dv.decisionFrom ?? chat.length - 2))
-        .filter(m => m && !m.is_system && typeof m.mes === 'string')
-        .map(m => `${m.name}：${String(m.mes).slice(0, 1500)}`).join('\n\n');
+    text = text || storyWindow(dv.decisionFrom);
     if (!text) return null;
-    const { system, prompt } = buildViaDecisionPrompt(via, letter.recipients.join('、'), text);
+    const { system, prompt } = buildViaDecisionPrompt(via, letter.recipients.join('、'), text, { opened: !!dv.opened, held: dv.status === 'held' });
     try {
         const out = await ai(system, prompt, { kind: 'via', via, opened: !!dv.opened });
         return parseViaDecision(out);
@@ -359,45 +408,54 @@ async function judgeViaDecision(letter, onlyText = '') {
     }
 }
 
-// 按转交人的决定办
+// 按转交人在剧情里的决定办（没有“手动决定”：角色怎么做，信就怎么走）
 async function applyViaDecision(letter, guess, { fromCharacter = false } = {}) {
     const dv = letter.delivery;
     if (!guess) return;
-    // 刚拆开：先把信的原文给他看，读完以后再判断他打算怎么办
+    // 刚拆开：先把信的原文给 TA 看，读完以后再判断 TA 打算怎么办
     if (guess.opened && !dv.opened) {
         if (fromCharacter) setTimeout(() => letViaRead(letter), 500);
         else await letViaRead(letter);
         return;
     }
-    if (guess.action === 'forward') forwardLetter(letter, {}, { resealed: !!guess.resealed });
-    else if (guess.action === 'later' || guess.action === 'withhold') {
+    dv.viaGuess = null;
+    if (guess.action === 'forward') {
+        forwardLetter(letter, {}, { resealed: !!guess.resealed, openly: !!guess.openly, note: guess.envelopeNote || '' });
+    } else if (guess.action === 'withhold' || (guess.action === 'later' && dv.status !== 'held')) {
         setViaAction(letter, guess.action);
         toastr.info(`${viaOf(letter)}：${VIA_ACTIONS[guess.action]}${guess.note ? `（${guess.note}）` : ''}`, '📮 转交');
+    } else if (guess.action === 'unclear') {
+        dv.viaGuess = guess; // 还没决定：只在信箱里显示一句，下一层接着看
+        store.save();
     }
 }
 
-async function checkViaDecisions({ fromCharacter = false } = {}) {
-    const handled = new Set();
-    if (!fromCharacter) return handled;
-    const cid = chatId();
-    const waiting = Object.values(store.archive.letters).filter(l => l.delivery?.status === 'atVia' && l.delivery.awaitingDecision && (!l.delivery.chatId || l.delivery.chatId === cid));
-    for (const l of waiting) {
+// 这一层要不要看转交人的决定
+function viaActive(l, lastText) {
+    const dv = l.delivery;
+    const f = floor();
+    if (dv.awaitingDecision && f <= (dv.decisionFrom || 0) + 1) return false; // 刚切过去，转交人还没开口
+    if (dv.awaitingDecision) return true;
+    const today = normalizeDate(getStoryDate());
+    if (dv.viaDeadline && today && today >= normalizeDate(addDays(dv.viaDeadline, -1))) return true; // 转交倒数：一层一看
+    if (dv.opened && dv.status === 'atVia') return true; // 拆开以后还没决定：一层一看
+    if (!lastText || !VIA_LETTER_RE.test(lastText)) return false;
+    return isCurrentCharacter(dv.via) || mentionsName(lastText, namesOf(dv.via));
+}
+
+async function processVia(lastText, { fromCharacter = true } = {}) {
+    for (const l of mailInChat()) {
         const dv = l.delivery;
-        if (floor() <= (dv.decisionFrom || 0) + 1) continue; // 转交人还没开口
-        handled.add(l.id);
+        if (!['atVia', 'held'].includes(dv.status) || ui.isMe(dv.via)) continue;
+        if (!viaActive(l, lastText)) continue;
+        if (dv.lastJudged === floor()) continue;
+        dv.lastJudged = floor();
         dv.awaitingDecision = false;
-        const guess = await judgeViaDecision(l);
-        if (!guess) { store.save(); ui.renderPostbox(); continue; }
-        const opening = guess.opened && !dv.opened;
-        if (settings().delivery.viaAuto && (opening || guess.action !== 'unclear')) {
-            await applyViaDecision(l, guess, { fromCharacter });
-        } else {
-            dv.viaGuess = guess;
-        }
         store.save();
+        const guess = await judgeViaDecision(l);
+        if (guess) await applyViaDecision(l, guess, { fromCharacter });
         ui.renderPostbox();
     }
-    return handled;
 }
 
 // 镜头切到收信人那边：（拆信动画）→ 一段旁白 + 信的全文 → 角色写收信反应
@@ -411,13 +469,15 @@ async function switchToRecipient(letter) {
     store.save();
     ui.renderPostbox();
     if (settings().animations) await playOpen(letter, { render: ui.renderOpts(letter) });
+    // 聊天里只有一句旁白；信的原文直接交给 AI
+    queueLetter(letter, { reader, arrival });
     await pushMessage({
         name: ctx().name1,
         is_user: true,
         is_system: false,
         send_date: nowStamp(),
-        mes: sceneSwitchMessage(letter, reader, arrival),
-        extra: { epistolary: { kind: 'letter', letterId: letter.id, reader, arrival } },
+        mes: sceneSwitchMessage(letter, reader, arrival, { body: false }),
+        extra: { epistolary: { kind: 'scene', letterId: letter.id, reader, arrival } },
     }, { generate: true });
     ui.renderPostbox();
 }
@@ -482,9 +542,17 @@ async function inferStoryDate({ force = false } = {}) {
 
 // ---------- 从剧情里发现信的动静 ----------
 
+// 一个人在剧情里可能的叫法：档案里的名字和别名，再加上名（“文森特·梵高”→“文森特”，“提奥梵高”→“提奥”）
 function namesOf(name) {
     const p = findPerson(store.archive, name);
-    return p ? [p.name, ...(p.aliases || [])].filter(Boolean) : [name].filter(Boolean);
+    const out = new Set();
+    for (const n of (p ? [p.name, ...(p.aliases || [])] : [name]).filter(Boolean)) {
+        out.add(n);
+        const parts = String(n).split(/[·・.\s]+/).filter(x => x.length >= 2);
+        if (parts.length > 1) out.add(parts[0]);
+        else if (/^[\u4e00-\u9fff]{4,}$/.test(n)) out.add(n.slice(0, 2));
+    }
+    return [...out];
 }
 
 function mailInChat() {
@@ -527,45 +595,30 @@ function markReceived(hit) {
     store.save();
     ui.renderPostbox();
     ui.refresh();
-    toastr.info(`剧情里 ${reader} 收到了 ${letter.author} 的信，已经把原文交给 AI`, '📬 信到了');
+    toastr.info(`剧情里 ${reader} 收到了 ${letter.author} 的信。下一次生成时，原文会直接交给 AI（不发进聊天）`, '📬 信到了');
     return arrival;
 }
 
 // 角色（AI）刚写完一条：正文或思考里写到收信人收到信 → 把原文发进聊天，让角色读
 async function deliverDetected(hit) {
     const arrival = markReceived(hit);
-    if (settings().animations) await playOpen(hit.letter, { render: ui.renderOpts(hit.letter) });
-    await pushMessage({
-        name: ctx().name1, is_user: true, is_system: false, send_date: nowStamp(),
-        mes: `*（${hit.reader}收到的信，原文如下。）*\n\n${hit.letter.body}`,
-        extra: { epistolary: { kind: 'letter', letterId: hit.letter.id, reader: hit.reader, arrival } },
-    }, { generate: true });
+    queueLetter(hit.letter, { reader: hit.reader, arrival });
     ui.renderPostbox();
 }
 
-// 转交人在剧情里动了信：让 AI 判断 TA 拆没拆、交不交
-async function viaFromText(text, { fromCharacter, skip = new Set() }) {
+// 你自己的消息里写到转交人动了信（在拦截器里调用，这一轮生成之前）
+async function viaFromUser(text) {
     for (const l of mailInChat()) {
         const dv = l.delivery;
-        if (!['atVia', 'held'].includes(dv.status) || ui.isMe(dv.via) || skip.has(l.id) || dv.awaitingDecision) continue;
-        if (!mentionsName(text, namesOf(dv.via)) || !VIA_LETTER_RE.test(text)) continue;
-        const guess = await judgeViaDecision(l, `${dv.via}：${text.slice(0, 3000)}`);
+        if (!['atVia', 'held'].includes(dv.status) || ui.isMe(dv.via)) continue;
+        if (!VIA_LETTER_RE.test(text) || !(mentionsName(text, namesOf(dv.via)) || isCurrentCharacter(dv.via))) continue;
+        const guess = await judgeViaDecision(l, storyWindow());
         if (!guess) continue;
-        const opening = guess.opened && !dv.opened;
-        if (!opening && guess.action === 'unclear') continue;
-        if (dv.status === 'held' && !opening && guess.action === 'later') continue;
-        if (settings().delivery.viaAuto) {
-            if (opening && !fromCharacter) {
-                // 用户自己写了转交人拆信：这一轮生成直接带上原文
-                await letViaRead(l, { post: false });
-                return { letter: l, peek: true };
-            }
-            await applyViaDecision(l, guess, { fromCharacter });
-        } else {
-            dv.viaGuess = guess;
-            store.save();
-            toastr.info(`${dv.via} 好像${guess.opened ? '拆开了信，' : ''}${VIA_ACTIONS[guess.action] || ''}。在右下角信箱里确认`, '🤝 转交');
+        if (guess.opened && !dv.opened) {
+            await letViaRead(l, { post: false });
+            return { letter: l, peek: true };
         }
+        await applyViaDecision(l, guess);
         ui.renderPostbox();
         return null;
     }
@@ -597,37 +650,58 @@ function remindVia() {
     }
 }
 
-// 每有一条新消息就检查一次：要不要推算日期，有没有信该送到了
+// 快到日子了吗：信明天就送到 / 转交人明天就到最晚转交日 → 一层推算一次日期
+function urgentMail(mail) {
+    const today = normalizeDate(getStoryDate());
+    if (!today) return false;
+    const soon = d => normalizeDate(d) && normalizeDate(addDays(d, -1)) <= today;
+    return mail.some(l => {
+        const dv = l.delivery;
+        if (dv.status === 'transit' && dv.mode === 'date') return soon(dv.eta);
+        if (['atVia', 'held'].includes(dv.status) && dv.viaDeadline) return soon(dv.viaDeadline);
+        return false;
+    });
+}
+
+// 每有一条新消息就检查一次：要不要推算日期，有没有信该送到了，转交人做了什么
+let checkAgain = null;
 async function checkMail({ fromCharacter = false } = {}) {
-    if (busy || !hasChat() || store.mode === 'unloaded') return;
+    if (!hasChat() || store.mode === 'unloaded') return;
+    if (fromCharacter) markInboxAnswered();
+    if (busy) {
+        // 上一次检查还没做完（比如正在等 AI 推算日期）：做完以后再补一次，不漏掉这条消息
+        checkAgain = { fromCharacter: fromCharacter || !!checkAgain?.fromCharacter };
+        return;
+    }
     const s = settings();
-    const cid = chatId();
-    const transit = Object.values(store.archive.letters).filter(l => l.delivery?.status === 'transit' && (!l.delivery.chatId || l.delivery.chatId === cid));
-    const pending = mailInChat().some(l => ['arrived', 'atVia', 'held'].includes(l.delivery.status));
+    const mail = mailInChat();
+    const transit = mail.filter(l => l.delivery.status === 'transit');
+    const pending = mail.some(l => ['arrived', 'atVia', 'held'].includes(l.delivery.status));
     if (!transit.length && !pending) { ui.renderPostbox(); return; }
     busy = true;
     let detected = null;
     try {
-        const handled = await checkViaDecisions({ fromCharacter });
-        // 角色刚写完的那条（包括思考过程）里，有没有写到信的动静
-        const last = (ctx().chat || []).at(-1);
-        const lastText = last && !last.is_user && !last.is_system && !last.extra?.epistolary && fromCharacter && s.detectArrival !== false
-            ? `${last.mes || ''}\n${last.extra?.reasoning || ''}` : '';
-        if (lastText) {
-            detected = findReceipt(lastText);
-            if (!detected) await viaFromText(lastText, { fromCharacter: true, skip: handled });
-        }
-        if (!transit.length) { remindVia(); ui.renderPostbox(); return; }
         const meta = chatMeta();
         const f = floor();
-        if (s.delivery.autoDate && transit.some(l => l.delivery.mode === 'date') && f - (meta.lastDateCheck || 0) >= Math.max(1, s.delivery.dateEvery)) {
+        // 推算剧情日期：平时每隔几层一次；快到日子时一层一次
+        const dated = mail.some(l => (l.delivery.status === 'transit' && l.delivery.mode === 'date') || (['atVia', 'held'].includes(l.delivery.status) && l.delivery.viaDeadline));
+        const every = urgentMail(mail) ? 1 : Math.max(1, s.delivery.dateEvery);
+        if (s.delivery.autoDate && dated && f - (meta.lastDateCheck || 0) >= every) {
             meta.lastDateCheck = f;
             saveMeta();
             await inferStoryDate();
         }
+        // 角色刚写完的那条（包括思考过程）
+        const last = (ctx().chat || []).at(-1);
+        const lastText = last && !last.is_user && !last.is_system && !last.extra?.epistolary && fromCharacter && s.detectArrival !== false
+            ? `${last.mes || ''}\n${last.extra?.reasoning || ''}` : '';
+        if (lastText) detected = findReceipt(lastText);
+        // 转交人：拆没拆、交不交，照剧情办
+        if (fromCharacter && s.detectArrival !== false && !detected) await processVia(lastText);
+
         const today = normalizeDate(getStoryDate());
         const arrivedNow = [];
-        for (const l of transit) {
+        for (const l of mail.filter(x => x.delivery.status === 'transit')) {
             const dv = l.delivery;
             const due = dv.mode === 'floors'
                 ? f - (dv.sentFloor || 0) >= (dv.floors || 1)
@@ -635,7 +709,6 @@ async function checkMail({ fromCharacter = false } = {}) {
             if (due) { arrive(l, getStoryDate()); arrivedNow.push(l); }
         }
         if (arrivedNow.length) {
-            ui.renderPostbox();
             ui.refresh();
             for (const l of arrivedNow) {
                 if (l.delivery.status === 'atVia') {
@@ -644,8 +717,7 @@ async function checkMail({ fromCharacter = false } = {}) {
                     continue;
                 }
                 const reader = l.delivery.reader || l.recipients[0];
-                const toMe = ui.isMe(reader);
-                toastr.success(toMe ? `你收到了 ${l.author} 的信` : `${reader} 收到了 ${l.author} 的信`, '📬 信到了');
+                toastr.success(ui.isMe(reader) ? `你收到了 ${l.author} 的信` : `${reader} 收到了 ${l.author} 的信`, '📬 信到了');
             }
             // 自动切过去：只在角色刚说完话的时候，免得打断正在进行的生成
             const auto = arrivedNow.find(l => l.delivery.auto || s.delivery.autoSwitch);
@@ -656,14 +728,15 @@ async function checkMail({ fromCharacter = false } = {}) {
                     setTimeout(() => switchToRecipient(auto), 600);
                 }
             }
+            // 刚到的信，角色这条里已经写到收信了
+            if (!detected && lastText) detected = findReceipt(lastText);
         }
-        // 刚到的信，角色这条里已经写到收信了
-        if (!detected && lastText) detected = findReceipt(lastText);
         remindVia();
         ui.renderPostbox();
     } finally {
         busy = false;
         if (detected) setTimeout(() => deliverDetected(detected), 500);
+        if (checkAgain) { const o = checkAgain; checkAgain = null; setTimeout(() => checkMail(o), 200); }
     }
 }
 
@@ -673,26 +746,29 @@ async function detectFromUser() {
     const chat = ctx().chat || [];
     const m = chat.at(-1);
     if (!m || !m.is_user || m.extra?.epistolary || m.extra?.epistolaryInline) return;
+    if (m.extra?.epistolaryChecked) return;
+    m.extra = { ...(m.extra || {}), epistolaryChecked: true };
     const hit = findReceipt(m.mes || '');
     if (hit) {
         const arrival = markReceived(hit);
-        m.extra = { ...(m.extra || {}), epistolaryInline: { letterId: hit.letter.id, reader: hit.reader, arrival } };
-        await ctx().saveChat();
+        queueLetter(hit.letter, { reader: hit.reader, arrival });
         return;
     }
-    const peek = await viaFromText(m.mes || '', { fromCharacter: false });
+    const peek = await viaFromUser(m.mes || '');
     if (peek) {
         const dv = peek.letter.delivery;
-        m.extra = { ...(m.extra || {}), epistolaryInline: { letterId: peek.letter.id, reader: dv.via, arrival: getStoryDate(), peek: true } };
-        await ctx().saveChat();
+        dv.awaitingDecision = true;
+        dv.decisionFrom = floor();
+        store.save();
+        queueLetter(peek.letter, { reader: dv.via, arrival: getStoryDate(), peek: true });
     }
 }
 
 // 每次生成前提醒 AI：哪些信已经到了还没读、哪些信压在转交人手里
 function pendingHints() {
     if (settings().detectArrival === false) return '';
-    const current = pendingReaction()?.letterId;
-    const mail = mailInChat().filter(l => l.id !== current);
+    const current = new Set([pendingReaction()?.letterId, ...activeInbox().map(i => i.letterId)]);
+    const mail = mailInChat().filter(l => !current.has(l.id));
     return buildPendingHints({
         arrived: mail.filter(l => l.delivery.status === 'arrived' && !ui.isMe(l.delivery.reader || l.recipients[0])),
         atVia: mail.filter(l => ['atVia', 'held'].includes(l.delivery.status) && !ui.isMe(l.delivery.via)),
@@ -830,6 +906,7 @@ jQuery(async () => {
         generateRaw: (prompt, system) => ai(system, prompt, { kind: 'raw' }),
         switchToRecipient,
         switchToVia,
+        getInbox: () => (hasChat() ? activeInbox().filter(i => !i.answeredAt) : []),
         letViaRead,
         forwardLetter,
         setViaAction,

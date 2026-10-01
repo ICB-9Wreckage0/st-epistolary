@@ -56,3 +56,19 @@ test('抖动程度：信件 > 人物 > 字迹默认', () => {
     assert.equal(effectiveWobble({ appearance: { font: 'casual', wobble: '' } }, { wobble: 1 }), 1);
     assert.equal(effectiveWobble({ appearance: { font: 'casual', wobble: 0 } }, { wobble: 1 }), 0);
 });
+
+// ---------- 外观选项的含义 ----------
+import { meaningOf, lookWarnings, labelWithWarn } from '../src/meanings.js';
+import { STYLE_PACKS as PACKS } from '../src/styles.js';
+
+test('含义：黑火漆、红墨水、年代不对的航空信封会被提醒', () => {
+    assert.ok(meaningOf('wax', 'black').warn);
+    assert.ok(!meaningOf('wax', 'crimson').warn);
+    assert.ok(meaningOf('envelope', 'airmail', 1890).anachronism);
+    assert.ok(!meaningOf('envelope', 'airmail', 1950).warn);
+    const w = lookWarnings({ writtenAt: '1890-06-27', appearance: { wax: 'black', ink: 'crimson', envelope: 'ivory', paper: 'cream', font: 'personal' } });
+    assert.equal(w.length, 2);
+    assert.match(labelWithWarn('wax', { black: '黑色火漆' }).black, /⚠ 丧事/);
+    // 只有专门的“讣告”款式包用黑火漆
+    assert.deepEqual(PACKS.filter(p => p.appearance.wax === 'black').map(p => p.id), ['mourning']);
+});

@@ -19,6 +19,7 @@ import { detectInChat, chunkChat, buildImportPrompt, parseImportResponse, sliceV
 import { API_MODES, listProfiles, testConnection, fetchModels } from './api.js';
 import { playSeal, playOpen, WAX_LABELS, ENVELOPE_LABELS } from './envelope.js';
 import { STYLE_PACKS, applyStyle, pickStyle } from './styles.js';
+import { meaningOf, labelWithWarn, lookWarnings } from './meanings.js';
 import { HANDS, ORIENTATIONS, paperClasses, renderBody, analyze, scriptLang, renderOptions, WOBBLE_LABELS, WEAR_LABELS, paperLayer, ensureWearFilters, hashSeed, INKS, inkColor, inkContrast, paperStyle, SIZE_LABELS } from './render.js';
 
 const PAPERS = { plain: '素白', cream: '奶油棉纸', aged: '泛黄旧纸', lined: '横格信笺', redline: '红线信笺', blue: '淡蓝航空信纸' };
@@ -189,7 +190,7 @@ export class UI {
                 </div>
                 <div class="epi-card-actions">
                     ${l.delivery?.status === 'transit' ? `<button class="menu_button" data-act="deliver-now" data-id="${esc(l.id)}" title="不等了，现在就送到">现在送达</button>` : ''}
-                    ${['atVia', 'held', 'withheld'].includes(l.delivery?.status) ? `<button class="menu_button" data-act="via-forward" data-id="${esc(l.id)}" title="${esc(l.delivery.via)} 改主意了，把信转交出去">让 ${esc(l.delivery.via)} 转交</button>` : ''}
+                    ${['atVia', 'held', 'withheld'].includes(l.delivery?.status) && this.isMe(l.delivery.via) ? `<button class="menu_button" data-act="via-forward" data-id="${esc(l.id)}" title="${esc(l.delivery.via)} 改主意了，把信转交出去">让 ${esc(l.delivery.via)} 转交</button>` : ''}
                     <button class="menu_button" data-act="edit" data-id="${esc(l.id)}">编辑</button>
                     <button class="menu_button" data-act="delete" data-id="${esc(l.id)}">删除</button>
                 </div>
@@ -887,6 +888,7 @@ ${list}`;
                     <label><input type="radio" name="epi-send-next" value="archive"> 只记录送达，不做别的</label>
                 </div>
             </div>
+            ${lookWarnings(d).map(w => `<p class="epi-warn">⚠ ${esc(w)}（可以在「✦ 外观与款式」里换。）</p>`).join('')}
             ${mismatch ? `<p class="epi-warn" data-role="mismatch">当前聊天的角色是 ${esc(charName)}，不是收信人。切过去看收信反应时，会由 ${esc(charName)} 的 AI 来描写 ${esc(reader)} 读信的场景。</p>` : ''}
             <div class="epi-dialog-actions">
                 <button class="menu_button" data-act="dialog-close">取消</button>
@@ -1365,7 +1367,7 @@ ${list}`;
     lookSummary(a) {
         const hand = HANDS[a.font]?.label || '';
         return [ORIENTATIONS[a.orientation]?.replace(/（.*）/, ''), PAPERS[a.paper], a.ink === 'custom' ? '自定义墨色' : INKS[a.ink]?.label, hand && `字迹${hand}`, a.size && a.size !== 'md' ? `字号${SIZE_LABELS[a.size].replace(/（.*）/, '')}` : '', ENVELOPE_LABELS[a.envelope], WAX_LABELS[a.wax]]
-            .filter(Boolean).join(' · ');
+            .filter(Boolean).join(' · ') + (lookWarnings({ appearance: a }).length ? '  ⚠ 有容易被误读的选项' : '');
     }
 
     openStyleDialog() {
@@ -1379,6 +1381,13 @@ ${list}`;
                 <div class="epi-ap-control">${control}${hint ? `<small class="epi-muted">${hint}</small>` : ''}</div>
             </div>`;
         const sel = (key, map, value, extra = '') => `<select class="text_pole" data-f="appearance.${key}" ${extra}>${options(map, String(value))}</select>`;
+        // 当前选项的含义（⚠ = 收信人可能会误读）
+        const year = parseInt(String(d.writtenAt || '').slice(0, 4), 10) || 0;
+        const mean = (field, base = '') => {
+            const m = meaningOf(field, a[field], year);
+            const txt = m ? `<span class="${m.warn ? 'epi-meaning epi-meaning-warn' : 'epi-meaning'}">${m.warn ? '⚠ ' : '含义：'}${esc(m.text)}</span>` : '';
+            return [base, txt].filter(Boolean).join('<br>');
+        };
         this.openDialog(`
             <h3>✦ 外观与款式</h3>
             <h4>一键套用</h4>
@@ -1388,21 +1397,22 @@ ${list}`;
 
             <h4>信纸</h4>
             ${row('版式', sel('orientation', ORIENTATIONS, a.orientation), '竖版：寄出时对折一次再装进信封。横版：平放着装进去。')}
-            ${row('纸张', sel('paper', PAPERS, a.paper), '')}
+            ${row('纸张', sel('paper', PAPERS, a.paper), mean('paper'))}
             ${row('磨损', sel('wear', WEAR_LABELS, a.wear), '纸边毛糙程度和污渍。只影响纸，不影响字。')}
 
             <h4>字</h4>
-            ${row('字迹', sel('font', Object.fromEntries(Object.entries(HANDS).map(([k, v]) => [k, `${v.label}：${v.desc}`])), a.font), '这个人的字写成什么样。英文、法文和中文会自动用各自的字体。')}
+            ${row('字迹', sel('font', Object.fromEntries(Object.entries(HANDS).map(([k, v]) => [k, `${v.label}：${v.desc}`])), a.font), mean('font', '这个人的字写成什么样。英文、法文和中文会自动用各自的字体。'))}
             ${row('字号', sel('size', SIZE_LABELS, a.size), '纸上的字写多大。写信和阅读时都按这个显示；也会告诉 AI（字小而密、字写得很大，读信的人能看出来）。')}
-            ${row('墨水', `${sel('ink', Object.fromEntries(Object.entries(INKS).map(([k, v]) => [k, v.label])), a.ink)}
+            ${row('墨水', `${sel('ink', labelWithWarn('ink', Object.fromEntries(Object.entries(INKS).map(([k, v]) => [k, v.label]))), a.ink)}
                 <input type="color" class="epi-ink-picker" data-f="appearance.inkColor" value="${esc(a.inkColor || inkColor(a))}" title="自定义墨水颜色" ${a.ink === 'custom' ? '' : 'hidden'}>
-                <span class="epi-ink-swatch" style="background:${esc(inkColor(a))}"></span>`, `和纸的对比度 ${inkContrast(a).toFixed(1)}${inkContrast(a) < 4.5 ? '，偏浅，建议换深一点的墨水' : '，清楚'}。`)}
+                <span class="epi-ink-swatch" style="background:${esc(inkColor(a))}"></span>`, mean('ink', `和纸的对比度 ${inkContrast(a).toFixed(1)}${inkContrast(a) < 4.5 ? '，偏浅，建议换深一点的墨水' : '，清楚'}。`))}
             ${row('笔迹抖动', `<select class="text_pole" data-f="appearance.wobble"><option value="">跟随写信人档案</option>${options(WOBBLE_LABELS, String(a.wobble))}</select>`, '每个字轻微的歪斜、高低和墨色深浅，让字看起来是手写的。只在阅读时显示，写信时是普通文字。')}
             ${row('花体', `<label class="checkbox_label"><input type="checkbox" data-act="toggle-flourish-cb" ${a.flourish ? 'checked' : ''}> 称呼和署名用花体</label>`, '阅读时，开头的称呼和结尾的署名换成花体字，正文不变。')}
 
             <h4>信封</h4>
-            ${row('信封', sel('envelope', ENVELOPE_LABELS, a.envelope), '寄信、拆信动画里信封的样子。')}
-            ${row('封缄', sel('wax', WAX_LABELS, a.wax), '火漆：印章压下去封口。朱印“缄”：中式信件盖在封口的红印。不封：用胶水封口。')}
+            ${row('信封', sel('envelope', ENVELOPE_LABELS, a.envelope), mean('envelope', '寄信、拆信动画里信封的样子。'))}
+            ${row('封缄', sel('wax', labelWithWarn('wax', WAX_LABELS), a.wax), mean('wax'))}
+            <p class="epi-muted">纸、墨水、封缄和信封的样子都会告诉 AI，收信人会按这些来理解。“含义”多来自 19 世纪欧洲的书信礼仪和中文书信习惯，各地不完全一样。</p>
 
             <div class="epi-dialog-actions">
                 <button class="menu_button" data-act="style-save">把当前样子存为我的款式</button>
@@ -1472,8 +1482,16 @@ ${list}`;
         const atVia = letters.filter(l => l.delivery.status === 'atVia');
         const viaFollow = letters.filter(l => l.delivery.viaFollowup && l.delivery.status !== 'atVia');
         const held = letters.filter(l => l.delivery.status === 'held');
-        if (!arrived.length && !follow.length && !transit.length && !atVia.length && !viaFollow.length && !held.length) { box.hidden = true; box.innerHTML = ''; return; }
+        const queued = (this.hooks.getInbox?.() || []).filter(i => this.archive.letters[i.letterId]);
+        if (!arrived.length && !follow.length && !transit.length && !atVia.length && !viaFollow.length && !held.length && !queued.length) { box.hidden = true; box.innerHTML = ''; return; }
         const items = [];
+        for (const i of queued) {
+            const l = this.archive.letters[i.letterId];
+            items.push(`<div class="epi-pb-item">
+                <div>📖 下一次生成时，<b>${esc(i.reader)}</b> 会读到 ${esc(l.author)} 的信${i.peek ? '（拆开了别人托转交的信）' : ''}。</div>
+                <div class="epi-muted">原文直接交给 AI，不发进聊天。</div>
+                <div class="epi-pb-actions"><button class="menu_button epi-mini" data-pb="open-text" data-id="${esc(l.id)}">看原文</button></div></div>`);
+        }
         for (const l of atVia) items.push(this.viaItem(l));
         for (const l of viaFollow) {
             const dv = l.delivery;
@@ -1520,7 +1538,7 @@ ${list}`;
                 ${transit.map(l => `<div class="epi-pb-row"><span>${esc(l.author)} → ${esc(l.recipients.join('、'))}${l.delivery.via ? `（经 ${esc(l.delivery.via)}）` : ''}：${esc(this.etaText(l))}</span>
                     <button class="menu_button epi-mini" data-pb="deliver" data-id="${esc(l.id)}">现在送达</button></div>`).join('')}
                 ${held.map(l => `<div class="epi-pb-row"><span>${esc(l.author)} → ${esc(l.recipients.join('、'))}：${esc(l.delivery.via)} 先留着${l.delivery.opened ? '（拆看过）' : ''}</span>
-                    <button class="menu_button epi-mini" data-pb="via-forward" data-id="${esc(l.id)}" title="${esc(l.delivery.via)} 决定转交">转交</button></div>`).join('')}
+                    ${this.isMe(l.delivery.via) ? `<button class="menu_button epi-mini" data-pb="via-forward" data-id="${esc(l.id)}" title="你决定转交">转交</button>` : ''}</div>`).join('')}
             </details>`);
         }
         box.innerHTML = items.join('');
@@ -1551,15 +1569,14 @@ ${list}`;
                 <div class="epi-pb-actions">${decide}</div></div>`;
         }
         const g = dv.viaGuess;
-        const guess = g ? `<div class="epi-pb-guess">看起来：${g.opened ? '拆开看了，' : ''}${g.action === 'unclear' ? '还没决定怎么处理' : esc(VIA_ACTIONS[g.action])}${g.note ? `——${esc(g.note)}` : ''}
-            ${g.action !== 'unclear' ? btn('via-apply', '照这样办', '', 'epi-mini') : ''}</div>` : '';
-        const waiting = dv.awaitingDecision ? `<div class="epi-muted">等 ${via} 那边的剧情写完，会自动判断 ${via} 怎么处理这封信。</div>` : '';
+        const guess = g ? `<div class="epi-pb-guess">目前：${dv.opened ? '已经拆开看过，' : ''}还没决定怎么处理${g.note ? `——${esc(g.note)}` : ''}</div>` : '';
+        const waiting = `<div class="epi-muted">拆不拆、交不交由 ${via} 在剧情里决定，书信簿每层都会看一眼，照剧情办。</div>`;
         return `<div class="epi-pb-item epi-pb-new">
             <div>🤝 ${when}<b>${via}</b> 拿到了 ${esc(l.author)} 托 TA 转交给 ${to} 的信${dv.opened ? '，已经拆开看过了' : ''}。</div>
             ${deadline}${waiting}${guess}
             <div class="epi-pb-actions">
                 ${dv.viaViewed ? '' : btn('via-switch', `切过去看 ${via} 怎么处理`, `镜头切到 ${dv.via} 那边。TA 不知道信的内容，拆不拆、交不交由 TA 自己决定`)}
-                ${dv.viaViewed || g ? `<details class="epi-pb-manual"><summary>手动决定</summary><div class="epi-pb-actions">${decide}</div></details>` : `<details class="epi-pb-manual"><summary>不看了，直接决定</summary><div class="epi-pb-actions">${decide}</div></details>`}
+
             </div></div>`;
     }
 
@@ -1624,6 +1641,9 @@ ${list}`;
             this.store.save();
         } else if (act === 'deliver') {
             this.hooks.deliverNow(l.id);
+        } else if (act === 'open-text') {
+            this.open('list');
+            this.openReader(l.id);
         } else if (act === 'via-switch') {
             await this.hooks.switchToVia(l);
         } else if (act === 'via-peek') {
@@ -1691,7 +1711,6 @@ ${list}`;
                 ${chk('delivery.autoDate', '自动推算剧情日期', '有在途的信时，每隔几层让 AI 根据最近的对话推算故事里现在是哪天。日期只会往后走。')}
                 <label>每隔几层推算一次<input class="text_pole epi-num" type="number" min="1" max="100" data-s="delivery.dateEvery" value="${esc(s.delivery.dateEvery)}"></label>
                 ${chk('delivery.autoSwitch', '信到了就自动切过去看收信反应（不勾的话，先在右下角提醒）')}
-                ${chk('delivery.viaAuto', '托人转交：转交人在剧情里的决定自动生效', '切到转交人那边以后，AI 会读那段剧情，判断转交人拆没拆信、打算转交还是扣下，然后照办（拆了的话，把信的原文给 TA 看）。不勾的话，只在右下角提示，由你点“照这样办”。')}
                 <p class="epi-muted">寄信时可以选“按剧情日期送达”“按聊天楼层送达”或“立即送达”。在途的信，收信人在送到之前不会知道内容。</p>
             </section>
 

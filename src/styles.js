@@ -11,9 +11,14 @@ export const STYLE_PACKS = [
         appearance: { paper: 'cream', ink: 'blueblack', font: 'personal', orientation: 'portrait', envelope: 'ivory', wax: 'crimson', wear: 1, wobble: '', flourish: true },
     },
     {
-        id: 'victorian', name: '维多利亚英国', desc: '素白信纸、黑墨、端正字迹，白信封配黑火漆',
+        id: 'victorian', name: '维多利亚英国', desc: '素白信纸、黑墨、端正字迹，白信封配朱红火漆',
         language: '英语',
-        appearance: { paper: 'plain', ink: 'black', font: 'formal', orientation: 'portrait', envelope: 'white', wax: 'black', wear: 1, wobble: '', flourish: true },
+        appearance: { paper: 'plain', ink: 'black', font: 'formal', orientation: 'portrait', envelope: 'white', wax: 'crimson', wear: 1, wobble: '', flourish: true },
+    },
+    {
+        id: 'mourning', name: '讣告 · 吊唁信', desc: '⚠ 黑火漆：只用于报丧、吊唁和服丧期间的通信，收信人一看就知道有人去世了',
+        language: '',
+        appearance: { paper: 'plain', ink: 'black', font: 'formal', orientation: 'portrait', envelope: 'white', wax: 'black', wear: 0, wobble: '', flourish: false },
     },
     {
         id: 'minguo', name: '民国家书', desc: '红线信笺、自然手写，牛皮纸信封，盖朱印“缄”字',
