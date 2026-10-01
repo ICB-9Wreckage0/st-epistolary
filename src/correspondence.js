@@ -64,7 +64,7 @@ export function threadBetween(archive, a, b, beforeId) {
 }
 
 // 寄出一封信时自动生成的流转记录：写信人寄出，收件人收到并阅读
-export function deliveryEvents(letter, arrivalDate, existing = []) {
+export function deliveryEvents(letter, arrivalDate, existing = [], { sentOnly = false } = {}) {
     let max = 0;
     for (const e of existing) {
         const n = parseInt(String(e.id).replace(/\D/g, ''), 10);
@@ -76,6 +76,7 @@ export function deliveryEvents(letter, arrivalDate, existing = []) {
     if (letter.author && !has('sent', letter.author)) {
         out.push({ id: id(), type: 'sent', who: letter.author, date: letter.writtenAt, segments: null, to: '', note: '' });
     }
+    if (sentOnly) return out;
     for (const r of letter.recipients) {
         if (!has('received', r)) out.push({ id: id(), type: 'received', who: r, date: arrivalDate, segments: null, to: '', note: '' });
         if (!has('read', r)) out.push({ id: id(), type: 'read', who: r, date: arrivalDate, segments: null, to: '', note: '' });
@@ -171,7 +172,7 @@ function letterForPrompt(archive, l, { numbered = false, maxChars = 0 } = {}) {
  * @returns {{ system: string, prompt: string }}
  */
 export function buildReplyPrompt(archive, letter, replier, opts = {}) {
-    const { replyDate = '', length = 'natural', historyCount = 3 } = opts;
+    const { replyDate = '', length = 'natural', historyCount = 3, card = '', recentChat = '' } = opts;
     const original = letter.author;
     const person = findPerson(archive, replier);
     const received = arrivalOf(archive, letter, replier);
@@ -200,6 +201,8 @@ export function buildReplyPrompt(archive, letter, replier, opts = {}) {
         ownLetters.forEach(l => parts.push(letterForPrompt(archive, l, { maxChars: 600 }), ''));
     }
 
+    if (card) parts.push('', `【${replier} 的角色设定】`, card);
+    if (recentChat) parts.push('', '【最近发生的剧情（供参考，不要照抄）】', recentChat);
     parts.push('', '【文风】', styleBlock(person, replier));
 
     parts.push('', '【怎样写得像真的回信】');
@@ -233,10 +236,25 @@ export function cleanReply(text) {
 /**
  * 角色收到信、读信时注入给 AI 的引导
  */
-export function buildReactionGuidance(archive, letter, reader, arrival) {
+export function buildReactionGuidance(archive, letter, reader, arrival, extra = {}) {
     const person = findPerson(archive, reader);
     const lines = [];
+    const dv = letter.delivery || {};
+    const intended = (letter.recipients || []).join('、');
+    if (extra.peek) {
+        // 转交人拆开了托他转交的信
+        lines.push(`【拆信】${arrival ? `${arrival}，` : ''}${reader} 拆开了这封本来要转交给 ${intended} 的信（${letter.author || '某人'} 写的，信的全文就是上一条消息）。`);
+        lines.push(`请描写 ${reader} 读这封不是写给自己的信的过程和反应：`);
+        lines.push(
+            `- 为什么拆、拆的时候的心情（好奇、担心、犹豫、心虚、理所当然……），读到具体的句子时的反应。`,
+            `- 读完以后打算怎么办：照样转交（要不要把封口弄回原样）、先压着、还是不交了。符合 ${reader} 的性格和与这几个人的关系。`,
+            `- ${reader} 只知道信里写到的内容和自己本来就知道的事。不要复述整封信。`,
+        );
+        if (person?.historical) lines.push(`- ${reader} 是真实历史人物，反应要符合此人在这个时期的真实状况和性格。`);
+        return lines.join('\n');
+    }
     lines.push(`【收信】${arrival ? `${arrival}，` : ''}${reader} 收到了 ${letter.author || '某人'} 寄来的信（信的全文就是上一条消息）。`);
+    if (dv.via) lines.push(`这封信是托 ${dv.via} 转交的。${dv.tampered ? `信封的封口有被拆开过、又粘回去的痕迹，${reader} 可能注意到，也可能没注意到。` : ''}`);
     lines.push(`请描写 ${reader} 收信和读信的过程，以及真实的反应：`);
     lines.push(
         `- 收信时的情境：当时在哪里、在做什么，信是怎么到手上的，拆信、读信的样子。`,
@@ -252,6 +270,95 @@ export function buildReactionGuidance(archive, letter, reader, arrival) {
 }
 
 // 发到聊天里的“寄出的信”那条消息
+// 镜头切到收信人那边：作为一段旁白发进聊天，后面跟着信的全文
+export function sceneSwitchMessage(letter, reader, arrival) {
+    const where = letter.placeTo ? `${letter.placeTo}，` : '';
+    const when = arrival ? `${arrival}。` : '';
+    const via = letter.delivery?.via ? `经 ${letter.delivery.via} 转交，` : '';
+    return `*（镜头切到${where}${when}${via}${reader || '收信人'}收到了${letter.author ? ` ${letter.author} 的` : '一封'}来信。）*\n\n${letter.body}`;
+}
+
+// ---------- 托人转交 ----------
+
+// 镜头切到转交人那边：只有信封，没有内容
+export function viaSceneMessage(letter, via, arrival) {
+    const when = arrival ? `${arrival}，` : '';
+    const to = (letter.recipients || []).join('、') || '某人';
+    return `*（镜头切到${via}那边。${when}${via}收到了一封${letter.author ? ` ${letter.author} ` : ''}托人带来、请${via}转交的信。信封上写着“${to} 收”，封口封得好好的。）*`;
+}
+
+// 正文：转交人拆开以后，信的全文
+export function viaPeekMessage(letter, via) {
+    return `*（${via}拆开了信封。）*\n\n${letter.body}`;
+}
+
+export function buildViaGuidance(archive, letter, via, arrival) {
+    const person = findPerson(archive, via);
+    const to = (letter.recipients || []).join('、') || '收信人';
+    const lines = [
+        `【转交】${arrival ? `${arrival}，` : ''}${via} 收到一封 ${letter.author || '某人'} 托${via}转交给 ${to} 的信。信是封着的，${via} 不知道里面写了什么。`,
+        `请按 ${via} 的性格、处境、和 ${letter.author || '写信人'}、${to} 的关系，描写${via}拿到这封信以后怎么做：`,
+        `- 可以照常转交（马上去送，或者等方便的时候）、先压着不急着给、犹豫要不要拆开看、偷偷拆开、或者干脆不交了。由 ${via} 自己决定。`,
+        `- 如果 ${via} 决定拆开看，只写到拆开信封、展开信纸为止。**不要编造信的内容**，信的原文会在下一条消息里给出。`,
+        `- 不要替 ${to} 写任何反应，${to} 现在还没拿到信。`,
+    ];
+    if (person?.historical) lines.push(`- ${via} 是真实历史人物，做法要符合此人在这个时期的真实状况和性格。`);
+    return lines.join('\n');
+}
+
+export const VIA_ACTIONS = { forward: '转交', later: '先留着', withhold: '不转交' };
+
+// 让 AI 从转交人那一段剧情里判断：拆没拆、打算怎么办
+export function buildViaDecisionPrompt(via, recipient, text) {
+    const system = '你是剧情记录员，只输出 JSON。';
+    const prompt = `下面是一段角色扮演的剧情。${via} 收到一封托${via}转交给 ${recipient} 的信。请判断：
+1. ${via} 有没有拆开这封信（偷看也算）？
+2. ${via} 打算怎么处理：forward（转交，现在或稍后去送都算）、later（先压着，还没决定或者暂时不交）、withhold（不交了、扣下、烧掉、退回）、unclear（看不出来）。
+3. 如果拆开过，${via} 有没有把封口弄回原样、让人看不出被拆过（resealed）？
+
+只输出一行 JSON，例如：{"opened": false, "resealed": false, "action": "forward", "note": "他决定明天一早送过去"}
+note 用一句中文概括。
+
+【剧情】
+${text}`;
+    return { system, prompt };
+}
+
+export function parseViaDecision(text) {
+    const m = String(text || '').match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    try {
+        const j = JSON.parse(m[0]);
+        const action = ['forward', 'later', 'withhold'].includes(j.action) ? j.action : 'unclear';
+        return { opened: !!j.opened, resealed: !!j.resealed, action, note: String(j.note || '').slice(0, 80) };
+    } catch {
+        return null;
+    }
+}
+
+// 转交人收到：只知道有这封信
+export function viaReceivedEvents(letter, via, date, existing = []) {
+    const out = [];
+    let max = 0;
+    for (const e of existing) { const n = parseInt(String(e.id).replace(/\D/g, ''), 10); if (n > max) max = n; }
+    if (!existing.some(e => e.type === 'sent' && e.who === letter.author)) {
+        out.push({ id: `E${++max}`, type: 'sent', who: letter.author, date: letter.writtenAt, segments: null, to: via, note: `托 ${via} 转交` });
+    }
+    out.push({ id: `E${++max}`, type: 'received', who: via, date, segments: null, to: '', note: '代为转交' });
+    return out;
+}
+
+export function nextEventId(existing) {
+    let max = 0;
+    for (const e of existing) { const n = parseInt(String(e.id).replace(/\D/g, ''), 10); if (n > max) max = n; }
+    return `E${max + 1}`;
+}
+
+export function sceneReturnMessage(letter) {
+    const where = letter.placeFrom ? `${letter.placeFrom}，` : '';
+    return `*（镜头回到${where}${letter.author || '写信人'}这边。）*`;
+}
+
 export function letterChatMessage(letter, reader, arrival) {
     const head = `（${arrival ? `${arrival}，` : ''}${reader || '收件人'}收到了${letter.author ? ` ${letter.author} 的` : '一封'}来信。）`;
     return `${head}\n\n${letter.body}`;
@@ -283,3 +390,66 @@ export const EXAMPLE_PROFILES = {
         styleSamples: [],
     },
 };
+
+
+// ---------- 翻译 ----------
+
+export const TRANSLATE_TARGETS = {
+    fr: '法语', en: '英语', de: '德语', it: '意大利语', es: '西班牙语', ru: '俄语', nl: '荷兰语', ja: '日语', zh: '中文',
+};
+
+export const TRANSLATE_STYLES = {
+    period: '按写信年代的书信体',
+    modern: '现代自然的说法',
+    keep: '尽量保持原文的语气和句式',
+};
+
+export function buildTranslatePrompt(letter, target, style = 'period') {
+    const year = String(letter.writtenAt || '').match(/\d{3,4}/)?.[0] || '';
+    const system = '你是一位精通多国语言和书信传统的翻译。只输出译文本身。';
+    const styleText = {
+        period: `译文要像${year ? `${year} 年前后` : '写信那个年代'}的人用${target}亲笔写的信：用当时${target}书信的称呼、日期写法、客套语和结尾祝语，避免现代说法和网络用语。`,
+        modern: `译文用现代、自然的${target}。`,
+        keep: `尽量保留原文的语气、句式和用词的分寸，不要添加或删减内容。`,
+    }[style] || '';
+    const prompt = `把下面这封信翻译成${target}。
+
+要求：
+- ${styleText}
+- 保持原来的分段：原文空一行的地方，译文也空一行；段落数量一致。
+- 人名、地名按${target}的习惯写法。原文里的日期行、称呼、署名、附言都要翻译并放在对应位置。
+- 写信人：${letter.author || '未知'}；收信人：${(Array.isArray(letter.recipients) ? letter.recipients.join('、') : String(letter.recipients || '')) || '未知'}${letter.writtenAt ? `；写信日期：${letter.writtenAt}` : ''}。
+- 只输出译文，不要任何说明、标题、引号或代码块。
+
+【原文】
+${letter.body}`;
+    return { system, prompt };
+}
+
+// ---------- 推算剧情日期 ----------
+
+export function buildDatePrompt(recentText, currentDate) {
+    const system = '你是角色扮演的剧情记录员，负责记录故事里的日期。只输出日期。';
+    const prompt = `下面是一段角色扮演的最近对话。${currentDate ? `上一次记录的剧情日期是 ${currentDate}。` : ''}
+请判断现在故事里是哪一天。
+
+规则：
+- 只根据对话里的线索（明确写出的日期、“第二天”“过了一周”“三天后”之类的时间推移、季节变化）来推算。
+- 没有时间推移的线索，就原样输出上一次的日期。
+- 只输出一个日期，格式 YYYY-MM-DD，不要别的文字。
+
+【最近的对话】
+${recentText}`;
+    return { system, prompt };
+}
+
+// 从 AI 的回答里取出日期；早于上一次的日期（倒叙、回忆）不采用
+export function parseStoryDate(text, currentDate) {
+    const m = String(text || '').match(/(\d{3,4})[-/.年](\d{1,2})[-/.月](\d{1,2})/);
+    if (!m) return null;
+    const d = `${m[1].padStart(4, '0')}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    const mo = Number(m[2]), da = Number(m[3]);
+    if (mo < 1 || mo > 12 || da < 1 || da > 31) return null;
+    if (currentDate && /^\d{4}-\d{2}-\d{2}$/.test(currentDate) && d < currentDate) return null;
+    return d;
+}

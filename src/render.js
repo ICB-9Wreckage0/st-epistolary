@@ -48,7 +48,108 @@ export function paperClasses(letter) {
         `orient-${a.orientation === 'landscape' ? 'landscape' : 'portrait'}`,
         `script-${scriptLang(letter.language)}`,
         a.flourish ? 'flourish' : '',
+        Number(a.wear) > 0 ? `worn worn-${Number(a.wear)}` : '',
     ].filter(Boolean).join(' ');
+}
+
+// ================= 墨水 =================
+export const INKS = {
+    black: { label: '墨黑', color: '#1a1a1a' },
+    blueblack: { label: '蓝黑', color: '#1c2640' },
+    navy: { label: '深蓝', color: '#17306b' },
+    brown: { label: '深褐', color: '#3f2716' },
+    crimson: { label: '酒红', color: '#6e1620' },
+    green: { label: '墨绿', color: '#173d2c' },
+    faded: { label: '褪色铁胆', color: '#4f3e2d' },
+    custom: { label: '自定义颜色…', color: '' },
+};
+
+export const PAPER_BASE = { plain: '#fdfdfb', cream: '#f7f0de', aged: '#e6d2a4', lined: '#fbf9f3', redline: '#fbf6ea', blue: '#e7eef6' };
+
+export function inkColor(appearance = {}) {
+    if (appearance.ink === 'custom' && /^#[0-9a-f]{6}$/i.test(appearance.inkColor || '')) return appearance.inkColor;
+    return (INKS[appearance.ink] || INKS.blueblack).color || INKS.blueblack.color;
+}
+
+// 自定义墨色写在元素的 style 上
+export function paperStyle(letter) {
+    const a = letter.appearance || {};
+    return a.ink === 'custom' && /^#[0-9a-f]{6}$/i.test(a.inkColor || '') ? `--ink:${a.inkColor}` : '';
+}
+
+function luminance(hex) {
+    const n = parseInt(String(hex).replace('#', ''), 16);
+    const ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(v => {
+        v /= 255;
+        return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+}
+
+// 墨色和纸色的对比度（WCAG），低于 4.5 读起来吃力
+export function inkContrast(appearance = {}) {
+    const a = luminance(inkColor(appearance));
+    const b = luminance(PAPER_BASE[appearance.paper] || PAPER_BASE.cream);
+    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+// 只要字迹、墨水、文字的 class（信封上写地址用，不要纸张背景）
+export function handClasses(letter) {
+    const a = letter.appearance || {};
+    return `ink-${a.ink || 'blueblack'} font-${normalizeHand(a.font)} script-${scriptLang(letter.language)}`;
+}
+
+// ================= 纸张磨损 =================
+// 思路和 TornPaper 一样：用 SVG 滤镜实时生成撕边和污渍，不用图片。
+// 只处理纸张的背景层：边缘是把纸的轮廓用噪声“咬”掉一圈，纸面和格线本身不扭曲，字也不会糊。
+
+export const WEAR_LABELS = { 0: '崭新', 1: '轻微', 2: '旧信', 3: '破损' };
+
+const WEAR = [
+    null,
+    { edge: 5, freq: 0.045, stain: 0.3, speck: 0, shadow: 0.38 },
+    { edge: 10, freq: 0.035, stain: 0.55, speck: 0.35, shadow: 0.34 },
+    { edge: 18, freq: 0.022, stain: 0.95, speck: 0.6, shadow: 0.3 },
+];
+
+function wearFilter(level, variant) {
+    const w = WEAR[level];
+    const seed = level * 17 + variant * 101 + 3;
+    // 污渍：取噪声的红色通道，只有偏亮的地方显出淡褐色
+    const sk = w.stain;
+    const speck = w.speck ? `
+        <feTurbulence type="fractalNoise" baseFrequency="0.55" numOctaves="1" seed="${seed + 7}" result="sn"/>
+        <feColorMatrix in="sn" type="matrix" values="0 0 0 0 0.42  0 0 0 0 0.27  0 0 0 0 0.12  ${(w.speck * 9).toFixed(2)} 0 0 0 ${(-w.speck * 9 * 0.74).toFixed(2)}" result="specks"/>
+        <feComposite in="specks" in2="stained" operator="atop" result="stained2"/>` : '';
+    return `
+    <filter id="epi-wear-${level}-${variant}" x="-6%" y="-6%" width="112%" height="112%" color-interpolation-filters="sRGB">
+        <feTurbulence type="fractalNoise" baseFrequency="${w.freq}" numOctaves="4" seed="${seed}" result="edgeNoise"/>
+        <feDisplacementMap in="SourceAlpha" in2="edgeNoise" scale="${w.edge}" xChannelSelector="R" yChannelSelector="G" result="mask"/>
+        <feComposite in="SourceGraphic" in2="mask" operator="in" result="torn"/>
+        <feTurbulence type="fractalNoise" baseFrequency="0.011" numOctaves="4" seed="${seed + 1}" result="stainNoise"/>
+        <feColorMatrix in="stainNoise" type="matrix" values="0 0 0 0 0.58  0 0 0 0 0.43  0 0 0 0 0.22  ${sk.toFixed(2)} 0 0 0 ${(-sk * 0.55).toFixed(2)}" result="stains"/>
+        <feComposite in="stains" in2="torn" operator="atop" result="stained"/>${speck}
+        <feDropShadow dx="0" dy="5" stdDeviation="9" flood-color="#000" flood-opacity="${w.shadow}"/>
+    </filter>`;
+}
+
+// 把滤镜定义放进页面（只放一次）
+export function ensureWearFilters(doc = typeof document !== 'undefined' ? document : null) {
+    if (!doc || doc.getElementById('epi-wear-filters')) return;
+    const filters = [];
+    for (let l = 1; l <= 3; l++) for (let v = 0; v < 3; v++) filters.push(wearFilter(l, v));
+    const wrap = doc.createElement('div');
+    wrap.innerHTML = `<svg id="epi-wear-filters" width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true"><defs>${filters.join('')}</defs></svg>`;
+    doc.body.appendChild(wrap.firstChild);
+}
+
+// 纸张背景层：放在信纸元素里的第一个位置。磨损为 0 时不需要
+export function paperLayer(letter, seed = 0) {
+    const a = letter.appearance || {};
+    const level = Number(a.wear) || 0;
+    if (!level) return '';
+    const v = (seed >>> 0) % 3;
+    return `<div class="epi-wear-layer paper-${a.paper || 'cream'}" style="filter:url(#epi-wear-${level}-${v})" aria-hidden="true"></div>`;
 }
 
 function esc(s) {
@@ -93,12 +194,132 @@ export function analyze(body) {
     return paras;
 }
 
-export function renderBody(body) {
+// ================= 手写随机感 =================
+// 电脑字体最大的破绽是每个字都一模一样。这里给每个字（中文）或每个词（英法文，手写体字母是连笔的，
+// 按字母抖会把连笔拆断）加一点点旋转、上下浮动和墨色深浅。
+// 用信件编号当种子：同一封信每次打开都一样，不会一刷新就变。
+
+// 抖动程度：0 无 | 1 轻 | 2 中 | 3 重
+export const WOBBLE_LABELS = { 0: '无', 1: '轻', 2: '中', 3: '重' };
+// 各字迹没有单独设置时的默认程度
+export const HAND_WOBBLE = { formal: 1, personal: 2, elegant: 1, casual: 3, typewriter: 2 };
+
+const LEVELS = [
+    { rot: 0, y: 0, sc: 0, ink: 0 },
+    { rot: 0.7, y: 0.025, sc: 0.012, ink: 0.08 },
+    { rot: 1.4, y: 0.045, sc: 0.022, ink: 0.13 },
+    { rot: 2.4, y: 0.075, sc: 0.035, ink: 0.2 },
+];
+
+// 字符串 → 32 位整数种子
+export function hashSeed(str) {
+    let h = 2166136261 >>> 0;
+    for (const ch of String(str)) {
+        h ^= ch.codePointAt(0);
+        h = Math.imul(h, 16777619) >>> 0;
+    }
+    return h >>> 0;
+}
+
+// 可复现的随机数（mulberry32）
+export function rng(seed) {
+    let a = seed >>> 0;
+    return () => {
+        a = (a + 0x6D2B79F5) >>> 0;
+        let t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+const CJK = /[㐀-鿿豈-﫿぀-ヿ가-힯]/;
+// 不能出现在行首的标点：跟着前一个字走；不能出现在行尾的：跟着后一个字走
+const CLOSE_PUNCT = /[，。、；：？！”’）》」』】〕…—,.;:?!)\]]/;
+const OPEN_PUNCT = /[“‘（《「『【〔(\[]/;
+const FULLWIDTH = /[\u3000-\u303f\uff00-\uffef]/;
+
+// 把一行文字切成“抖动单位”：中文一个字（连同紧挨的标点），外文一个词；空白原样保留
+export function tokenize(text) {
+    const out = [];
+    const chars = Array.from(text);
+    let i = 0;
+    while (i < chars.length) {
+        const c = chars[i];
+        if (/\s/.test(c)) {
+            let j = i;
+            while (j < chars.length && /\s/.test(chars[j])) j++;
+            out.push({ space: true, text: chars.slice(i, j).join('') });
+            i = j;
+            continue;
+        }
+        let tok = '';
+        while (i < chars.length && OPEN_PUNCT.test(chars[i])) tok += chars[i++];
+        if (i < chars.length && CJK.test(chars[i])) {
+            tok += chars[i++];
+        } else {
+            while (i < chars.length && !/\s/.test(chars[i]) && !CJK.test(chars[i]) && !OPEN_PUNCT.test(chars[i]) && !FULLWIDTH.test(chars[i])) tok += chars[i++];
+        }
+        while (i < chars.length && CLOSE_PUNCT.test(chars[i])) tok += chars[i++];
+        if (!tok) tok = chars[i++];
+        out.push({ space: false, text: tok });
+    }
+    return out;
+}
+
+function wobbleLine(text, rand, level, hand, state) {
+    const L = LEVELS[level] || LEVELS[0];
+    const typewriter = hand === 'typewriter';
+    const pen = !typewriter && hand !== 'casual';
+    return tokenize(text).map(t => {
+        if (t.space) return esc(t.text);
+        const r = () => rand() * 2 - 1;
+        let rot = typewriter ? r() * 0.25 : r() * L.rot;
+        const y = r() * L.y;
+        const sc = typewriter ? 0 : r() * L.sc;
+        let ink = 1 - rand() * (typewriter ? L.ink * 2.6 : L.ink);
+        // 蘸水笔：墨水越写越淡，过十来个字重新蘸一次
+        if (pen) {
+            state.n = (state.n || 0) + 1;
+            if (!state.len || state.n > state.len) { state.n = 1; state.len = 9 + Math.floor(rand() * 10); }
+            ink *= 1 - 0.16 * (state.n / state.len) * (level / 3 + 0.34);
+        }
+        ink = Math.max(0.45, Math.min(1, ink));
+        return `<span class="j" style="--r:${rot.toFixed(2)}deg;--y:${y.toFixed(3)}em;--s:${(1 + sc).toFixed(3)};--o:${ink.toFixed(2)}">${esc(t.text)}</span>`;
+    }).join('');
+}
+
+/**
+ * 正文 → HTML
+ * @param {string} body
+ * @param {object} [opts] { seed, wobble: 0..3, hand }
+ */
+export function renderBody(body, opts = {}) {
+    const level = Math.max(0, Math.min(3, Number(opts.wobble) || 0));
+    const rand = level ? rng(opts.seed ?? hashSeed(body)) : null;
+    const state = {};
     return analyze(body).map(p => {
         const lines = p.lines.map(l => {
             const cls = l.role !== 'body' ? ` class="epi-l-${l.role}"` : '';
-            return `<div${cls}>${esc(l.text) || '&nbsp;'}</div>`;
+            const inner = level ? wobbleLine(l.text, rand, level, opts.hand, state) : esc(l.text);
+            return `<div${cls}>${inner || '&nbsp;'}</div>`;
         }).join('');
         return `<div class="epi-p epi-p-${p.role}">${lines}</div>`;
     }).join('');
+}
+
+// 这封信实际的抖动程度：信件自己设了就用信件的，否则用写信人档案的，再否则用字迹的默认值
+export function effectiveWobble(letter, person) {
+    const a = letter.appearance || {};
+    if (a.wobble !== '' && a.wobble != null && !Number.isNaN(Number(a.wobble))) return Number(a.wobble);
+    if (person && person.wobble !== '' && person.wobble != null) return Number(person.wobble);
+    return HAND_WOBBLE[normalizeHand(a.font)] ?? 1;
+}
+
+export function renderOptions(letter, person, enabled = true) {
+    return {
+        seed: hashSeed(`${letter.id || ''}|${letter.author || ''}|${letter.writtenAt || ''}`),
+        wobble: enabled ? effectiveWobble(letter, person) : 0,
+        hand: normalizeHand((letter.appearance || {}).font),
+    };
 }

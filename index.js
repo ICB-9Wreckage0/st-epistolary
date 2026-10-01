@@ -1,13 +1,19 @@
 // 书信簿 Epistolary · SillyTavern 扩展入口
-// 负责：读写设置、扩展面板里的设置区、魔法棒菜单入口、生成前注入信件内容、
-// 把信发到聊天里（收信反应）、让角色写回信。
+// 负责：设置、扩展面板入口、魔法棒菜单入口、生成前注入信件内容、
+// 寄送（在途信件、按剧情日期或楼层送达、镜头切到收信人那边）、让角色写回信。
 
 import { Store } from './src/store.js';
 import { UI } from './src/ui.js';
 import { retrieve, DEFAULT_RETRIEVAL } from './src/retrieval.js';
-import { sameName } from './src/model.js';
-import { buildReactionGuidance, letterChatMessage, replyChatMessage } from './src/correspondence.js';
+import { sameName, normalizeDate } from './src/model.js';
+import {
+    buildReactionGuidance, replyChatMessage, sceneSwitchMessage, sceneReturnMessage,
+    deliveryEvents, buildDatePrompt, parseStoryDate, addDays,
+    viaSceneMessage, viaPeekMessage, buildViaGuidance, buildViaDecisionPrompt, parseViaDecision,
+    viaReceivedEvents, nextEventId, VIA_ACTIONS,
+} from './src/correspondence.js';
 import { playSeal, playOpen } from './src/envelope.js';
+import { callAI, DEFAULT_API } from './src/api.js';
 
 const MODULE = 'epistolary';
 const PROMPT_KEY = 'epistolary_letters';
@@ -18,6 +24,7 @@ const DEFAULT_SETTINGS = {
     mode: 'simple',          // simple 简单模式 | expert 专家模式
     autoKeywords: true,      // 简单模式下，保存时自动让 AI 生成关键词
     animations: true,        // 寄信封缄、收信拆信动画
+    jitter: true,            // 手写随机感
     onlineFonts: true,       // 在线加载中文书信字体（霞鹜文楷、思源宋体、马善政楷书）
     viewpointMode: 'auto',   // auto 跟随当前发言角色 | manual 手动指定 | omniscient 全知不过滤
     manualViewpoint: '',
@@ -25,6 +32,15 @@ const DEFAULT_SETTINGS = {
     position: 1,             // 0 系统提示词之后 | 1 聊天记录中（按深度）| 2 系统提示词之前
     depth: 3,
     ...DEFAULT_RETRIEVAL,
+    api: { ...DEFAULT_API },
+    delivery: {
+        mode: 'date',        // 寄信时默认的送达方式：date 按剧情日期 | floors 按楼层 | instant 立即
+        floors: 8,           // 按楼层送达时，默认再过几层
+        autoSwitch: false,   // 信到了自动切过去看收信反应
+        autoDate: true,      // 有在途的信时，自动推算剧情日期
+        dateEvery: 6,        // 每隔几层推算一次
+        viaAuto: true,       // 托人转交：转交人在剧情里做的决定（拆不拆、交不交）自动生效
+    },
 };
 
 const ctx = () => SillyTavern.getContext();
@@ -50,13 +66,29 @@ function loadCjkFonts() {
 
 function settings() {
     const all = ctx().extensionSettings;
-    all[MODULE] = { ...DEFAULT_SETTINGS, ...(all[MODULE] || {}) };
+    const cur = all[MODULE] || {};
+    all[MODULE] = {
+        ...DEFAULT_SETTINGS,
+        ...cur,
+        api: { ...DEFAULT_SETTINGS.api, ...(cur.api || {}) },
+        delivery: { ...DEFAULT_SETTINGS.delivery, ...(cur.delivery || {}) },
+    };
     return all[MODULE];
 }
+
+const saveSettings = () => ctx().saveSettingsDebounced();
 
 function hasChat() {
     const c = ctx();
     return !!(c.getCurrentChatId?.() && (c.characterId !== undefined || c.groupId));
+}
+
+function chatId() {
+    return hasChat() ? String(ctx().getCurrentChatId() || '') : '';
+}
+
+function floor() {
+    return (ctx().chat || []).length;
 }
 
 function chatMeta() {
@@ -66,6 +98,11 @@ function chatMeta() {
     return md[MODULE];
 }
 
+function saveMeta() {
+    const c = ctx();
+    if (typeof c.saveMetadataDebounced === 'function') c.saveMetadataDebounced(); else c.saveMetadata();
+}
+
 function getStoryDate() {
     return chatMeta().storyDate || '';
 }
@@ -73,10 +110,9 @@ function getStoryDate() {
 function setStoryDate(date) {
     if (!hasChat()) return;
     chatMeta().storyDate = String(date || '').trim();
-    const c = ctx();
-    if (typeof c.saveMetadataDebounced === 'function') c.saveMetadataDebounced(); else c.saveMetadata();
+    saveMeta();
     const el = document.querySelector('#epi-storydate');
-    if (el) el.value = chatMeta().storyDate;
+    if (el && el !== document.activeElement) el.value = chatMeta().storyDate;
 }
 
 // 当前视角角色。群聊时酒馆会在每个成员生成前把 name2 切换成该成员，所以直接读 name2 即可。
@@ -99,7 +135,7 @@ function recentMessages(chat, depth) {
         .slice(-Math.max(1, depth));
 }
 
-// 最近一条用户消息如果是“寄出的信”，返回它的信息（用于收信反应）
+// 最近一条用户消息如果是“寄到的信”，返回它的信息（用于收信反应）
 function pendingReaction() {
     const chat = ctx().chat || [];
     for (let i = chat.length - 1; i >= 0; i--) {
@@ -107,7 +143,7 @@ function pendingReaction() {
         if (!m || m.is_system) continue;
         if (m.is_user) {
             const info = m.extra?.epistolary;
-            return info && info.kind === 'letter' ? info : null;
+            return info && (info.kind === 'letter' || info.kind === 'via') ? info : null;
         }
     }
     return null;
@@ -118,7 +154,8 @@ function reactionGuidance() {
     if (!info) return '';
     const letter = store.archive.letters[info.letterId];
     if (!letter) return '';
-    return buildReactionGuidance(store.archive, letter, info.reader, info.arrival);
+    if (info.kind === 'via') return buildViaGuidance(store.archive, letter, info.via, info.arrival);
+    return buildReactionGuidance(store.archive, letter, info.reader, info.arrival, { peek: !!info.peek });
 }
 
 function runRetrieval() {
@@ -133,23 +170,22 @@ function runRetrieval() {
     return { viewer, storyDate, texts, result, enabled: s.enabled, reaction: reactionGuidance() };
 }
 
-async function generateRaw(prompt, systemPrompt) {
-    if (globalThis.epistolary?.mockGenerate) return globalThis.epistolary.mockGenerate({ prompt, systemPrompt, kind: 'raw' });
-    const fn = ctx().generateRaw;
-    if (typeof fn !== 'function') throw new Error('当前酒馆版本不支持 generateRaw');
-    // 新版（1.13+）是对象参数；旧版是位置参数
-    if (fn.length >= 2) return fn(prompt, null, false, false, systemPrompt);
-    return fn({ prompt, systemPrompt });
+function ai(system, prompt, meta) {
+    return callAI(settings().api, system, prompt, meta);
 }
 
-// 写回信：回信人就是当前角色时，走 generateQuietPrompt，带上角色卡和聊天上下文；否则只用信件和文风档案
-async function generateReply({ system, prompt, replier }) {
-    if (globalThis.epistolary?.mockGenerate) return globalThis.epistolary.mockGenerate({ prompt, systemPrompt: system, kind: 'reply', replier });
+// 回信人就是当前聊天的角色时，把角色卡和最近的剧情一起交给 AI
+function getCharacterContext(name) {
+    if (!isCurrentCharacter(name)) return null;
     const c = ctx();
-    if (isCurrentCharacter(replier) && typeof c.generateQuietPrompt === 'function') {
-        return c.generateQuietPrompt({ quietPrompt: `${system}\n\n${prompt}`, removeReasoning: true });
-    }
-    return generateRaw(prompt, system);
+    const ch = c.characters?.[c.characterId];
+    if (!ch) return null;
+    const card = [ch.description, ch.personality ? `性格：${ch.personality}` : '', ch.scenario ? `情境：${ch.scenario}` : '']
+        .filter(Boolean).join('\n').replace(/\{\{char\}\}/gi, ch.name).replace(/\{\{user\}\}/gi, c.name1).slice(0, 3500);
+    const recentChat = recentMessages(c.chat, 6)
+        .filter(m => !m.extra?.epistolary)
+        .map(m => `${m.name}：${String(m.mes).slice(0, 500)}`).join('\n');
+    return { card, recentChat };
 }
 
 function nowStamp() {
@@ -166,18 +202,222 @@ async function pushMessage(msg, { generate = false } = {}) {
     }
 }
 
-// 把寄出的信作为用户消息发到聊天，然后让角色回复（此时会注入收信反应引导）
-async function postLetterToChat(letter, reader, arrival) {
+// ---------- 寄送 ----------
+
+const store = new Store();
+let ui = null;
+let lastInjection = '';
+let busy = false;
+
+// 信送到了：记录收到、读过，进信箱等你决定要不要切过去看。
+// 托人转交的信分两段：先送到转交人手里（只知道有这封信），转交人决定转交以后才走第二段。
+function arrive(letter, date) {
+    const dv = letter.delivery;
+    const when = dv.mode === 'date' ? (dv.eta || date) : (date || getStoryDate());
+    if (dv.via && dv.stage === 'toVia') {
+        letter.events.push(...viaReceivedEvents(letter, dv.via, when, letter.events));
+        dv.stage = 'atVia';
+        dv.status = 'atVia';
+        dv.viaArrivedAt = when;
+        store.save();
+        return;
+    }
+    letter.events.push(...deliveryEvents(letter, when, letter.events));
+    if (dv.via) dv.stage = 'done';
+    dv.status = 'arrived';
+    dv.arrivedAt = when;
+    store.save();
+}
+
+// ---------- 托人转交 ----------
+
+const viaOf = letter => letter.delivery?.via || '';
+
+// 镜头切到转交人那边：只给信封，由转交人自己决定拆不拆、交不交
+async function switchToVia(letter) {
     if (!hasChat()) { toastr.warning('先打开一个聊天'); return; }
-    const c = ctx();
+    const dv = letter.delivery;
+    const via = viaOf(letter);
+    const arrival = dv.viaArrivedAt || getStoryDate();
+    if (arrival && normalizeDate(arrival) && (!getStoryDate() || normalizeDate(arrival) > normalizeDate(getStoryDate()))) setStoryDate(arrival);
+    dv.viaViewed = true;
+    dv.viaFollowup = true;
+    dv.awaitingDecision = !ui.isMe(via);
+    dv.decisionFrom = floor();
+    dv.viaGuess = null;
+    store.save();
+    ui.renderPostbox();
     await pushMessage({
-        name: c.name1,
+        name: ctx().name1, is_user: true, is_system: false, send_date: nowStamp(),
+        mes: viaSceneMessage(letter, via, arrival),
+        extra: { epistolary: { kind: 'via', letterId: letter.id, via, arrival } },
+    }, { generate: true });
+    ui.renderPostbox();
+}
+
+// 转交人拆开了信：记录他读过，把全文发进聊天，让他读
+async function letViaRead(letter, { post = true } = {}) {
+    const dv = letter.delivery;
+    const via = viaOf(letter);
+    const date = getStoryDate() || dv.viaArrivedAt || '';
+    if (!letter.events.some(e => e.type === 'read' && e.who === via)) {
+        letter.events.push({ id: nextEventId(letter.events), type: 'read', who: via, date, segments: null, to: '', note: '转交前私自拆看' });
+    }
+    dv.opened = true;
+    dv.awaitingDecision = false;
+    dv.viaGuess = null;
+    store.save();
+    ui.renderPostbox();
+    ui.refresh();
+    if (!post || !hasChat() || ui.isMe(via)) return;
+    if (settings().animations) await playOpen(letter, { render: ui.renderOpts(letter) });
+    dv.awaitingDecision = true;
+    dv.decisionFrom = floor();
+    store.save();
+    await pushMessage({
+        name: ctx().name1, is_user: true, is_system: false, send_date: nowStamp(),
+        mes: viaPeekMessage(letter, via),
+        extra: { epistolary: { kind: 'letter', letterId: letter.id, reader: via, arrival: date, peek: true } },
+    }, { generate: true });
+    ui.renderPostbox();
+}
+
+// 转交人把信交出去：开始第二段路程
+function forwardLetter(letter, { mode, arrival, floors } = {}, { resealed = false } = {}) {
+    const dv = letter.delivery;
+    const via = viaOf(letter);
+    const today = getStoryDate() || dv.viaArrivedAt || '';
+    const leg = dv.leg2 || {};
+    // 第一段是立即送达的，第二段按“再过几天”走剧情日期（没有剧情日期或填了 0 天就直接送到）
+    mode = mode || (dv.mode === 'instant' ? (today && normalizeDate(today) && leg.days > 0 ? 'date' : 'instant') : dv.mode);
+    if (mode === 'date' && !arrival) arrival = addDays(today, leg.days ?? 1) || today;
+    if (mode === 'floors' && !floors) floors = leg.floors || 2;
+    letter.events.push({ id: nextEventId(letter.events), type: 'forwarded', who: via, date: today, segments: null, to: letter.recipients.join('、'), note: dv.opened ? (resealed ? '拆看后重新封好' : '拆看过') : '' });
+    Object.assign(dv, {
+        stage: 'toRecipient',
+        status: 'transit',
+        mode,
+        eta: mode === 'date' ? arrival : '',
+        floors: mode === 'floors' ? floors : 0,
+        sentFloor: floor(),
+        tampered: !!dv.opened && !resealed,
+        awaitingDecision: false,
+        viaGuess: null,
+        reader: letter.recipients[0] || '',
+    });
+    if (mode === 'instant') arrive(letter, today);
+    store.save();
+    ui.renderPostbox();
+    ui.refresh();
+    const reader = letter.recipients[0] || '收信人';
+    toastr.success(mode === 'instant' ? `${via} 把信交给了 ${reader}` : `${via} 把信转交出去了，${ui.etaText(letter)}`, '📮 转交');
+}
+
+// 先留着 / 不转交
+function setViaAction(letter, action) {
+    const dv = letter.delivery;
+    dv.status = action === 'withhold' ? 'withheld' : 'held';
+    dv.awaitingDecision = false;
+    dv.viaGuess = null;
+    if (action === 'withhold' && !letter.events.some(e => e.type === 'lost' && e.who === viaOf(letter))) {
+        letter.events.push({ id: nextEventId(letter.events), type: 'lost', who: viaOf(letter), date: getStoryDate() || '', segments: null, to: '', note: '转交人扣下没有转交' });
+    }
+    if (action !== 'withhold') letter.events = letter.events.filter(e => !(e.type === 'lost' && e.note === '转交人扣下没有转交'));
+    store.save();
+    ui.renderPostbox();
+    ui.refresh();
+}
+
+// 转交人那段剧情写完以后，让 AI 判断他拆没拆、打算怎么办
+async function judgeViaDecision(letter) {
+    const dv = letter.delivery;
+    const via = viaOf(letter);
+    const chat = ctx().chat || [];
+    const text = chat.slice(Math.max(0, dv.decisionFrom ?? chat.length - 2))
+        .filter(m => m && !m.is_system && typeof m.mes === 'string')
+        .map(m => `${m.name}：${String(m.mes).slice(0, 1500)}`).join('\n\n');
+    if (!text) return null;
+    const { system, prompt } = buildViaDecisionPrompt(via, letter.recipients.join('、'), text);
+    try {
+        const out = await ai(system, prompt, { kind: 'via', via, opened: !!dv.opened });
+        return parseViaDecision(out);
+    } catch (e) {
+        console.warn('[书信簿] 判断转交人的决定失败', e);
+        return null;
+    }
+}
+
+// 按转交人的决定办
+async function applyViaDecision(letter, guess, { fromCharacter = false } = {}) {
+    const dv = letter.delivery;
+    if (!guess) return;
+    // 刚拆开：先把信的原文给他看，读完以后再判断他打算怎么办
+    if (guess.opened && !dv.opened) {
+        if (fromCharacter) setTimeout(() => letViaRead(letter), 500);
+        else await letViaRead(letter);
+        return;
+    }
+    if (guess.action === 'forward') forwardLetter(letter, {}, { resealed: !!guess.resealed });
+    else if (guess.action === 'later' || guess.action === 'withhold') {
+        setViaAction(letter, guess.action);
+        toastr.info(`${viaOf(letter)}：${VIA_ACTIONS[guess.action]}${guess.note ? `（${guess.note}）` : ''}`, '📮 转交');
+    }
+}
+
+async function checkViaDecisions({ fromCharacter = false } = {}) {
+    if (!fromCharacter) return;
+    const cid = chatId();
+    const waiting = Object.values(store.archive.letters).filter(l => l.delivery?.status === 'atVia' && l.delivery.awaitingDecision && (!l.delivery.chatId || l.delivery.chatId === cid));
+    for (const l of waiting) {
+        const dv = l.delivery;
+        if (floor() <= (dv.decisionFrom || 0) + 1) continue; // 转交人还没开口
+        dv.awaitingDecision = false;
+        const guess = await judgeViaDecision(l);
+        if (!guess) { store.save(); ui.renderPostbox(); continue; }
+        const opening = guess.opened && !dv.opened;
+        if (settings().delivery.viaAuto && (opening || guess.action !== 'unclear')) {
+            await applyViaDecision(l, guess, { fromCharacter });
+        } else {
+            dv.viaGuess = guess;
+        }
+        store.save();
+        ui.renderPostbox();
+    }
+}
+
+// 镜头切到收信人那边：（拆信动画）→ 一段旁白 + 信的全文 → 角色写收信反应
+async function switchToRecipient(letter) {
+    if (!hasChat()) { toastr.warning('先打开一个聊天'); return; }
+    const dv = letter.delivery || {};
+    const reader = dv.reader || letter.recipients[0];
+    const arrival = dv.arrivedAt || dv.eta || getStoryDate();
+    if (arrival && normalizeDate(arrival) && (!getStoryDate() || normalizeDate(arrival) > normalizeDate(getStoryDate()))) setStoryDate(arrival);
+    letter.delivery = { ...dv, status: 'viewed', followup: true };
+    store.save();
+    ui.renderPostbox();
+    if (settings().animations) await playOpen(letter, { render: ui.renderOpts(letter) });
+    await pushMessage({
+        name: ctx().name1,
         is_user: true,
         is_system: false,
         send_date: nowStamp(),
-        mes: letterChatMessage(letter, reader, arrival),
+        mes: sceneSwitchMessage(letter, reader, arrival),
         extra: { epistolary: { kind: 'letter', letterId: letter.id, reader, arrival } },
     }, { generate: true });
+    ui.renderPostbox();
+}
+
+async function postSceneReturn(letter) {
+    if (!hasChat()) return;
+    await pushMessage({
+        name: ctx().name1,
+        is_user: true,
+        is_system: false,
+        send_date: nowStamp(),
+        mes: sceneReturnMessage(letter),
+        extra: { epistolary: { kind: 'return', letterId: letter.id } },
+    });
+    toastr.info('镜头回来了，接着写你这边的剧情吧');
 }
 
 // 把角色的回信作为角色消息发到聊天
@@ -193,9 +433,95 @@ async function postReplyToChat(letter) {
     });
 }
 
-const store = new Store();
-let ui = null;
-let lastInjection = '';
+function deliverNow(id) {
+    const l = store.archive.letters[id];
+    if (!l?.delivery || l.delivery.status !== 'transit') return;
+    const toVia = l.delivery.via && l.delivery.stage === 'toVia';
+    arrive(l, getStoryDate() || l.delivery.eta);
+    toastr.success(toVia ? `信送到了转交人 ${l.delivery.via} 手里` : '信送到了');
+    ui.renderPostbox();
+    ui.refresh();
+}
+
+// 让 AI 根据最近的对话推算剧情日期
+async function inferStoryDate({ force = false } = {}) {
+    if (!hasChat()) return null;
+    const current = getStoryDate();
+    const text = recentMessages(ctx().chat, 10).map(m => `${m.name}：${String(m.mes).slice(0, 800)}`).join('\n\n');
+    if (!text) return null;
+    try {
+        const { system, prompt } = buildDatePrompt(text, current);
+        const out = await ai(system, prompt, { kind: 'date', current });
+        const d = parseStoryDate(out, current);
+        if (d && d !== current) {
+            setStoryDate(d);
+            if (!force) toastr.info(`剧情日期推进到 ${d}`, '书信簿');
+        }
+        return d || current;
+    } catch (e) {
+        console.warn('[书信簿] 推算剧情日期失败', e);
+        if (force) toastr.error('推算失败：' + (e.message || e));
+        return null;
+    }
+}
+
+// 每有一条新消息就检查一次：要不要推算日期，有没有信该送到了
+async function checkMail({ fromCharacter = false } = {}) {
+    if (busy || !hasChat() || store.mode === 'unloaded') return;
+    const s = settings();
+    const cid = chatId();
+    const transit = Object.values(store.archive.letters).filter(l => l.delivery?.status === 'transit' && (!l.delivery.chatId || l.delivery.chatId === cid));
+    const waiting = Object.values(store.archive.letters).some(l => l.delivery?.status === 'atVia' && l.delivery.awaitingDecision);
+    if (!transit.length && !waiting) { ui.renderPostbox(); return; }
+    busy = true;
+    try {
+        await checkViaDecisions({ fromCharacter });
+        if (!transit.length) { ui.renderPostbox(); return; }
+        const meta = chatMeta();
+        const f = floor();
+        if (s.delivery.autoDate && transit.some(l => l.delivery.mode === 'date') && f - (meta.lastDateCheck || 0) >= Math.max(1, s.delivery.dateEvery)) {
+            meta.lastDateCheck = f;
+            saveMeta();
+            await inferStoryDate();
+        }
+        const today = normalizeDate(getStoryDate());
+        const arrivedNow = [];
+        for (const l of transit) {
+            const dv = l.delivery;
+            const due = dv.mode === 'floors'
+                ? f - (dv.sentFloor || 0) >= (dv.floors || 1)
+                : !!(today && normalizeDate(dv.eta) && normalizeDate(dv.eta) <= today);
+            if (due) { arrive(l, getStoryDate()); arrivedNow.push(l); }
+        }
+        if (arrivedNow.length) {
+            ui.renderPostbox();
+            ui.refresh();
+            for (const l of arrivedNow) {
+                if (l.delivery.status === 'atVia') {
+                    const via = l.delivery.via;
+                    toastr.success(ui.isMe(via) ? `${l.author} 托你转交给 ${l.recipients.join('、')} 的信到了` : `${l.author} 托 ${via} 转交的信到了 ${via} 手里`, '📬 信到了');
+                    continue;
+                }
+                const reader = l.delivery.reader || l.recipients[0];
+                const toMe = ui.isMe(reader);
+                toastr.success(toMe ? `你收到了 ${l.author} 的信` : `${reader} 收到了 ${l.author} 的信`, '📬 信到了');
+            }
+            // 自动切过去：只在角色刚说完话的时候，免得打断正在进行的生成
+            const auto = arrivedNow.find(l => l.delivery.auto || s.delivery.autoSwitch);
+            if (auto && fromCharacter) {
+                if (auto.delivery.status === 'atVia') {
+                    if (!ui.isMe(auto.delivery.via)) setTimeout(() => switchToVia(auto), 600);
+                } else if (!ui.isMe(auto.delivery.reader || auto.recipients[0])) {
+                    setTimeout(() => switchToRecipient(auto), 600);
+                }
+            }
+        } else {
+            ui.renderPostbox();
+        }
+    } finally {
+        busy = false;
+    }
+}
 
 // ---------- 生成前拦截：在这里计算要注入的信件内容 ----------
 globalThis.epistolaryInterceptor = async function (_chat, _contextSize, _abort, type) {
@@ -219,7 +545,7 @@ globalThis.epistolaryInterceptor = async function (_chat, _contextSize, _abort, 
     }
 };
 
-// ---------- 扩展设置面板 ----------
+// ---------- 扩展面板里的小设置区（详细设置在书信簿面板的「设置」页） ----------
 function settingsHtml() {
     return `
     <div class="epistolary-settings">
@@ -231,136 +557,49 @@ function settingsHtml() {
             <div class="inline-drawer-content">
                 <div class="flex-container">
                     <button class="menu_button" id="epi-open">打开书信簿</button>
-                    <button class="menu_button" id="epi-open-preview">注入预览</button>
+                    <button class="menu_button" id="epi-open-settings">设置</button>
                 </div>
                 <label class="checkbox_label"><input type="checkbox" id="epi-enabled"> 生成时注入相关信件</label>
-                <label>界面模式</label>
-                <select class="text_pole" id="epi-mode">
-                    <option value="simple">简单模式：只显示写信需要的东西</option>
-                    <option value="expert">专家模式：段落、流转、注入预览全部显示</option>
-                </select>
-                <label class="checkbox_label"><input type="checkbox" id="epi-autokw"> 简单模式下保存信件时，自动用 AI 生成检索关键词</label>
-                <label class="checkbox_label"><input type="checkbox" id="epi-anim"> 寄信时的封缄动画、收信时的拆信动画</label>
-                <label class="checkbox_label" title="英文和法文字体已随插件附带；中文字体体积大，从 jsDelivr 按需加载（只下载信里用到的字）。关闭后使用电脑自带的楷体和宋体。"><input type="checkbox" id="epi-cjkfonts"> 在线加载中文书信字体（霞鹜文楷、思源宋体、马善政楷书）</label>
-
-                <label>视角角色（决定 AI 能知道哪些信）</label>
-                <select class="text_pole" id="epi-vmode">
-                    <option value="auto">跟随当前发言的角色</option>
-                    <option value="manual">手动指定</option>
-                    <option value="omniscient">全知（不过滤，调试用）</option>
-                </select>
-                <input class="text_pole" id="epi-vmanual" placeholder="手动指定的角色名">
-
                 <label>当前剧情日期（仅本聊天）</label>
                 <input class="text_pole" id="epi-storydate" placeholder="如 1890-11-20；留空则不按日期过滤">
-
-                <div class="epi-set-grid">
-                    <label>扫描最近几条消息<input type="number" min="1" max="20" class="text_pole" id="epi-scan"></label>
-                    <label>最多注入几段<input type="number" min="1" max="20" class="text_pole" id="epi-maxseg"></label>
-                    <label>每封信最多几段<input type="number" min="1" max="20" class="text_pole" id="epi-perletter"></label>
-                    <label>注入字数上限<input type="number" min="200" max="20000" step="100" class="text_pole" id="epi-maxchars"></label>
-                </div>
-
-                <label>注入位置</label>
-                <div class="flex-container">
-                    <select class="text_pole flex1" id="epi-position">
-                        <option value="1">聊天记录中（按深度）</option>
-                        <option value="0">系统提示词之后</option>
-                        <option value="2">系统提示词之前</option>
-                    </select>
-                    <input type="number" min="0" max="100" class="text_pole" id="epi-depth" title="深度：0 = 最新消息之后" style="max-width:5em">
-                </div>
-
-                <div class="flex-container">
-                    <button class="menu_button" id="epi-export">导出档案</button>
-                    <button class="menu_button" id="epi-import">导入档案</button>
-                    <input type="file" id="epi-import-file" accept=".json,application/json" hidden>
-                </div>
                 <small id="epi-status" class="epi-muted"></small>
             </div>
         </div>
     </div>`;
 }
 
+function exportArchive() {
+    const blob = new Blob([store.exportJson()], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `书信簿备份_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+async function importFile(input) {
+    const file = input.files?.[0];
+    if (!file) return;
+    if (!confirm('导入会用这个文件替换当前整个档案（当前档案在本次会话开始时已自动备份）。继续？')) { input.value = ''; return; }
+    try {
+        store.importJson(await file.text());
+        toastr.success('已导入');
+        ui.refresh();
+        ui.renderPostbox();
+    } catch (err) {
+        toastr.error('导入失败：' + (err.message || err));
+    }
+    input.value = '';
+}
+
 function bindSettings() {
     const s = settings();
     const $ = sel => document.querySelector(sel);
-    const save = () => ctx().saveSettingsDebounced();
-
     $('#epi-enabled').checked = s.enabled;
-    $('#epi-vmode').value = s.viewpointMode;
-    $('#epi-vmanual').value = s.manualViewpoint;
-    $('#epi-scan').value = s.scanDepth;
-    $('#epi-maxseg').value = s.maxSegments;
-    $('#epi-perletter').value = s.maxPerLetter;
-    $('#epi-maxchars').value = s.maxChars;
-    $('#epi-position').value = String(s.position);
-    $('#epi-depth').value = s.depth;
-    $('#epi-vmanual').style.display = s.viewpointMode === 'manual' ? '' : 'none';
-
-    $('#epi-enabled').addEventListener('change', e => { s.enabled = e.target.checked; save(); });
-    $('#epi-mode').value = s.mode;
-    $('#epi-autokw').checked = s.autoKeywords;
-    $('#epi-mode').addEventListener('change', e => { s.mode = e.target.value; save(); ui.refresh(); });
-    $('#epi-autokw').addEventListener('change', e => { s.autoKeywords = e.target.checked; save(); });
-    $('#epi-anim').checked = s.animations;
-    $('#epi-anim').addEventListener('change', e => { s.animations = e.target.checked; save(); });
-    $('#epi-cjkfonts').checked = s.onlineFonts;
-    $('#epi-cjkfonts').addEventListener('change', e => {
-        s.onlineFonts = e.target.checked;
-        save();
-        if (s.onlineFonts) loadCjkFonts();
-        else toastr.info('刷新页面后生效');
-    });
-    $('#epi-vmode').addEventListener('change', e => {
-        s.viewpointMode = e.target.value;
-        $('#epi-vmanual').style.display = s.viewpointMode === 'manual' ? '' : 'none';
-        save();
-    });
-    $('#epi-vmanual').addEventListener('input', e => { s.manualViewpoint = e.target.value; save(); });
-    const num = (id, key) => $(id).addEventListener('input', e => {
-        const v = parseInt(e.target.value, 10);
-        if (!Number.isNaN(v)) { s[key] = v; save(); }
-    });
-    num('#epi-scan', 'scanDepth');
-    num('#epi-maxseg', 'maxSegments');
-    num('#epi-perletter', 'maxPerLetter');
-    num('#epi-maxchars', 'maxChars');
-    num('#epi-depth', 'depth');
-    $('#epi-position').addEventListener('change', e => { s.position = parseInt(e.target.value, 10); save(); });
-
-    $('#epi-storydate').addEventListener('input', e => {
-        if (!hasChat()) return;
-        chatMeta().storyDate = e.target.value.trim();
-        const c = ctx();
-        if (typeof c.saveMetadataDebounced === 'function') c.saveMetadataDebounced(); else c.saveMetadata();
-    });
-
+    $('#epi-enabled').addEventListener('change', e => { s.enabled = e.target.checked; saveSettings(); });
+    $('#epi-storydate').addEventListener('input', e => { if (hasChat()) setStoryDate(e.target.value); });
     $('#epi-open').addEventListener('click', () => ui.open('list'));
-    $('#epi-open-preview').addEventListener('click', () => ui.open('preview'));
-
-    $('#epi-export').addEventListener('click', () => {
-        const blob = new Blob([store.exportJson()], { type: 'application/json' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `书信簿备份_${new Date().toISOString().slice(0, 10)}.json`;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    });
-    $('#epi-import').addEventListener('click', () => $('#epi-import-file').click());
-    $('#epi-import-file').addEventListener('change', async e => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        if (!confirm('导入会用这个文件替换当前整个档案（当前档案在本次会话开始时已自动备份）。继续？')) return;
-        try {
-            store.importJson(await file.text());
-            toastr.success('已导入');
-            ui.refresh();
-        } catch (err) {
-            toastr.error('导入失败：' + (err.message || err));
-        }
-        e.target.value = '';
-    });
+    $('#epi-open-settings').addEventListener('click', () => ui.open('settings'));
 }
 
 function refreshChatFields() {
@@ -391,24 +630,35 @@ jQuery(async () => {
 
     ui = new UI(store, {
         getMode: () => settings().mode,
-        setMode: mode => {
-            settings().mode = mode;
-            ctx().saveSettingsDebounced();
-            const el = document.querySelector('#epi-mode');
-            if (el) el.value = mode;
-        },
+        setMode: mode => { settings().mode = mode; saveSettings(); },
         getSettings: settings,
+        saveSettings,
         getViewer,
         getStoryDate,
         setStoryDate,
         hasChat,
+        getChatId: chatId,
+        getFloor: floor,
+        getChat: () => (hasChat() ? ctx().chat || [] : []),
         isCurrentCharacter,
+        getCharacterContext,
         getUserName: () => ctx().name1 || '',
         getCharName: () => (hasChat() && !ctx().groupId ? ctx().name2 : '') || '',
-        generateRaw,
-        generateReply,
-        postLetterToChat,
+        callAI: ai,
+        generateRaw: (prompt, system) => ai(system, prompt, { kind: 'raw' }),
+        switchToRecipient,
+        switchToVia,
+        letViaRead,
+        forwardLetter,
+        setViaAction,
+        applyViaDecision,
+        postSceneReturn,
         postReplyToChat,
+        deliverNow,
+        inferStoryDate,
+        exportArchive,
+        importFile,
+        loadFonts: loadCjkFonts,
         runPreview: runRetrieval,
     });
     ui.mount();
@@ -419,14 +669,18 @@ jQuery(async () => {
     await store.load();
     refreshChatFields();
     refreshStatus();
+    ui.renderPostbox();
 
     const { eventSource, eventTypes } = ctx();
     eventSource.on(eventTypes.CHAT_CHANGED, () => {
         refreshChatFields();
         ui.refresh();
+        ui.renderPostbox();
     });
+    if (eventTypes.MESSAGE_RECEIVED) eventSource.on(eventTypes.MESSAGE_RECEIVED, () => setTimeout(() => checkMail({ fromCharacter: true }), 300));
+    if (eventTypes.MESSAGE_SENT) eventSource.on(eventTypes.MESSAGE_SENT, () => setTimeout(() => checkMail(), 300));
 
     // 调试入口：控制台里输入 epistolary.last() 查看上一次注入的内容
-    globalThis.epistolary = { ...(globalThis.epistolary || {}), store, ui, last: () => lastInjection, envelope: { playSeal, playOpen } };
+    globalThis.epistolary = { ...(globalThis.epistolary || {}), store, ui, last: () => lastInjection, envelope: { playSeal, playOpen }, checkMail, inferStoryDate };
     console.log('[书信簿] 已加载');
 });

@@ -73,7 +73,7 @@
                     <option>文森特</option><option>提奥</option><option>高更</option>
                 </select>
             </div>
-            <p class="hint">切换角色，再发一句提到信件内容的话，看看不同的人各自“记得”什么。文森特听提奥念过其中两段，提奥读过全文，高更什么都不知道。</p>
+            <p class="hint">切换角色，再发一句提到信件内容的话，看看不同的人各自“记得”什么。文森特只听提奥念过讲鸟的那一段，提奥读过全文，高更什么都不知道。</p>
         </section>
         <section class="card" style="margin-top:14px">
             <h2>本轮注入给 AI 的内容</h2>
@@ -102,6 +102,7 @@
     }
     if (!ctx.chat.length) {
         ctx.chat.push({ name: '文森特', is_user: false, is_system: false, mes: '*（演示聊天开始。点左上角“书信簿”，可以读已有的信、写新信并寄出。）*' });
+        ctx.chat.push({ name: '文森特', is_user: false, is_system: false, mes: '*文森特在油灯下铺开信纸，想了很久，才落笔：*\n\n> 亲爱的 E.：\n>\n> 你上次问我圣雷米的天空是什么颜色。我想了好几天，还是没法用一个词说清楚。早上是淡淡的钴蓝，到了傍晚，就变成一种很深的、近乎绿的蓝。\n>\n> 等我把那幅星夜画完，一定先寄一张速写给你。\n>\n> 紧握你的手，\n> 文森特\n\n*他把信折好，压在调色板底下，打算明天一早寄出去。*\n\n（演示：这封信只写在聊天里，还没进档案。打开书信簿 →「📥 从聊天记录找信」就能把它找出来。）' });
     }
 
     globalThis.epistolary = { mockGenerate: globalThis.__epistolaryDemoMock };
@@ -125,6 +126,7 @@
         const msg = { name: ctx.name1, is_user: true, is_system: false, mes: text, send_date: new Date().toLocaleString() };
         ctx.chat.push(msg);
         renderMessage(msg);
+        await ctx.eventSource.emit('message_sent', ctx.chat.length - 1);
         await ctx.generate('normal');
     };
     document.getElementById('demo-send').addEventListener('click', send);

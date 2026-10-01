@@ -31,3 +31,28 @@ test('书信语言与字迹', () => {
     assert.equal(normalizeHand('elegant'), 'elegant');
     assert.match(paperClasses({ language: '法语', appearance: { font: 'hand', orientation: 'landscape', flourish: true } }), /font-personal orient-landscape script-lat flourish/);
 });
+
+import { tokenize, renderBody as rb, hashSeed, effectiveWobble } from '../src/render.js';
+
+test('切分：中文按字、标点跟着字、外文按词', () => {
+    const t = s => tokenize(s).filter(x => !x.space).map(x => x.text);
+    assert.deepEqual(t('你好，“世界”。'), ['你', '好，', '“世', '界”。']);
+    assert.deepEqual(t("J'ai reçu ta lettre."), ["J'ai", 'reçu', 'ta', 'lettre.']);
+    assert.deepEqual(t('Paris，1889年'), ['Paris，', '1889', '年']);
+});
+
+test('抖动：同一个种子结果一样，不同种子不一样，关掉时没有 span', () => {
+    const body = '亲爱的提奥：\n\n近来可好？Je te serre la main.';
+    const a = rb(body, { seed: 1, wobble: 2, hand: 'personal' });
+    assert.equal(a, rb(body, { seed: 1, wobble: 2, hand: 'personal' }));
+    assert.notEqual(a, rb(body, { seed: 2, wobble: 2, hand: 'personal' }));
+    assert.ok(a.includes('class="j"'));
+    assert.ok(!rb(body, { seed: 1, wobble: 0 }).includes('class="j"'));
+    assert.equal(hashSeed('LETTER-0001'), hashSeed('LETTER-0001'));
+});
+
+test('抖动程度：信件 > 人物 > 字迹默认', () => {
+    assert.equal(effectiveWobble({ appearance: { font: 'casual', wobble: '' } }, null), 3);
+    assert.equal(effectiveWobble({ appearance: { font: 'casual', wobble: '' } }, { wobble: 1 }), 1);
+    assert.equal(effectiveWobble({ appearance: { font: 'casual', wobble: 0 } }, { wobble: 1 }), 0);
+});

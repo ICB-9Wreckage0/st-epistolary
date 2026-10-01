@@ -112,6 +112,7 @@ export function createArchive() {
         letters: {},
         attachments: {},
         presets: [],
+        styles: [],   // 用户自己存的款式包
     };
 }
 
@@ -125,6 +126,7 @@ export function migrateArchive(raw) {
     out.letters = a.letters && typeof a.letters === 'object' ? a.letters : {};
     out.attachments = a.attachments && typeof a.attachments === 'object' ? a.attachments : {};
     out.presets = Array.isArray(a.presets) ? a.presets : [];
+    out.styles = Array.isArray(a.styles) ? a.styles : [];
     for (const id of Object.keys(out.letters)) {
         out.letters[id] = normalizeLetter(out.letters[id], id);
     }
@@ -146,6 +148,12 @@ export function normalizeHandKey(font) {
     return LEGACY_FONTS[font] || '';
 }
 
+function normalizeLevel(v, allowEmpty) {
+    if (allowEmpty && (v === '' || v == null)) return '';
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.max(0, Math.min(3, Math.round(n))) : (allowEmpty ? '' : 0);
+}
+
 function normalizeAppearance(a = {}) {
     return {
         paper: 'cream', ink: 'blueblack', envelope: 'ivory', wax: 'crimson',
@@ -153,6 +161,9 @@ function normalizeAppearance(a = {}) {
         font: normalizeHandKey(a.font) || 'personal',        // 字迹：formal 端正 | personal 自然 | elegant 优雅 | casual 随意 | typewriter 打字机
         orientation: a.orientation === 'landscape' ? 'landscape' : 'portrait', // 竖版对折 | 横版平放
         flourish: !!a.flourish,                               // 称呼和署名用花体
+        wobble: normalizeLevel(a.wobble, true),               // 笔迹抖动 0-3；'' = 跟随写信人档案
+        wear: normalizeLevel(a.wear, false) || 0,             // 纸张磨损 0 崭新 | 1 轻微 | 2 旧信 | 3 破损
+        inkColor: /^#[0-9a-f]{6}$/i.test(a.inkColor || '') ? a.inkColor : '', // 墨水选“自定义颜色”时用
     };
 }
 
@@ -181,6 +192,9 @@ export function normalizeLetter(l, id) {
         inReplyTo: l.inReplyTo || '',   // 回复的是哪封信
         aiDraft: !!l.aiDraft,           // 是否是 AI 代写的回信（用户确认前）
         openedAt: l.openedAt || '',     // 收信人第一次拆开的时间（用于只播放一次拆信动画）
+        delivery: l.delivery && typeof l.delivery === 'object' ? l.delivery : null, // 在途信件的送达信息
+        source: l.source && typeof l.source === 'object' ? l.source : null,         // 从聊天记录导入时的出处
+        translations: l.translations && typeof l.translations === 'object' ? l.translations : {}, // 阅读用的译文缓存
         notes: l.notes || '',
         createdAt: l.createdAt || now,
         updatedAt: l.updatedAt || now,
@@ -294,6 +308,7 @@ export function normalizePerson(p = {}) {
         styleSamples: Array.isArray(p.styleSamples) ? p.styleSamples.filter(s => String(s).trim()) : splitSamples(p.styleSamples),
         language: p.language || '',
         hand: normalizeHandKey(p.hand),     // 此人的字迹，新信件默认用它
+        wobble: normalizeLevel(p.wobble, true), // 此人笔迹的抖动程度 0-3；'' = 按字迹默认
     };
 }
 

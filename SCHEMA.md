@@ -1,4 +1,4 @@
-# 书信簿 · 数据结构（schema 1，v0.4）
+# 书信簿 · 数据结构（schema 1，v0.7）
 
 整个档案是一个 JSON 文件。原则只有三条：
 
@@ -20,7 +20,8 @@
       "styleNotes": "……",                // 文风要点
       "styleSamples": ["……", "……"],     // 书信样本，写回信时随机挑几段
       "language": "",                    // 常用书信语言（可空）
-      "hand": "personal"                 // 此人的字迹，新信件和 AI 回信默认用它（可空）
+      "hand": "personal",                // 此人的字迹，新信件和 AI 回信默认用它（可空）
+      "wobble": ""                       // 此人笔迹的抖动程度 0-3（可空）
     }
   ],
 
@@ -67,16 +68,46 @@
 
       "attachments": [],           // 附件 ID 列表（v0.1 界面未实现）
       "appearance": {
-        "paper": "cream",          // plain | cream | aged | lined | blue
-        "ink": "blueblack",        // black | blueblack | brown | faded
+        "paper": "cream",          // plain | cream | aged | lined | redline | blue
+        "ink": "blueblack",        // black | blueblack | navy | brown | crimson | green | faded | custom
+        "inkColor": "",            // ink 为 custom 时的颜色，如 #0b2a6b
         "font": "personal",        // 字迹：formal 端正 | personal 自然 | elegant 优雅 | casual 随意 | typewriter 打字机
                                    // （旧版的 serif / kai / hand / mono 读入时自动换算）
         "orientation": "portrait", // portrait 竖版（对折入封）| landscape 横版（平放入封）
         "flourish": false,         // 称呼和署名用花体
-        "envelope": "ivory",       // ivory | kraft | blue | white（信封动画）
-        "wax": "crimson"           // crimson | navy | forest | black | gold（火漆）
+        "envelope": "ivory",       // ivory | kraft | blue | white | airmail（信封动画）
+        "wax": "crimson",          // 封缄：crimson | navy | forest | black | gold 火漆，chop 朱印“缄”，none 不封
+        "wear": 0,                 // 纸张磨损 0 崭新 | 1 轻微 | 2 旧信 | 3 破损
+        "wobble": ""               // 笔迹抖动 0-3；"" = 跟随写信人档案（再没有就按字迹默认）
       },
       "openedAt": "",              // 收信人第一次拆开的时间；拆信动画只播放一次
+      "delivery": {                // 寄送状态（没寄过的信为 null）
+        "mode": "date",            // date 按剧情日期 | floors 按楼层 | instant 立即
+        "eta": "1889-06-13",       // 按日期送达时的送达日期
+        "floors": 0,               // 按楼层送达时，寄出后再过几层
+        "sentFloor": 42,           // 寄出时聊天有几条消息
+        "chatId": "…",             // 在哪个聊天里寄出（只在这个聊天里检查送达）
+        "status": "transit",       // transit 在途 | arrived 送到了、还没看 | viewed 看过了
+                                   // 托人转交时还有：atVia 在转交人手里、等 TA 决定 | held 转交人先留着 | withheld 转交人扣下不交
+        "reader": "文森特",
+        "arrivedAt": "",           // 实际送达的剧情日期
+        "followup": false,         // 刚切过去看了收信反应，信箱里显示“回到原场景 / 写回信”
+        "auto": false,             // 送到后自动切过去
+        // ---- 托人转交（没有转交人时没有这些字段）----
+        "via": "女仆玛莎",          // 转交人
+        "stage": "toVia",          // toVia 送往转交人 | atVia 在转交人手里 | toRecipient 已转交、送往收信人 | done 送到
+        "leg2": { "days": 1, "floors": 2 }, // 第二段路：转交人拿到后再过几天 / 几层
+        "viaArrivedAt": "",        // 送到转交人手里的剧情日期
+        "viaViewed": false,        // 已经切过去看过转交人那边
+        "awaitingDecision": false, // 等转交人那段剧情写完，再让 AI 判断 TA 的决定
+        "decisionFrom": 0,         // 从第几条消息开始算转交人的那段剧情
+        "viaGuess": null,          // AI 的判断 { opened, resealed, action: forward|later|withhold|unclear, note }
+        "opened": false,           // 转交人拆看过
+        "tampered": false,         // 拆过而且没封好，收信人可能看得出来
+        "viaFollowup": false       // 信箱里显示“回到写信人这边”
+      },
+      "source": { "chatId": "…", "mes": 17 },  // 从聊天记录导入的信：出自哪条消息
+      "translations": { "zh": { "text": "…", "source": "…原文…" } }, // 阅读页的中文译文缓存
       "links": { "works": ["WORK-MINE-0003"] },   // 创作助手的作品 ID，只存 ID 不存内容
       "inReplyTo": "LETTER-0009",  // 这封信回复的是哪封信（整封级别）
       "aiDraft": false,            // AI 代写、用户还没收下的回信草稿
@@ -86,7 +117,10 @@
   },
 
   "attachments": {},               // 预留：ATT-0001 → { kind, title, … }
-  "presets": []                    // 用户自己添加的套语
+  "presets": [],                   // 用户自己添加的套语
+  "styles": [                      // 用户自己存的款式包
+    { "id": "mine-…", "name": "我的旧信", "language": "", "appearance": { "paper": "aged", "wear": 2, "…": "…" } }
+  ]
 }
 ```
 

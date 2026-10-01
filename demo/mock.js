@@ -35,7 +35,8 @@ const ctx = {
     extensionSettings: state.extensionSettings || {},
     extensionPrompts: {},
     eventSource,
-    eventTypes: { CHAT_CHANGED: 'chat_changed' },
+    eventTypes: { CHAT_CHANGED: 'chat_changed', MESSAGE_RECEIVED: 'message_received', MESSAGE_SENT: 'message_sent' },
+    get characters() { return [{ name: ctx.name2, description: `${ctx.name2}（演示用的角色卡）`, personality: '', scenario: '' }]; },
     getCurrentChatId: () => 'demo-chat',
     getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
     saveSettingsDebounced: () => saveState(),
@@ -57,6 +58,7 @@ const ctx = {
         ctx.chat.push(msg);
         renderMessage(msg);
         saveState();
+        await eventSource.emit('message_received', ctx.chat.length - 1);
     },
     generateRaw: async () => '',
     generateQuietPrompt: async () => '',
@@ -94,6 +96,14 @@ function demoReply() {
     const last = lastUserText();
     const inj = ctx.extensionPrompts.epistolary_letters?.value || '';
     const reaction = ctx.extensionPrompts.epistolary_reaction?.value || '';
+    if (last?.extra?.epistolary?.kind === 'via') {
+        const v = last.extra.epistolary.via;
+        return `*（演示回复：真实使用时，这里是 AI 扮演的${v}拿到信以后怎么做，全由他自己决定。）*\n\n${v}把信封翻过来看了看，犹豫了很久，终于还是用裁纸刀轻轻挑开了封口。`;
+    }
+    if (last?.extra?.epistolary?.kind === 'letter' && last.extra.epistolary.peek) {
+        const v = last.extra.epistolary.reader;
+        return `*（演示回复：${v}读这封不是写给他的信。）*\n\n${v}读完，沉默了一会儿，用一点胶水把封口重新粘好，决定明天一早把信送过去。`;
+    }
     if (last?.extra?.epistolary?.kind === 'letter') {
         return `*（演示回复：真实使用时，这里是 AI 扮演的${ctx.name2}读信的反应。插件这一轮额外提醒了 AI：描写收信时的情境、对信里具体的句子做出反应、不要复述整封信。提醒原文见“本轮注入给 AI 的内容”一栏。）*`;
     }
@@ -131,8 +141,38 @@ const MOCK_REPLY = {
 又及：这是演示页写死的回信。在真的酒馆里，这封信会由 AI 按照文森特的文风档案来写。`,
 };
 
-globalThis.__epistolaryDemoMock = async ({ prompt, kind, replier }) => {
+globalThis.__epistolaryDemoMock = async ({ prompt, kind, target }) => {
     await new Promise(r => setTimeout(r, 500));
+    if (kind === 'translate') {
+        const body = (prompt.split('【原文】\n')[1] || '').trim();
+        const paras = body.split(/\n\s*\n/);
+        const t = target || '外语';
+        return paras.map((p, i) => i === 0 ? (t === '法语' ? 'Mon cher ami,' : t === '中文' ? '（演示译文）亲爱的朋友：' : `[${t}] ${p.split('\n')[0]}`)
+            : `[${t}·演示译文] ${p.replace(/\n/g, ' ')}`).join('\n\n');
+    }
+    if (kind === 'date') {
+        const cur = (prompt.match(/上一次记录的剧情日期是 (\d{4}-\d{2}-\d{2})/) || [])[1];
+        if (!cur) return '1889-06-10';
+        const d = new Date(cur + 'T00:00:00Z');
+        d.setUTCDate(d.getUTCDate() + 2);
+        return d.toISOString().slice(0, 10);
+    }
+    if (kind === 'import') {
+        const { detectInMessage } = await import('../src/importer.js');
+        const out = [];
+        for (const m of prompt.matchAll(/<<消息 #(\d+)｜[^>]*>>\n([\s\S]*?)(?=\n\n<<消息 #|$)/g)) {
+            for (const c of detectInMessage(m[2])) {
+                const flat = c.text.replace(/\s+/g, '');
+                out.push({ message: Number(m[1]), start: flat.slice(0, 14), end: flat.slice(-8), author: c.signoff.replace(/[，,。.]$/, ''), recipient: '', date: '', place: '' });
+            }
+        }
+        return JSON.stringify(out);
+    }
+    if (kind === 'via') {
+        if (prompt.includes('决定明天一早把信送过去')) return '{"opened": true, "resealed": true, "action": "forward", "note": "读完重新封好，明天一早送过去"}';
+        if (prompt.includes('挑开了封口')) return '{"opened": true, "resealed": false, "action": "unclear", "note": "拆开了信"}';
+        return '{"opened": false, "action": "forward", "note": "照常转交"}';
+    }
     if (kind === 'reply') {
         const m = prompt.match(/§\d+ ([^\n]{4,40})/g) || [];
         const quote = (m[1] || m[0] || '§1 你的来信').replace(/^§\d+ /, '').replace(/[。？！,，]$/, '');
@@ -154,7 +194,8 @@ export function renderMessage(msg) {
     const el = document.createElement('div');
     el.className = `demo-msg ${msg.is_user ? 'user' : 'char'}`;
     const tag = msg.extra?.epistolary?.kind === 'letter' ? '<span class="demo-tag">✉ 寄出的信</span>'
-        : msg.extra?.epistolary?.kind === 'reply' ? '<span class="demo-tag">✉ 回信</span>' : '';
+        : msg.extra?.epistolary?.kind === 'reply' ? '<span class="demo-tag">✉ 回信</span>'
+        : msg.extra?.epistolary?.kind === 'via' ? '<span class="demo-tag">🤝 托人转交</span>' : '';
     el.innerHTML = `<div class="demo-name">${esc(msg.name)} ${tag}</div><div class="demo-text">${esc(msg.mes).replace(/\*(.+?)\*/gs, '<i>$1</i>')}</div>`;
     box.appendChild(el);
     box.scrollTop = box.scrollHeight;

@@ -25,7 +25,7 @@ Mon cher Théo,
 
 Je te serre la main,
 E.`,
-        appearance: { paper: 'cream', font: 'personal', orientation: 'portrait', flourish: true, envelope: 'ivory', wax: 'crimson' },
+        appearance: { paper: 'cream', ink: 'blueblack', font: 'personal', orientation: 'portrait', flourish: true, envelope: 'ivory', wax: 'crimson', wear: 1 },
     });
     const [, s2, s3, s4] = l1.segments.map(s => s.id);
     l1.segments[1].tags = ['沙龙', '巴黎'];
@@ -54,7 +54,7 @@ E.`,
 
 紧握你的手，
 文森特`,
-        appearance: { paper: 'aged', font: 'personal', orientation: 'portrait', envelope: 'kraft', wax: 'navy' },
+        appearance: { paper: 'aged', ink: 'brown', font: 'personal', orientation: 'portrait', envelope: 'kraft', wax: 'navy', wear: 2 },
     });
     l2.segments[1].tags = ['鸟', '蓝色', '钴蓝', '普鲁士蓝'];
     l2.segments[2].tags = ['麦田', '柏树', '画'];
@@ -76,7 +76,7 @@ Ici la mer est grise et les paysans ne parlent que breton. Je travaille, je mang
 Écris-moi quand tu pourras.
 
 Paul`,
-        appearance: { paper: 'plain', font: 'casual', orientation: 'landscape', envelope: 'white', wax: 'black' },
+        appearance: { paper: 'plain', ink: 'faded', font: 'casual', orientation: 'landscape', envelope: 'white', wax: 'none', wear: 2 },
     });
     l3.segments[1].tags = ['Tahiti', '大海', 'Bretagne', '布列塔尼'];
     l3.events = [

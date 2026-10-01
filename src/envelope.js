@@ -9,7 +9,7 @@
 // 所以场景本身是“平的”（transform-style: flat），每块纸谁在前谁在后由 z-index 固定；
 // 翻盖立到正好侧对镜头（90°，看不见）时切换它在信纸前/后，信封翻面到 90° 时切换正反面。
 
-import { paperClasses, renderBody } from './render.js';
+import { paperClasses, renderBody, renderOptions, paperLayer, ensureWearFilters, hashSeed, handClasses, paperStyle } from './render.js';
 
 const WAX = {
     crimson: ['#b3332c', '#8e1b1b', '#5a0e0e'],
@@ -24,10 +24,17 @@ const ENVELOPES = {
     kraft: { paper: '#caa877', edge: '#b08d5c', lining: ['#3b4a3a', '#2b372b'] },
     blue: { paper: '#d4dde9', edge: '#b7c3d3', lining: ['#1f2f5a', '#16233f'] },
     white: { paper: '#f6f3ec', edge: '#ddd8cc', lining: ['#5a6472', '#434b56'] },
+    airmail: { paper: '#f3f0e8', edge: '#dcd6c8', lining: ['#2f4a8a', '#24396b'] },
 };
 
-export const WAX_LABELS = { crimson: '朱红火漆', navy: '藏青火漆', forest: '墨绿火漆', black: '黑色火漆', gold: '金色火漆' };
-export const ENVELOPE_LABELS = { ivory: '象牙白信封', kraft: '牛皮纸信封', blue: '淡蓝信封', white: '白信封' };
+export const WAX_LABELS = { crimson: '朱红火漆', navy: '藏青火漆', forest: '墨绿火漆', black: '黑色火漆', gold: '金色火漆', chop: '朱印“缄”', none: '不封（胶封）' };
+
+// 封缄方式：火漆、朱印、或者不封
+function sealKind(letter) {
+    const w = (letter.appearance || {}).wax;
+    return w === 'chop' ? 'chop' : w === 'none' ? 'none' : 'wax';
+}
+export const ENVELOPE_LABELS = { ivory: '象牙白信封', kraft: '牛皮纸信封', blue: '淡蓝信封', white: '白信封', airmail: '航空信封' };
 
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -55,18 +62,22 @@ function reducedMotion() {
 }
 
 class Stage {
-    constructor(letter) {
+    constructor(letter, renderOpts) {
         this.letter = letter;
         this.skip = false;
         const a = letter.appearance || {};
         const env = ENVELOPES[a.envelope] || ENVELOPES.ivory;
         const wax = WAX[a.wax] || WAX.crimson;
         const portrait = a.orientation !== 'landscape';
-        const sheet = extra => `<div class="epi-env-sheet ${esc(paperClasses(letter))}${extra || ''}"><div class="epi-env-letter-text epi-paper-body">${renderBody(letter.body || '')}</div></div>`;
+        const body = renderBody(letter.body || '', renderOpts || renderOptions(letter, null));
+        const layer = paperLayer(letter, hashSeed((letter.id || '') + (letter.author || '')));
+        const inkStyle = esc(paperStyle(letter));
+        const sheet = extra => `<div class="epi-env-sheet ${esc(paperClasses(letter))}${extra || ''}" style="${inkStyle}">${layer}<div class="epi-env-letter-text epi-paper-body">${body}</div></div>`;
+        ensureWearFilters();
         const to = (letter.recipients || []).join('、');
 
         const el = document.createElement('div');
-        el.className = 'epi-env-stage';
+        el.className = `epi-env-stage env-${a.envelope || 'ivory'}`;
         el.style.setProperty('--env-paper', env.paper);
         el.style.setProperty('--env-edge', env.edge);
         el.style.setProperty('--env-lining-a', env.lining[0]);
@@ -86,7 +97,7 @@ class Stage {
                         <div class="epi-env-half epi-env-half-top">${sheet()}</div>
                         ${portrait ? `<div class="epi-env-half epi-env-half-bot">
                             <div class="epi-env-fold-front">${sheet(' epi-env-sheet-lower')}</div>
-                            <div class="epi-env-fold-back ${esc(paperClasses(letter))}"></div>
+                            <div class="epi-env-fold-back ${esc(paperClasses(letter))}">${layer}</div>
                         </div>` : ''}
                     </div>
                     <div class="epi-env-pocket epi-env-grain"><div class="epi-env-sheen"></div></div>
@@ -98,7 +109,9 @@ class Stage {
                     <!-- 火漆与印章 -->
                     <div class="epi-env-seal-shadow"></div>
                     <div class="epi-env-seal">
-                        <div class="epi-env-wax"><div class="epi-env-imprint"><span>${esc(monogram(letter))}</span></div><div class="epi-env-wax-sheen"></div></div>
+                        ${sealKind(letter) === 'chop'
+                            ? '<div class="epi-env-chop"><span>缄</span></div>'
+                            : `<div class="epi-env-wax"><div class="epi-env-imprint"><span>${esc(monogram(letter))}</span></div><div class="epi-env-wax-sheen"></div></div>`}
                     </div>
                     <div class="epi-env-seal-half epi-env-seal-l"><div class="epi-env-wax"><div class="epi-env-imprint" style="opacity:1"><span>${esc(monogram(letter))}</span></div></div></div>
                     <div class="epi-env-seal-half epi-env-seal-r"><div class="epi-env-wax"><div class="epi-env-imprint" style="opacity:1"><span>${esc(monogram(letter))}</span></div></div></div>
@@ -108,8 +121,8 @@ class Stage {
                     <!-- 正面（写地址的一面） -->
                     <div class="epi-env-face epi-env-grain">
                         <div class="epi-env-sheen"></div>
-                        <div class="epi-env-from ${esc(paperClasses(letter).replace('epi-paper ', ''))}">${esc(letter.author || '')}${letter.placeFrom ? `<br>${esc(letter.placeFrom)}` : ''}</div>
-                        <div class="epi-env-address ${esc(paperClasses(letter).replace('epi-paper ', ''))}">
+                        <div class="epi-env-from ${esc(handClasses(letter))}" style="${inkStyle}">${esc(letter.author || '')}${letter.placeFrom ? `<br>${esc(letter.placeFrom)}` : ''}</div>
+                        <div class="epi-env-address ${esc(handClasses(letter))}" style="${inkStyle}">
                             <div class="epi-env-to">${esc(to)}</div>
                             ${letter.placeTo ? `<div class="epi-env-place">${esc(letter.placeTo)}</div>` : ''}
                         </div>
@@ -253,9 +266,9 @@ function setInitial(stage, { face }) {
  * @param {object} letter 信件
  * @param {object} opts { flyOut: 是否飞走（寄出）; 否则原地淡出（只存档） }
  */
-export async function playSeal(letter, { flyOut = true } = {}) {
+export async function playSeal(letter, { flyOut = true, render } = {}) {
     if (reducedMotion()) return;
-    const st = new Stage(letter);
+    const st = new Stage(letter, render);
     setInitial(st, { face: 'back' });
     st.mount();
     const q = st.q;
@@ -324,6 +337,21 @@ export async function playSeal(letter, { flyOut = true } = {}) {
         ], 460, 'cubic-bezier(.2,.6,.35,1)');
         await st.thump(0.5);
 
+        const kind = sealKind(letter);
+        if (kind === 'chop') {
+            // 朱印：一方红色的“缄”字印压下去，盖在翻盖和信封的接缝上
+            q('.epi-env-seal').style.opacity = '1';
+            await st.play('.epi-env-chop', [
+                { transform: 'scale(1.8) rotate(-8deg)', opacity: 0 },
+                { transform: 'scale(0.94) rotate(-3deg)', opacity: 0.95, offset: 0.7 },
+                { transform: 'scale(1) rotate(-3deg)', opacity: 0.9 },
+            ], 260, 'cubic-bezier(.55,0,.85,.4)');
+            await st.thump(0.8);
+            await st.wait(500);
+        } else if (kind === 'none') {
+            // 胶封：用手指沿着翻盖压一下
+            await st.wait(300);
+        } else {
         // 4 滴火漆：一团熔融的蜡鼓起来
         const seal = q('.epi-env-seal');
         seal.style.opacity = '1';
@@ -384,6 +412,8 @@ export async function playSeal(letter, { flyOut = true } = {}) {
         ], 700, 'ease-in-out');
         await st.wait(420);
 
+        }
+
         // 8 翻到正面
         await st.flip('back', 'front', 820);
 
@@ -423,9 +453,9 @@ export async function playSeal(letter, { flyOut = true } = {}) {
 /**
  * 拆信动画。结束时信纸迎面放大、淡出，接着显示真正的阅读视图或写信页。
  */
-export async function playOpen(letter) {
+export async function playOpen(letter, { render } = {}) {
     if (reducedMotion()) return;
-    const st = new Stage(letter);
+    const st = new Stage(letter, render);
     setInitial(st, { face: 'front' });
     const q = st.q;
     // 拆信时，信是封好的：翻盖合上、火漆完整、邮戳已盖、信纸在里面
@@ -437,10 +467,16 @@ export async function playOpen(letter) {
         q('.epi-env-half-bot').style.transform = 'rotateX(180deg)';
         q('.epi-env-half-bot').classList.add('folded');
     }
-    q('.epi-env-seal').style.opacity = '1';
-    q('.epi-env-seal-shadow').style.opacity = '1';
-    q('.epi-env-wax').style.transform = 'scale(1.1)';
-    q('.epi-env-imprint').style.opacity = '1';
+    if (sealKind(letter) === 'wax') {
+        q('.epi-env-seal').style.opacity = '1';
+        q('.epi-env-seal-shadow').style.opacity = '1';
+        q('.epi-env-wax').style.transform = 'scale(1.1)';
+        q('.epi-env-imprint').style.opacity = '1';
+    } else if (sealKind(letter) === 'chop') {
+        q('.epi-env-seal').style.opacity = '1';
+        q('.epi-env-chop').style.opacity = '0.9';
+        q('.epi-env-chop').style.transform = 'rotate(-3deg)';
+    }
     q('.epi-env-postmark').style.opacity = '0.8';
     q('.epi-env-postmark').style.transform = 'rotate(-14deg)';
     st.mount();
@@ -463,6 +499,10 @@ export async function playOpen(letter) {
         await st.flip('front', 'back', 800);
         await st.wait(220);
 
+        if (sealKind(letter) === 'chop') {
+            // 朱印不会裂开：拆信时沿着接缝撕开，印也跟着淡出去
+            await st.play('.epi-env-seal', [{ opacity: 1 }, { opacity: 0 }], 260, 'ease-in');
+        } else if (sealKind(letter) === 'wax') {
         // 4 火漆裂开：先抖一下，再裂成两半掉下去
         await st.play('.epi-env-seal', [
             { transform: 'translate(-50%, -50%) translateZ(4px) rotateZ(0deg)' },
@@ -485,6 +525,8 @@ export async function playOpen(letter) {
             { transform: 'translate(-50%, -50%) translateZ(4px) translate(54px, 130px) rotateZ(56deg)', opacity: 0 },
         ], 760, 'cubic-bezier(.4,0,.9,.5)');
         await st.wait(260);
+
+        }
 
         // 5 翻盖弹开：翻过头一点再弹回来（纸的折痕感）
         // 翻盖弹开：先加速立起来（在信纸前面），立到侧对镜头时换到信纸后面，

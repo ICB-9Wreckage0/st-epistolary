@@ -82,3 +82,34 @@ test('检索可以排除正在聊天里读的那封信', () => {
     assert.equal(retrieve(a, { texts, viewer: null, storyDate: '' }).selected.length, 1);
     assert.equal(retrieve(a, { texts, viewer: null, storyDate: '', exclude: new Set([mine.id]) }).selected.length, 0);
 });
+
+// ---------- 托人转交 ----------
+import { viaReceivedEvents, parseViaDecision, buildViaGuidance, viaSceneMessage, nextEventId } from '../src/correspondence.js';
+import { knowledgeOf as kOf, createArchive as mkArchive, createLetter as mkLetter } from '../src/model.js';
+
+test('托人转交：转交人只知道有信，拆看后才知道内容，收信人送到前一无所知', () => {
+    const a = mkArchive();
+    const l = mkLetter(a, { author: '安娜', recipients: ['伊万'], writtenAt: '1890-03-01', body: '亲爱的伊万：\n\n我要走了。\n\n安娜', status: 'sent' });
+    l.events.push(...viaReceivedEvents(l, '女仆玛莎', '1890-03-02', l.events));
+    assert.equal(kOf(l, new Set(['女仆玛莎']), '1890-03-05').letterLevel, 'exists');
+    assert.equal(kOf(l, new Set(['伊万']), '1890-03-05').letterLevel, 'none');
+    l.events.push({ id: nextEventId(l.events), type: 'read', who: '女仆玛莎', date: '1890-03-03', segments: null, to: '', note: '' });
+    assert.equal(kOf(l, new Set(['女仆玛莎']), '1890-03-05').letterLevel, 'full');
+    assert.equal(kOf(l, new Set(['伊万']), '1890-03-05').letterLevel, 'none');
+    assert.ok(l.events.some(e => e.type === 'sent' && e.to === '女仆玛莎'));
+});
+
+test('托人转交：解析转交人的决定', () => {
+    assert.deepEqual(parseViaDecision('好的：{"opened": true, "resealed": true, "action": "forward", "note": "明天送去"}'), { opened: true, resealed: true, action: 'forward', note: '明天送去' });
+    assert.equal(parseViaDecision('{"opened": false, "action": "burn"}').action, 'unclear');
+    assert.equal(parseViaDecision('不知道'), null);
+});
+
+test('托人转交：转交人那边的旁白和提示不含信的内容', () => {
+    const a = mkArchive();
+    const l = mkLetter(a, { author: '安娜', recipients: ['伊万'], writtenAt: '1890-03-01', body: '秘密内容', status: 'sent' });
+    assert.ok(!viaSceneMessage(l, '玛莎', '1890-03-02').includes('秘密内容'));
+    const g = buildViaGuidance(a, l, '玛莎', '1890-03-02');
+    assert.ok(!g.includes('秘密内容'));
+    assert.match(g, /不要编造信的内容/);
+});
