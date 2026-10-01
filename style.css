@@ -1502,3 +1502,5 @@ details.epi-sec-card.epi-sec-off > :not(summary):not(.epi-off-note) { opacity: .
 .epi-memclear { display: block; }
 .epi-memclear label { flex-direction: row !important; align-items: center; gap: 6px; }
 .epi-danger { border-color: #b5523b !important; color: #e88 !important; }
+.epi-sort { width: auto !important; max-width: 8.5em; font-size: .88em; margin: 0; }
+.epi-sort-dir { width: auto; margin: 0; padding: 2px 8px; font-size: .88em; }

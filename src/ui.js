@@ -306,6 +306,32 @@ export class UI {
         return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'));
     }
 
+    // 信件列表的排序（记在设置里，下次打开还是这样）
+    sortKey() { return this.hooks.getSettings().listSort || 'code'; }
+    sortDesc() { return !!this.hooks.getSettings().listSortDesc; }
+
+    letterSorter() {
+        const key = this.sortKey();
+        const dir = this.sortDesc() ? -1 : 1;
+        const nat = (x, y) => String(x || '').localeCompare(String(y || ''), 'zh', { numeric: true });
+        // 没有的排在最后（不管正序倒序）
+        const last = (x, y, f) => (!x && !y ? 0 : !x ? 1 : !y ? -1 : f(x, y) * dir);
+        const dateOf = l => l.writtenAt || (l.events || []).map(e => e.date).filter(Boolean).sort()[0] || '';
+        const by = {
+            // 【信2】排在【信10】前面；自己起的暗号（如【星夜】）排在编号暗号后面
+            code: (a, b) => last(a.code, b.code, (x, y) => {
+                const nx = /^【信(\d+)】$/.exec(x), ny = /^【信(\d+)】$/.exec(y);
+                if (nx && ny) return Number(nx[1]) - Number(ny[1]);
+                if (nx || ny) return nx ? -1 : 1;
+                return nat(x, y);
+            }),
+            date: (a, b) => last(dateOf(a), dateOf(b), nat),
+            updated: (a, b) => last(a.updatedAt, b.updatedAt, nat),
+            author: (a, b) => last(a.author, b.author, nat),
+        }[key] || (() => 0);
+        return (a, b) => by(a, b) || nat(a.id, b.id);
+    }
+
     // 文件夹下拉框
     folderOptions(cur) {
         const fs = folderList(this.archive);
@@ -427,7 +453,7 @@ export class UI {
             .filter(l => fsel == null || (fsel === '' ? !l.folder : l.folder === fsel))
             .filter(l => gsel == null || this.groupsOf(l, gb).includes(gsel))
             .filter(l => !q || [l.id, l.title, l.author, ...l.recipients, ...l.tags, l.body].join(' ').toLowerCase().includes(q))
-            .sort((a, b) => (a.writtenAt || '').localeCompare(b.writtenAt || '') || a.id.localeCompare(b.id));
+            .sort(this.letterSorter());
         const ex = this.expert;
 
         const rows = letters.map(l => `
@@ -493,6 +519,10 @@ export class UI {
                 <button class="menu_button" data-act="import-open" title="把聊天里已经写出来的信，逐字存进档案">📥 从聊天记录找信</button>
                 <input class="text_pole epi-search" data-act="search" placeholder="搜索人名、关键词、正文…" value="${esc(this.search)}">
                 <span class="epi-muted">${letters.length} 封</span>
+                <select class="text_pole epi-sort" data-act="list-sort" title="排序">
+                    ${[['code', '按暗号'], ['date', '按日期'], ['updated', '按最近修改'], ['author', '按写信人']].map(([k, v]) => `<option value="${k}" ${this.sortKey() === k ? 'selected' : ''}>${v}</option>`).join('')}
+                </select>
+                <button class="menu_button epi-sort-dir" data-act="list-sort-dir" title="${this.sortDesc() ? '现在是倒序，点一下改成正序' : '现在是正序，点一下改成倒序'}">${this.sortDesc() ? '↓ 倒序' : '↑ 正序'}</button>
                 <button class="menu_button ${this.selectMode ? 'epi-primary' : ''}" data-act="select-mode" title="勾选好几封信，一起移到文件夹">${this.selectMode ? '✓ 完成选择' : '☑ 批量选择'}</button>
             </div>
             ${this.selectMode ? `<div class="epi-bulkbar">
@@ -3050,6 +3080,12 @@ ${list}`;
                 break;
             case 'tl-collapse-all': this.tlExpanded = new Set(); this.rerenderKeepScroll(); break;
             case 'tl-result-close': this.tlResult = ''; this.show('timeline'); break;
+            case 'list-sort-dir':
+                // 先算好再写：getSettings() 每次都会换一个新对象
+                { const v = !this.sortDesc(); this.hooks.getSettings().listSortDesc = v; }
+                this.hooks.saveSettings();
+                this.rerenderKeepScroll();
+                break;
             case 'select-mode':
                 this.selectMode = !this.selectMode;
                 this.selected = new Set();
@@ -3497,7 +3533,8 @@ ${list}`;
             this.estTimer = setTimeout(() => this.updateStatusEstimate(), 200);
             return;
         }
-                if (act === 'tl-folder') { if (e.type === 'change') { this.tlFolder = t.value === '*' ? null : t.value; this.show('timeline'); } return; }
+                if (act === 'list-sort') { if (e.type === 'change') { this.hooks.getSettings().listSort = t.value; this.hooks.saveSettings(); this.rerenderKeepScroll(); } return; }
+        if (act === 'tl-folder') { if (e.type === 'change') { this.tlFolder = t.value === '*' ? null : t.value; this.show('timeline'); } return; }
         if (act === 'tl-pair') { if (e.type === 'change') { this.tlPair = t.value; this.show('timeline'); } return; }
         if (t.dataset.s) {
             const key = t.dataset.s;
