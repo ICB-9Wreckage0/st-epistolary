@@ -1294,3 +1294,27 @@ details.epi-fold[open] > summary::before { content: '▾'; }
 .epi-fold-code { font-weight: normal; color: var(--SmartThemeQuoteColor, #e8b86b); font-size: .9em; }
 .epi-fold-hint { font-weight: normal; opacity: .55; font-size: .82em; }
 details.epi-fold[open] { padding-bottom: 8px; }
+
+/* ---- 读信的记忆 ---- */
+.epi-memories {
+    margin-top: 14px;
+    background: rgba(20, 20, 24, 0.92);
+    color: #e8e3d8;
+    border: 1px solid rgba(255,255,255,.15);
+    border-radius: 8px;
+    padding: 10px 14px;
+}
+.epi-memories h4 { margin: 0 0 4px; }
+.epi-memories .epi-muted { color: #b9b4aa; }
+.epi-mem-hint { font-size: 0.85em; margin: 0 0 8px; }
+.epi-mem { border-top: 1px solid rgba(255,255,255,.1); padding: 8px 0; }
+.epi-mem-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
+.epi-mem-acts { margin-left: auto; display: flex; gap: 4px; }
+.epi-mem-acts .menu_button { margin: 0 !important; }
+.epi-mem-text { white-space: pre-wrap; line-height: 1.75; font-size: 0.95em; }
+.epi-mem-bar { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.epi-mem-bar .menu_button { width: auto; margin: 0; }
+.epi-mem-keys { display: flex; flex-direction: column; gap: 4px; font-size: 0.9em; }
+.epi-mem-keys .epi-row { display: flex; gap: 6px; align-items: center; }
+.epi-mem-keys input { flex: 1; min-width: 0; }
+#epi-mem-text { width: 100%; box-sizing: border-box; line-height: 1.7; }

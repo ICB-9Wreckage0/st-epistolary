@@ -1964,6 +1964,15 @@ ${list}`;
                 <p class="epi-muted">暗号在写信页的信头里改，信件列表和阅读页里点一下就能复制。暗号本身不会出现在 AI 的回复里。${ex ? '高级模式下，暗号和下面的自动注入、寄送功能同时生效。' : '想要寄送（信在路上走几天）、托人转交、按“谁读过”自动注入，切到「高级」模式。'}</p>
             </section>
 
+            <section class="epi-sec-card">
+                <h4>🧠 读信的记忆</h4>
+                <p>角色在剧情里读完一封信（用暗号把信交给 AI 的那一轮${ex ? '，或者信送到、转交人偷看' : ''}），书信簿会再请 AI 整理一段“这个人记得什么”：在意的地方、记住的几句原话、当时的联想、读完做了什么。</p>
+                ${chk('memory.auto', '读完信自动整理记忆', '每封信每轮多调用一次上面设置的 AI 接口。关掉以后，也可以在阅读页里手动点“从最近的剧情整理”。')}
+                ${chk('memory.worldbook', '把记忆写进这个聊天的世界书', '写进聊天绑定的世界书；没绑定就自动建一本。每人每封信一条，关键词是“写信人+信”、暗号、标题和你填的关键词，按深度插入。')}
+                <label>世界书条目插入深度<input class="text_pole epi-num" type="number" min="0" max="50" data-s="memory.depth" value="${esc(s.memory?.depth ?? 4)}"></label>
+                <p class="epi-muted">世界书里只放记忆，不放原文，所以角色“想起来”的是 TA 当时记住的东西，像真人一样会记不全；要逐字读，还是写暗号。记忆在阅读页底部能看、能改、能删，改过的不会被自动整理覆盖。</p>
+            </section>
+
             <section class="epi-sec-card" ${ex ? '' : 'hidden'}>
                 <h4>📮 寄信与送达</h4>
                 <label>当前剧情日期（只对这个聊天）<div class="epi-row"><input class="text_pole" data-chat="storyDate" value="${esc(storyDate)}" placeholder="如 1889-06-08" ${this.hooks.hasChat() ? '' : 'disabled'}><button class="menu_button" data-act="date-now" ${this.hooks.hasChat() ? '' : 'disabled'}>让 AI 推算</button></div></label>
@@ -2182,6 +2191,7 @@ ${list}`;
                 </div>
                 <div class="epi-reader-translation" ${l.translations?.zh?.source === l.body ? '' : 'hidden'}>${l.translations?.zh?.source === l.body ? `<h4>中文译文</h4><div class="epi-tr-read">${esc(l.translations.zh.text)}</div>` : ''}</div>
                 ${replies.length ? `<div class="epi-reader-link">回信：${replies.map(r => `<a href="#" data-act="read" data-id="${esc(r.id)}">${esc(r.author)} ${esc(r.writtenAt)}</a>`).join('　')}</div>` : ''}
+                ${preview ? '' : this.memoryHtml(l)}
             </div>`;
         wrap.classList.remove('epi-hidden');
         wrap.scrollTop = 0;
@@ -2189,6 +2199,50 @@ ${list}`;
 
     closeReader() {
         this.root.querySelector('.epi-reader-wrap').classList.add('epi-hidden');
+    }
+
+    // 阅读页底部：谁读过这封信、记得什么（会写进世界书）
+    memoryHtml(l) {
+        const mems = l.memories || [];
+        const book = this.hooks.getMemoryBook?.() || '';
+        const wb = this.hooks.getSettings().memory?.worldbook !== false;
+        return `<div class="epi-memories" data-id="${esc(l.id)}">
+            <h4>🧠 读过的人记得什么</h4>
+            <p class="epi-muted epi-mem-hint">角色读完这封信，书信簿会让 AI 整理一段“TA 记得什么”：信里 TA 在意的地方、记住的几句原话、想到了什么、读完做了什么。${wb ? `这些记忆写进这个聊天的世界书${book ? `「${esc(book)}」` : '（第一次写的时候自动建一本）'}，以后剧情里提到 ${esc(l.author || '写信人')} 的信${l.code ? `或 ${esc(l.code)}` : ''}，角色就会想起来。` : '（设置里关掉了“写进世界书”，现在只存在书信簿里。）'}需要逐字读全文时，还是用暗号。</p>
+            ${mems.length ? mems.map(m => `<div class="epi-mem">
+                <div class="epi-mem-head"><b>${esc(m.person)}</b>
+                    ${m.auto === false ? '<span class="epi-chip">手改过</span>' : ''}
+                    ${m.wiBook ? `<span class="epi-chip" title="世界书「${esc(m.wiBook)}」里的第 ${esc(m.wiUid)} 条">📖 已进世界书</span>` : ''}
+                    <span class="epi-mem-acts">
+                        <button class="menu_button epi-mini" data-act="mem-edit" data-id="${esc(l.id)}" data-person="${esc(m.person)}">改</button>
+                        <button class="menu_button epi-mini" data-act="mem-del" data-id="${esc(l.id)}" data-person="${esc(m.person)}">删</button>
+                    </span></div>
+                <div class="epi-mem-text">${esc(m.text)}</div>
+            </div>`).join('') : '<p class="epi-muted">还没有。角色在剧情里读过这封信以后会自动整理；也可以点下面的按钮。</p>'}
+            <div class="epi-mem-bar">
+                <button class="menu_button" data-act="mem-recent" data-id="${esc(l.id)}" title="把最近几层剧情交给 AI，看谁读了这封信、记住了什么">🧠 从最近的剧情整理</button>
+                <button class="menu_button" data-act="mem-add" data-id="${esc(l.id)}">＋ 自己写一段</button>
+            </div>
+            <label class="epi-mem-keys">想起这封信的额外关键词（逗号分开，可不填）
+                <span class="epi-row"><input type="text" class="text_pole" id="epi-recall-keys" value="${esc((l.recallKeys || []).join('，'))}" placeholder="比如：七月的信，那笔钱，蒙马特的画室">
+                <button class="menu_button epi-mini" data-act="recall-save" data-id="${esc(l.id)}">保存</button></span>
+            </label>
+        </div>`;
+    }
+
+    openMemoryDialog(id, person = '') {
+        const l = this.archive.letters[id];
+        if (!l) return;
+        const m = (l.memories || []).find(x => x.person === person);
+        this.openDialog(`
+            <h3>🧠 ${m ? `${esc(m.person)} 的记忆` : '写一段记忆'}</h3>
+            <p class="epi-muted">${esc(l.author)} 写给 ${esc(l.recipients.join('、'))} 的信。用第三人称写这个人记得什么；信里的原话用「」括起来。改过的不会被之后自动整理覆盖。</p>
+            ${m ? '' : '<label>谁的记忆<input type="text" class="text_pole" id="epi-mem-person" placeholder="比如：提奥"></label>'}
+            <textarea class="text_pole" id="epi-mem-text" rows="9">${esc(m?.text || '')}</textarea>
+            <div class="epi-dialog-actions">
+                <button class="menu_button" data-act="dialog-close">取消</button>
+                <button class="menu_button epi-primary" data-act="mem-save" data-id="${esc(id)}" data-person="${esc(person)}">保存</button>
+            </div>`);
     }
 
     // ================= 对话框 =================
@@ -2205,7 +2259,7 @@ ${list}`;
 
     // ================= 事件处理 =================
 
-    onClick(e) {
+    async onClick(e) {
         const tabBtn = e.target.closest('[data-tab]');
         if (tabBtn) { this.show(tabBtn.dataset.tab); return; }
         const el = e.target.closest('[data-act]');
@@ -2263,6 +2317,42 @@ ${list}`;
                 found.forEach((f, k) => { f.id = `ENC${Date.now().toString(36)}${k}`; this.draft.enclosures.push(f); });
                 toastr?.[found.length ? 'success' : 'info'](found.length ? `找到 ${found.length} 件，名字和金额可以再改` : '正文里没找到“随信附上……”这样的句子');
                 if (found.length) { this.setDirty(); this.rerenderKeepScroll(); }
+                break;
+            }
+            case 'mem-recent': {
+                if (this.busy) break;
+                if (!this.hooks.hasChat()) { toastr?.info('先打开一个聊天'); break; }
+                this.busy = true;
+                el.disabled = true; el.textContent = '整理中…';
+                try {
+                    const got = await this.hooks.memoriesFromRecent(id);
+                    if (!got.length) toastr?.info('最近的剧情里没看到有人读这封信');
+                } catch (err) { toastr?.error(String(err?.message || err), '整理记忆失败'); }
+                this.busy = false;
+                this.openReader(id);
+                break;
+            }
+            case 'mem-add': this.openMemoryDialog(id); break;
+            case 'mem-edit': this.openMemoryDialog(id, el.dataset.person); break;
+            case 'mem-del':
+                if (confirm(`删掉 ${el.dataset.person} 对这封信的记忆？世界书里对应的条目也会删掉。`)) {
+                    await this.hooks.saveMemoryEdit(id, el.dataset.person, '');
+                    this.openReader(id);
+                }
+                break;
+            case 'mem-save': {
+                const person = el.dataset.person || this.root.querySelector('#epi-mem-person')?.value.trim();
+                const text = this.root.querySelector('#epi-mem-text').value;
+                if (!person) { toastr?.warning('写上这是谁的记忆'); break; }
+                this.closeDialog();
+                await this.hooks.saveMemoryEdit(id, person, text);
+                this.openReader(id);
+                break;
+            }
+            case 'recall-save': {
+                const v = this.root.querySelector('#epi-recall-keys').value;
+                await this.hooks.saveRecallKeys(id, v.split(/[,，、;；\n]+/).map(x => x.trim()).filter(Boolean));
+                toastr?.success('保存了');
                 break;
             }
             case 'copy-code': this.copyCode(el.closest('.epi-lh-code') ? normalizeCode(this.draft?.code) : el.dataset.code); break;

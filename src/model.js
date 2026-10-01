@@ -201,9 +201,22 @@ export function normalizeLetter(l, id) {
         delivery: l.delivery && typeof l.delivery === 'object' ? l.delivery : null, // 在途信件的送达信息
         source: l.source && typeof l.source === 'object' ? l.source : null,         // 从聊天记录导入时的出处
         translations: l.translations && typeof l.translations === 'object' ? l.translations : {}, // 阅读用的译文缓存
+        memories: Array.isArray(l.memories) ? l.memories.map(normalizeMemory).filter(m => m.person && m.text) : [], // 读过的人记得什么
+        recallKeys: parseTags(l.recallKeys),  // 世界书里“想起这封信”的额外关键词
         notes: l.notes || '',
         createdAt: l.createdAt || now,
         updatedAt: l.updatedAt || now,
+    };
+}
+
+export function normalizeMemory(m = {}) {
+    return {
+        person: String(m.person || '').trim(),
+        text: String(m.text || '').trim(),
+        updatedAt: m.updatedAt || new Date().toISOString(),
+        wiUid: m.wiUid ?? null,      // 世界书条目编号
+        wiBook: m.wiBook || '',      // 写进了哪本世界书
+        auto: m.auto !== false,      // AI 整理的（false = 用户手写或改过）
     };
 }
 

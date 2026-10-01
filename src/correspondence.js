@@ -719,3 +719,67 @@ export function buildCodeBlock(archive, letter, { look = false } = {}) {
     lines.push(`回复里不要写出“${letter.code}”这个暗号本身。`);
     return lines.filter(Boolean).join('\n');
 }
+
+// ---------- 读信以后的记忆：谁读了、记得什么、想到什么、做了什么 ----------
+
+export function buildMemoryPrompt(letter, scene, { existing = [], storyDate = '', userName = '' } = {}) {
+    const system = '你是剧情记录员，负责把角色读信的经过整理成这个角色日后会记得的东西。只输出 JSON。';
+    const prev = existing.length ? `\n【之前已经记下的】（这些人以前读过这封信。如果这次又读了或者想起了它，在原来的基础上把这次的新内容补进去，合成一段，不超过 400 字；这次没读的人不用输出）\n${existing.map(m => `${m.person}：${m.text}`).join('\n')}\n` : '';
+    const prompt = `下面是一封信的原文，以及剧情里有人读这封信的那一段。请为剧情里**读了这封信（或听人念过、被告知内容）的每个人**，各写一段这个人日后会记得的东西。${userName ? `${userName} 是用户扮演的角色，不用替 TA 写。` : ''}
+
+每段写成第三人称、像这个人的记忆一样（比如“提奥记得……”），150 到 300 字，包含：
+1. 什么时候、在什么情况下读的（${storyDate ? `当前剧情日期是 ${storyDate}，` : ''}剧情里写了就照写）；
+2. 信里说了什么：只挑这个人在剧情里在意、停下来细看、有反应的部分；其余一句带过；
+3. 这个人记得的原话：1 到 3 句，必须是**从信的原文里逐字摘出来的**，用「」括起来，可以是外文原句加括号里的中文；
+4. 读的时候想到了什么（剧情里写到的联想、回忆、判断）；
+5. 读完以后做了什么、打算怎么办。
+只写剧情和信里确实有的，不要补充、不要编。剧情里没读这封信的人不要写；写信人自己不算读者，除非剧情里 TA 重读了这封信。
+${prev}
+【信】${letter.author || '？'} 写给 ${(letter.recipients || []).join('、') || '？'}${letter.writtenAt ? `，${letter.writtenAt}` : ''}${letter.code ? `，暗号 ${letter.code}` : ''}
+${String(letter.body || '').slice(0, 12000)}
+
+【读信的那段剧情】
+${String(scene || '').slice(0, 12000)}
+
+只输出一个 JSON 数组，例如：
+[{"person": "提奥", "memory": "提奥记得，1890 年 7 月 1 日早上……他记得信里写着「（信里的原句）」……读完以后……"}]
+没有人读这封信就输出 []。`;
+    return { system, prompt };
+}
+
+export function parseMemories(text) {
+    const m = String(text || '').match(/\[[\s\S]*\]/);
+    if (!m) return [];
+    try {
+        const arr = JSON.parse(m[0]);
+        return (Array.isArray(arr) ? arr : [])
+            .filter(x => x && typeof x === 'object' && String(x.person || '').trim() && String(x.memory || '').trim())
+            .map(x => ({ person: String(x.person).trim().slice(0, 40), text: String(x.memory).trim().slice(0, 1500) }));
+    } catch {
+        return [];
+    }
+}
+
+// 记忆里「」括起来的原话，有没有真的出现在信里（不在的标出来，免得 AI 把编的当原文）
+export function checkQuotes(memory, body) {
+    const flat = s => String(s || '').replace(/[\s「」“”"'‘’（）()]/g, '');
+    const src = flat(body);
+    return String(memory || '').replace(/「([^」]{2,200})」/g, (all, q) => (src.includes(flat(q)) ? all : `“${q}”（大意）`));
+}
+
+// 世界书条目：这个人对这封信的记忆
+export function memoryEntryContent(letter, m) {
+    return `【${m.person}的记忆｜${letter.author || '？'} 写给 ${(letter.recipients || []).join('、') || '？'} 的信${letter.writtenAt ? `（${letter.writtenAt}）` : ''}】\n${m.text}\n（这是 ${m.person} 读过这封信以后记得的东西；没读过的人不知道这些。需要逐字读信时以原文为准，暗号 ${letter.code || '无'}。）`;
+}
+
+// 什么时候想起来：提到写信人和“信”，或者暗号、标题、自定义的想起关键词
+export function memoryKeys(letter, names = []) {
+    const esc = s => String(s).replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+    const who = [...new Set([letter.author, ...names].filter(Boolean))].map(esc).join('|');
+    const keys = [];
+    if (who) keys.push(`/(${who})[^。！？.!?\\n]{0,10}((?<![相自确迷威诚])信(?![任心仰赖号用息])|letter|lettre)|((?<![相自确迷威诚])信(?![任心仰赖号用息])|letter|lettre)[^。！？.!?\\n]{0,10}(${who})/i`);
+    if (letter.code) keys.push(letter.code);
+    if (letter.title) keys.push(letter.title);
+    for (const k of letter.recallKeys || []) if (k) keys.push(k);
+    return keys;
+}

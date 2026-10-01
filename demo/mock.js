@@ -12,7 +12,7 @@ function loadState() {
 function saveState() {
     try {
         localStorage.setItem(LS_STATE, JSON.stringify({
-            chat: ctx.chat, chatMetadata: ctx.chatMetadata, extensionSettings: ctx.extensionSettings, name2: ctx.name2,
+            chat: ctx.chat, chatMetadata: ctx.chatMetadata, extensionSettings: ctx.extensionSettings, name2: ctx.name2, worldBooks: ctx.worldBooks,
         }));
     } catch { /* 隐私模式下存不了，就只在本页有效 */ }
 }
@@ -62,6 +62,12 @@ const ctx = {
     },
     generateRaw: async () => '',
     generateQuietPrompt: async () => '',
+    // 演示用的世界书：存在 localStorage 里
+    worldBooks: state.worldBooks || {},
+    async loadWorldInfo(name) { return ctx.worldBooks[name] ? structuredClone(ctx.worldBooks[name]) : null; },
+    async saveWorldInfo(name, data) { ctx.worldBooks[name] = structuredClone(data); saveState(); },
+    async updateWorldInfoList() {},
+    getWorldInfoNames() { return Object.keys(ctx.worldBooks); },
 };
 
 globalThis.SillyTavern = { getContext: () => ctx };
@@ -101,7 +107,7 @@ function demoReply() {
     }
     const emb = (last?.mes || '').match(/【信件 (\S+?)｜([^】]*)】/);
     if (emb) {
-        return `*（演示回复：你的消息里带着 ${emb[1]} 那封信的全文（${emb[2]}），聊天里折叠显示，但 AI 读得到。真实使用时，角色会照着原文读这封信。）*`;
+        return `*${ctx.name2}拆开信读了起来。*\n\n*（演示回复：你的消息里带着 ${emb[1]} 那封信的全文（${emb[2]}），聊天里折叠显示，但 AI 读得到。真实使用时，角色会照着原文读这封信。）*`;
     }
     const code = ctx.extensionPrompts.epistolary_code?.value || '';
     const codeM = code.match(/【暗号 (\S+) 指的是下面这封信】\n([^\n]*)/);
@@ -218,6 +224,15 @@ globalThis.__epistolaryDemoMock = async ({ prompt, kind, target }) => {
             if (/照常转交/.test(story)) return { n: l.n, opened: false, action: 'forward', note: '照常转交' };
             return { n: l.n, opened: was, action: 'unclear', note: '还看不出来' };
         }));
+    }
+    if (kind === 'memory') {
+        const scene = prompt.split('【读信的那段剧情】')[1] || '';
+        const body = (prompt.split('【信】')[1] || '').split('【读信的那段剧情】')[0].split('\n').slice(1).join('\n');
+        const reader = [ctx.name2, '提奥', '文森特'].find(n => new RegExp(`${n}[^\\n]{0,20}(读|拆|看)`).test(scene));
+        if (!reader) return '[]';
+        const lines = body.split(/\n+/).map(x => x.trim()).filter(x => x.length > 6 && !/^亲爱的|^[^\s]{1,6}$/.test(x));
+        const q = lines[0] || '';
+        return JSON.stringify([{ person: reader, memory: `${reader}记得，他是在剧情里拆开这封信读的（演示）。信里写着「${q.slice(0, 20)}」，他读到这里停了一下。还有一句他记成了「这句话信里没有」。读完以后，他把信折好收了起来。` }]);
     }
     if (kind === 'reply') {
         const m = prompt.match(/§\d+ ([^\n]{4,40})/g) || [];
