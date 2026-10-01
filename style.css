@@ -1284,3 +1284,13 @@ button.epi-chip.epi-code { padding: 0 8px; border-radius: 999px; border: 1px sol
 @media (max-width: 760px) { .epi-paper.epi-paper-edit { font-size: calc(16px * var(--fs, 1) * var(--edit, 1)); } }
 .epi-rgroup-zoom { display: inline-flex; align-items: center; gap: 4px; }
 .epi-zoom-val { min-width: 3.2em; text-align: center; font-size: 0.85em; opacity: 0.8; }
+
+/* ---- 暗号放进消息里的信：折叠显示 ---- */
+details.epi-fold { margin: 6px 0; border: 1px solid var(--SmartThemeQuoteColor, #e8b86b); border-radius: 8px; padding: 4px 10px; background: rgba(232, 184, 107, 0.06); }
+details.epi-fold > summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+details.epi-fold > summary::-webkit-details-marker { display: none; }
+details.epi-fold > summary::before { content: '▸'; opacity: .7; }
+details.epi-fold[open] > summary::before { content: '▾'; }
+.epi-fold-code { font-weight: normal; color: var(--SmartThemeQuoteColor, #e8b86b); font-size: .9em; }
+.epi-fold-hint { font-weight: normal; opacity: .55; font-size: .82em; }
+details.epi-fold[open] { padding-bottom: 8px; }

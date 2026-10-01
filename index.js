@@ -31,6 +31,7 @@ const DEFAULT_SETTINGS = {
     autoFill: true,          // 写新信时让 AI 根据剧情填信头
     editZoom: 0.9,           // 写信页信纸上的字看起来多大（不改信本身的字号）
     describeLook: true,
+    codeMode: 'embed',       // 暗号：embed 把信的全文放进你的消息里（折叠显示，最稳）| inject 只在生成时注入
     sealIncoming: true,      // 角色回复里出现寄给你的信：先封起来，拆信动画以后才显示
     detectArrival: true,     // 剧情里（包括 AI 的思考）写到收信人收到信、转交人动了信，就自动处理      // 收信反应时，把信纸、墨水、字迹、字号、信封、封口告诉 AI
     animations: true,        // 寄信封缄、收信拆信动画
@@ -238,7 +239,68 @@ function lastUserMessage() {
 
 function codeLetters() {
     const m = lastUserMessage();
-    return m ? lettersByCode(store.archive, m.mes) : [];
+    // 已经把全文放进消息里的，不用再注入一遍
+    return m ? lettersByCode(store.archive, m.mes).filter(l => !String(m.mes).includes(blockStart(l))) : [];
+}
+
+// ---------- 暗号 → 把信的全文放进你的消息里（折叠显示） ----------
+// AI 读的是你这条消息本身，所以一定看得到；聊天里折叠成“✉ 勒鲁写给文森特的信”，不占地方。
+
+const blockStart = l => `【信件 ${l.code}｜`;
+const BLOCK_END = '【信件完】';
+
+function letterBlock(l) {
+    const head = [`${l.author || '？'} 写给 ${l.recipients.join('、') || '？'}`, l.writtenAt].filter(Boolean).join('｜');
+    const enc = l.enclosures?.length ? `\n\n（随信附上：${l.enclosures.map(e => e.name + (e.value && !e.name.includes(e.value) ? `，${e.value}` : '')).join('；')}）` : '';
+    return `${blockStart(l)}${head}】\n\n${String(l.body || '').trim()}${enc}\n\n${BLOCK_END}`;
+}
+
+// 消息刚发出、AI 还没开始写之前：把暗号对应的信接在消息后面
+async function embedCodes(mesId) {
+    const s = settings();
+    if (!s.enabled || s.codeMode === 'inject' || store.mode === 'unloaded') return;
+    const c = ctx();
+    const m = c.chat?.[mesId];
+    if (!m || !m.is_user || m.extra?.epistolary) return;
+    const letters = lettersByCode(store.archive, m.mes).filter(l => !String(m.mes).includes(blockStart(l)));
+    if (!letters.length) return;
+    const ready = letters.filter(l => !l.shell && String(l.body || '').trim());
+    for (const l of letters.filter(x => !ready.includes(x))) toastr.warning(`${l.code} 那封信还没写正文`, '书信簿');
+    if (!ready.length) return;
+    m.mes = `${String(m.mes).replace(/\s+$/, '')}\n\n${ready.map(letterBlock).join('\n\n')}`;
+    m.extra = { ...(m.extra || {}), epistolaryEmbedded: ready.map(l => l.id) };
+    // 酒馆在这之前已经存过一次聊天了；这里再存一次，免得生成失败时改动丢掉
+    try { await c.saveChat(); } catch (e) { console.warn('[书信簿] 保存聊天失败', e); }
+    toastr.success(ready.map(l => `${l.code} ${l.author} → ${l.recipients.join('、')}`).join('<br>'), '✉ 信已放进你的消息（折叠显示）', { timeOut: 4000, escapeHtml: false });
+}
+
+// 聊天里把【信件 …】……【信件完】折叠起来
+function foldLetters(mesId) {
+    const el = document.querySelector(`.mes[mesid="${mesId}"] .mes_text`);
+    if (!el || !el.textContent.includes('【信件 ')) return;
+    const nodes = [...el.children];
+    for (let i = 0; i < nodes.length; i++) {
+        const start = nodes[i];
+        if (start.closest('details.epi-fold')) continue;
+        const m = start.textContent.match(/【信件 (\S+?)｜([^】]*)】/);
+        if (!m) continue;
+        let j = i;
+        while (j < nodes.length && !nodes[j].textContent.includes(BLOCK_END)) j++;
+        if (j >= nodes.length) continue;
+        const details = document.createElement('details');
+        details.className = 'epi-fold';
+        const parts = m[2].split('｜');
+        details.innerHTML = `<summary>✉ ${esc(parts[0].replace(' 写给 ', '写给'))} 的信${parts[1] ? ` · ${esc(parts[1])}` : ''} <span class="epi-fold-code">${esc(m[1])}</span><span class="epi-fold-hint">点开看全文 · AI 读得到</span></summary>`;
+        start.before(details);
+        for (let k = i + 1; k < j; k++) details.appendChild(nodes[k]);
+        start.remove();
+        nodes[j].remove();
+        i = j;
+    }
+}
+
+function foldAll() {
+    document.querySelectorAll('.mes[mesid]').forEach(el => foldLetters(el.getAttribute('mesid')));
 }
 
 // 告诉用户这一轮交给 AI 的是哪几封；写了像暗号的东西却对不上，也提醒一下
@@ -251,7 +313,7 @@ function codeFeedback(type) {
     const key = `${ctx().chat.length}|${type}|${hit.map(l => l.id).join(',')}|${miss.join(',')}`;
     if (key === lastCodeToast) return;
     lastCodeToast = key;
-    if (hit.length) toastr.success(hit.map(l => `${l.code} ${l.author} → ${l.recipients.join('、')}`).join('<br>'), '✉ 这一轮把信交给了 AI', { timeOut: 4000, escapeHtml: false });
+    if (hit.length && settings().codeMode === 'inject') toastr.success(hit.map(l => `${l.code} ${l.author} → ${l.recipients.join('、')}`).join('<br>'), '✉ 这一轮把信交给了 AI', { timeOut: 4000, escapeHtml: false });
     if (!hit.length && !miss.length) {
         // 写了“信1”却没带括号
         const bare = Object.values(store.archive.letters).find(l => l.code && new RegExp(`(^|[^【\\[])${l.code.replace(/^【|】$/g, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\d】\\]])`).test(m.mes || ''));
@@ -1255,6 +1317,7 @@ jQuery(async () => {
         ui.refresh();
         ui.renderPostbox();
         setTimeout(reapplySeals, 300);
+        setTimeout(foldAll, 300);
     });
     if (eventTypes.MESSAGE_RECEIVED) eventSource.on(eventTypes.MESSAGE_RECEIVED, mesId => {
         setTimeout(async () => {
@@ -1267,7 +1330,7 @@ jQuery(async () => {
         }, 300);
     });
     if (eventTypes.CHARACTER_MESSAGE_RENDERED) eventSource.on(eventTypes.CHARACTER_MESSAGE_RENDERED, mesId => setTimeout(() => applySeal(mesId), 50));
-    if (eventTypes.MORE_MESSAGES_LOADED) eventSource.on(eventTypes.MORE_MESSAGES_LOADED, () => setTimeout(reapplySeals, 100));
+    if (eventTypes.MORE_MESSAGES_LOADED) eventSource.on(eventTypes.MORE_MESSAGES_LOADED, () => setTimeout(() => { reapplySeals(); foldAll(); }, 100));
     if (eventTypes.STREAM_TOKEN_RECEIVED) eventSource.on(eventTypes.STREAM_TOKEN_RECEIVED, onStreamToken);
     if (eventTypes.GENERATION_ENDED) eventSource.on(eventTypes.GENERATION_ENDED, () => setTimeout(() => {
         // 生成结束了却没认出信：取消模糊
@@ -1280,6 +1343,14 @@ jQuery(async () => {
         if (m?.extra?.epistolarySeal && !m.extra.epistolarySeal.opened) delete m.extra.epistolarySeal;
         removeSeal(mesId);
     });
+    // 暗号：消息发出后、AI 开始写之前（酒馆会等这个处理完）
+    if (eventTypes.MESSAGE_SENT) {
+        const embed = async mesId => { try { await embedCodes(Number.isInteger(mesId) ? mesId : (ctx().chat || []).length - 1); } catch (e) { console.error('[书信簿] 暗号处理失败', e); } };
+        if (typeof eventSource.makeFirst === 'function') eventSource.makeFirst(eventTypes.MESSAGE_SENT, embed);
+        else eventSource.on(eventTypes.MESSAGE_SENT, embed);
+    }
+    if (eventTypes.USER_MESSAGE_RENDERED) eventSource.on(eventTypes.USER_MESSAGE_RENDERED, mesId => setTimeout(() => foldLetters(mesId), 0));
+    if (eventTypes.MESSAGE_UPDATED) eventSource.on(eventTypes.MESSAGE_UPDATED, mesId => setTimeout(() => foldLetters(mesId), 50));
     if (eventTypes.MESSAGE_SENT) eventSource.on(eventTypes.MESSAGE_SENT, mesId => setTimeout(async () => {
         const id = Number.isInteger(mesId) ? mesId : (ctx().chat || []).length - 1;
         const m = ctx().chat?.[id];

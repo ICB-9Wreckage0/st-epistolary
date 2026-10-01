@@ -1957,6 +1957,10 @@ ${list}`;
             <section class="epi-sec-card">
                 <h4>🔑 暗号</h4>
                 <p>每封信都有一个暗号，比如 <b>【信1】</b>。在聊天里写上它（连括号一起），那一轮生成时 AI 就会读到这封信的全文；没写暗号，就不会注入。</p>
+                <label>暗号怎么生效<select class="text_pole" data-s="codeMode">
+                    <option value="embed" ${s.codeMode !== 'inject' ? 'selected' : ''}>把信的全文接在你的消息后面，聊天里折叠成“✉ 某某的信”（最稳，推荐）</option>
+                    <option value="inject" ${s.codeMode === 'inject' ? 'selected' : ''}>不改你的消息，只在生成时悄悄注入（有些预设会把它挤掉）</option>
+                </select></label>
                 <p class="epi-muted">暗号在写信页的信头里改，信件列表和阅读页里点一下就能复制。暗号本身不会出现在 AI 的回复里。${ex ? '高级模式下，暗号和下面的自动注入、寄送功能同时生效。' : '想要寄送（信在路上走几天）、托人转交、按“谁读过”自动注入，切到「高级」模式。'}</p>
             </section>
 

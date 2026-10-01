@@ -35,7 +35,7 @@ const ctx = {
     extensionSettings: state.extensionSettings || {},
     extensionPrompts: {},
     eventSource,
-    eventTypes: { CHAT_CHANGED: 'chat_changed', MESSAGE_RECEIVED: 'message_received', MESSAGE_SENT: 'message_sent' },
+    eventTypes: { CHAT_CHANGED: 'chat_changed', MESSAGE_RECEIVED: 'message_received', MESSAGE_SENT: 'message_sent', USER_MESSAGE_RENDERED: 'user_message_rendered', MESSAGE_UPDATED: 'message_updated' },
     get characters() { return [{ name: ctx.name2, description: `${ctx.name2}（演示用的角色卡）`, personality: '', scenario: '' }]; },
     getCurrentChatId: () => 'demo-chat',
     getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
@@ -98,6 +98,10 @@ function demoReply() {
     const reaction = ctx.extensionPrompts.epistolary_reaction?.value || '';
     if (/回信|写信给我|给我写信/.test(last?.mes || '') && !last?.extra?.epistolary) {
         return `*文森特想了想，铺开信纸，写道：*\n\n亲爱的 E.：\n\n你的信我收到了。这几天麦田全黄了，我每天早上都出去画，风一吹，整片麦子像海浪一样。随信附上一张麦田的速写。\n\n*写到这里，他停下笔，望着窗外的麦田出了一会儿神。*\n\n等秋天到了，我想再画一次星空。\n\n紧握你的手，\n文森特\n\n*他把信折好，交给了邮差。*`;
+    }
+    const emb = (last?.mes || '').match(/【信件 (\S+?)｜([^】]*)】/);
+    if (emb) {
+        return `*（演示回复：你的消息里带着 ${emb[1]} 那封信的全文（${emb[2]}），聊天里折叠显示，但 AI 读得到。真实使用时，角色会照着原文读这封信。）*`;
     }
     const code = ctx.extensionPrompts.epistolary_code?.value || '';
     const codeM = code.match(/【暗号 (\S+) 指的是下面这封信】\n([^\n]*)/);

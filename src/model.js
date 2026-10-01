@@ -256,14 +256,15 @@ export function looseCode(text) {
 
 // 一段文字里出现了哪些信的暗号
 export function lettersByCode(archive, text) {
-    const t = looseCode(text);
+    const t = looseCode(String(text || '').replace(/【信件 [\s\S]*?【信件完】/g, m => m.slice(0, m.indexOf('｜') + 1)));
     if (!t) return [];
     return Object.values(archive.letters).filter(l => l.code && t.includes(looseCode(l.code)));
 }
 
 // 文字里写了像暗号的东西（【……】），但档案里没有对应的信
 export function unknownCodes(archive, text) {
-    const t = looseCode(text);
+    // 已经放进消息里的信（【信件 ……】……【信件完】）不算
+    const t = looseCode(String(text || '').replace(/【信件 [\s\S]*?【信件完】/g, ''));
     const known = new Set(Object.values(archive.letters).map(l => looseCode(l.code)).filter(Boolean));
     return [...new Set((t.match(/【[^【】]{1,12}】/g) || []))].filter(c => !known.has(c) && /^【信/.test(c));
 }

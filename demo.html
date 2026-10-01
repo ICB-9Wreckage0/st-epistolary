@@ -127,8 +127,10 @@
         ta.value = '';
         const msg = { name: ctx.name1, is_user: true, is_system: false, mes: text, send_date: new Date().toLocaleString() };
         ctx.chat.push(msg);
-        renderMessage(msg);
+        // 和酒馆一样：先发 message_sent（插件可以在这里改消息），再显示
         await ctx.eventSource.emit('message_sent', ctx.chat.length - 1);
+        renderMessage(msg);
+        await ctx.eventSource.emit('user_message_rendered', ctx.chat.length - 1);
         await ctx.generate('normal');
     };
     document.getElementById('demo-send').addEventListener('click', send);
