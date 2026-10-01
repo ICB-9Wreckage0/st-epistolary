@@ -252,26 +252,94 @@ const BLOCK_END = '【信件完】';
 function letterBlock(l) {
     const head = [`${l.author || '？'} 写给 ${l.recipients.join('、') || '？'}`, l.writtenAt].filter(Boolean).join('｜');
     const enc = l.enclosures?.length ? `\n\n（随信附上：${l.enclosures.map(e => e.name + (e.value && !e.name.includes(e.value) ? `，${e.value}` : '')).join('；')}）` : '';
-    return `${blockStart(l)}${head}】\n\n${String(l.body || '').trim()}${enc}\n\n${BLOCK_END}`;
+    // 和“剧情推进”一样：直接写进用户这一楼，并且明确告诉 AI 这是既定内容
+    const rule = '（以下是这封信的原文，已经写好。剧情里有人读它时，读到的就是这些字句：可以引用，不要另编一封，不要改写或增删。）';
+    return `${blockStart(l)}${head}】\n\n${rule}\n\n${String(l.body || '').trim()}${enc}\n\n${BLOCK_END}`;
 }
 
-// 消息刚发出、AI 还没开始写之前：把暗号对应的信接在消息后面
-async function embedCodes(mesId) {
+// 一段文字里有暗号：把对应的信接在后面。返回 { text, letters }（没有要加的就原样返回）
+function withLetterBlocks(text) {
+    const t = String(text || '');
     const s = settings();
-    if (!s.enabled || s.codeMode === 'inject' || store.mode === 'unloaded') return;
-    const c = ctx();
-    const m = c.chat?.[mesId];
-    if (!m || !m.is_user || m.extra?.epistolary) return;
-    const letters = lettersByCode(store.archive, m.mes).filter(l => !String(m.mes).includes(blockStart(l)));
-    if (!letters.length) return;
+    if (!s.enabled || s.codeMode === 'inject' || store.mode === 'unloaded' || !t) return { text: t, letters: [] };
+    const letters = lettersByCode(store.archive, t).filter(l => !t.includes(blockStart(l)));
     const ready = letters.filter(l => !l.shell && String(l.body || '').trim());
     for (const l of letters.filter(x => !ready.includes(x))) toastr.warning(`${l.code} 那封信还没写正文`, '书信簿');
-    if (!ready.length) return;
-    m.mes = `${String(m.mes).replace(/\s+$/, '')}\n\n${ready.map(letterBlock).join('\n\n')}`;
+    if (!ready.length) return { text: t, letters: [] };
+    return { text: `${t.replace(/\s+$/, '')}\n\n${ready.map(letterBlock).join('\n\n')}`, letters: ready };
+}
+
+function toastEmbedded(letters, where = '') {
+    if (!letters.length) return;
+    console.info(`[书信簿] 暗号 ${letters.map(l => l.code).join(' ')} → 信已接在消息后面（${where}）`);
+    toastr.success(letters.map(l => `${l.code} ${l.author} → ${l.recipients.join('、')}`).join('<br>'), '✉ 信已放进你的消息（折叠显示）', { timeOut: 4000, escapeHtml: false });
+}
+
+// ① 最早的时机：酒馆处理完斜杠命令、还没读输入框（GENERATION_AFTER_COMMANDS）——直接改输入框里的文字
+async function onAfterCommands(type, params, dryRun) {
+    try {
+        if (dryRun || type === 'quiet' || type === 'impersonate' || params?.quiet_prompt) return;
+        const ta = document.getElementById('send_textarea');
+        const boxText = ta ? String(ta.value || '') : '';
+        if (boxText.trim()) {
+            const r = withLetterBlocks(boxText);
+            if (r.letters.length) {
+                ta.value = r.text;
+                ta.dispatchEvent(new Event('input', { bubbles: true }));
+                toastEmbedded(r.letters, '发送前·输入框');
+            }
+            return;
+        }
+        // 输入框是空的：消息可能已经在聊天里了（比如别的插件先把它发了出去）
+        const chat = ctx().chat || [];
+        const last = chat.length - 1;
+        if (chat[last]?.is_user && await embedCodes(last)) {
+            if (params && typeof params.prompt === 'string') params.prompt = chat[last].mes;
+            await ctx().eventSource.emit(ctx().eventTypes.MESSAGE_UPDATED, last);
+        }
+    } catch (e) {
+        console.error('[书信簿] 暗号处理失败（发送前）', e);
+    }
+}
+
+// ② 酒馆助手（TavernHelper.generate）直接带着 user_input 生成时
+function hookTavernHelper() {
+    const th = globalThis.TavernHelper;
+    if (!th || typeof th.generate !== 'function' || th.generate.__epistolary) return !!th;
+    const orig = th.generate;
+    const wrapped = async function (...args) {
+        try {
+            const o = args[0];
+            if (o && typeof o === 'object') {
+                for (const key of ['user_input', 'prompt']) {
+                    if (typeof o[key] === 'string' && o[key]) {
+                        const r = withLetterBlocks(o[key]);
+                        if (r.letters.length) { args[0] = { ...o, [key]: r.text }; toastEmbedded(r.letters, '酒馆助手'); break; }
+                    }
+                }
+            }
+        } catch (e) { console.error('[书信簿] 暗号处理失败（酒馆助手）', e); }
+        return orig.apply(this, args);
+    };
+    wrapped.__epistolary = true;
+    th.generate = wrapped;
+    return true;
+}
+
+// ③ 兜底：消息已经进了聊天（MESSAGE_SENT），AI 还没开始写
+async function embedCodes(mesId) {
+    const c = ctx();
+    const m = c.chat?.[mesId];
+    if (!m || !m.is_user || m.extra?.epistolary) return false;
+    const r = withLetterBlocks(m.mes);
+    if (!r.letters.length) return false;
+    const ready = r.letters;
+    m.mes = r.text;
     m.extra = { ...(m.extra || {}), epistolaryEmbedded: ready.map(l => l.id) };
     // 酒馆在这之前已经存过一次聊天了；这里再存一次，免得生成失败时改动丢掉
     try { await c.saveChat(); } catch (e) { console.warn('[书信簿] 保存聊天失败', e); }
-    toastr.success(ready.map(l => `${l.code} ${l.author} → ${l.recipients.join('、')}`).join('<br>'), '✉ 信已放进你的消息（折叠显示）', { timeOut: 4000, escapeHtml: false });
+    toastEmbedded(ready, '消息已进聊天');
+    return true;
 }
 
 // 聊天里把【信件 …】……【信件完】折叠起来
@@ -1343,7 +1411,17 @@ jQuery(async () => {
         if (m?.extra?.epistolarySeal && !m.extra.epistolarySeal.opened) delete m.extra.epistolarySeal;
         removeSeal(mesId);
     });
-    // 暗号：消息发出后、AI 开始写之前（酒馆会等这个处理完）
+    // 暗号：发送前改输入框（最早）→ 酒馆助手直接生成 → 消息进了聊天以后（兜底）
+    if (eventTypes.GENERATION_AFTER_COMMANDS) {
+        // 排在最前面：别的插件（比如剧情推进）改写输入之前，信就已经接上了；之后的 MESSAGE_SENT 还会再检查一次
+        if (typeof eventSource.makeFirst === 'function') eventSource.makeFirst(eventTypes.GENERATION_AFTER_COMMANDS, onAfterCommands);
+        else eventSource.on(eventTypes.GENERATION_AFTER_COMMANDS, onAfterCommands);
+    }
+    if (!hookTavernHelper()) {
+        // 酒馆助手可能比书信簿晚加载
+        let tries = 0;
+        const timer = setInterval(() => { if (hookTavernHelper() || ++tries > 20) clearInterval(timer); }, 1500);
+    }
     if (eventTypes.MESSAGE_SENT) {
         const embed = async mesId => { try { await embedCodes(Number.isInteger(mesId) ? mesId : (ctx().chat || []).length - 1); } catch (e) { console.error('[书信簿] 暗号处理失败', e); } };
         if (typeof eventSource.makeFirst === 'function') eventSource.makeFirst(eventTypes.MESSAGE_SENT, embed);
