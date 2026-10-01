@@ -51,6 +51,9 @@ export const EVENT_TYPES = {
     forwarded: { label: '转寄', level: null },
     returned: { label: '退回', level: null },
     lost: { label: '遗失', level: null },
+    written: { label: '写好', level: null },
+    kept: { label: '收起来', level: null },
+    mentioned: { label: '提到', level: null },
 };
 
 // ---------- 小工具 ----------
@@ -115,7 +118,47 @@ export function createArchive() {
         attachments: {},
         presets: [],
         styles: [],   // 用户自己存的款式包
+        folders: [],  // 文件夹（按顺序），信的 folder 字段写文件夹名
     };
+}
+
+// ---------- 文件夹 ----------
+
+export function cleanFolderName(name) {
+    return String(name || '').replace(/[\n\r\t]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+}
+
+// 所有文件夹（包括信里写了、但清单里没有的），按清单顺序
+export function folderList(archive) {
+    const out = [...(archive.folders || [])];
+    for (const l of Object.values(archive.letters || {})) if (l.folder && !out.includes(l.folder)) out.push(l.folder);
+    return out;
+}
+
+export function lettersInFolder(archive, folder) {
+    return Object.values(archive.letters || {}).filter(l => (folder === '' ? !l.folder : l.folder === folder));
+}
+
+export function addFolder(archive, name) {
+    const n = cleanFolderName(name);
+    if (!n) return '';
+    archive.folders = folderList(archive);
+    if (!archive.folders.includes(n)) archive.folders.push(n);
+    return n;
+}
+
+export function renameFolder(archive, from, to) {
+    const n = cleanFolderName(to);
+    if (!n || n === from) return false;
+    archive.folders = folderList(archive).map(f => (f === from ? n : f)).filter((f, i, a) => a.indexOf(f) === i);
+    for (const l of Object.values(archive.letters)) if (l.folder === from) l.folder = n;
+    return true;
+}
+
+// 删文件夹：里面的信回到“未分类”，信本身不删
+export function removeFolder(archive, name) {
+    archive.folders = folderList(archive).filter(f => f !== name);
+    for (const l of Object.values(archive.letters)) if (l.folder === name) l.folder = '';
 }
 
 // 读入旧档案时补齐缺失字段。以后数据结构升级，也在这里做迁移。
@@ -129,6 +172,7 @@ export function migrateArchive(raw) {
     out.attachments = a.attachments && typeof a.attachments === 'object' ? a.attachments : {};
     out.presets = Array.isArray(a.presets) ? a.presets : [];
     out.styles = Array.isArray(a.styles) ? a.styles : [];
+    out.folders = Array.isArray(a.folders) ? a.folders.map(cleanFolderName).filter(Boolean) : [];
     for (const id of Object.keys(out.letters)) {
         out.letters[id] = normalizeLetter(out.letters[id], id);
     }
@@ -187,6 +231,7 @@ export function normalizeLetter(l, id) {
         placeTo: l.placeTo || '',
         language: l.language || '',
         tags: parseTags(l.tags),
+        folder: cleanFolderName(l.folder),   // 放在哪个文件夹（空 = 未分类）
         body: typeof l.body === 'string' ? l.body : '',
         shell: !!l.shell && !String(l.body || '').trim(),          // 空壳信：剧情里已经有了，正文还没写
         code: normalizeCode(l.code),                              // 暗号：用户消息里出现它，这一轮就把信交给 AI
@@ -200,6 +245,7 @@ export function normalizeLetter(l, id) {
         aiDraft: !!l.aiDraft,           // 是否是 AI 代写的回信（用户确认前）
         openedAt: l.openedAt || '',     // 收信人第一次拆开的时间（用于只播放一次拆信动画）
         delivery: l.delivery && typeof l.delivery === 'object' ? l.delivery : null, // 在途信件的送达信息
+        autoDelivery: Array.isArray(l.autoDelivery) ? l.autoDelivery.slice(-20) : [], // AI 从剧情里改寄送状态之前的样子（换回复、删消息时退回）
         source: l.source && typeof l.source === 'object' ? l.source : null,         // 从聊天记录导入时的出处
         translations: l.translations && typeof l.translations === 'object' ? l.translations : {}, // 阅读用的译文缓存
         memories: Array.isArray(l.memories) ? l.memories.map(normalizeMemory).filter(m => m.person && m.text) : [], // 读过的人记得什么
@@ -246,6 +292,9 @@ function normalizeEvent(e) {
         segments: Array.isArray(e.segments) && e.segments.length ? e.segments : null, // null = 整封
         to: e.to || '',
         note: e.note || '',
+        place: e.place || '',                                  // 在哪（剧情里看得出来时）
+        mes: Number.isInteger(e.mes) ? e.mes : null,           // 第几层（剧情里记下的）
+        auto: !!e.auto,                                        // AI 从剧情里记下的（换回复、删消息时撤回）
     };
 }
 

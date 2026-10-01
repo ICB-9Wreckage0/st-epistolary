@@ -13,9 +13,9 @@ import {
     viaReceivedEvents, nextEventId, VIA_ACTIONS,
     mentionsReceipt, mentionsDate, mentionsName, buildPendingHints, inlineLetterBlock, inlineGuidance, buildCodeBlock,
     buildMemoryPrompt, parseMemoryResult, checkQuotes, memoryEntryContent, memoryKeys,
-    authorKey, summaryEntryContent, rereadKey, rereadEntryContent,
+    authorKey, summaryEntryContent, rereadKey, rereadEntryContent, buildStatusPrompt, parseStatusResponse,
 } from './src/correspondence.js';
-import { whereNow, setWhere, revokeWhere, whereText, whereForPerson, REREADABLE } from './src/whereabouts.js';
+import { whereNow, setWhere, suggestWhere, acceptSuggestion, dismissSuggestion, revokeWhere, whereText, whereForPerson, REREADABLE, deliveryText, deliveryState } from './src/whereabouts.js';
 import { playSeal, playOpen } from './src/envelope.js';
 import { detectInMessage, guessRecipient, guessAuthor, findDuplicate, isSalutation } from './src/importer.js';
 import { extractEnclosures } from './src/enclosures.js';
@@ -29,7 +29,8 @@ const PENDING_KEY = 'epistolary_pending';
 const CODE_KEY = 'epistolary_code';
 
 const DEFAULT_SETTINGS = {
-    enabled: true,
+    enabled: true,           // 给 AI 注入内容（暗号接信、自动注入、世界书记忆）
+    useAI: true,             // 调用 AI 接口（整理记忆、记录剧情、填信头、更新状态……）；关掉就只当记录本
     mode: 'simple',          // simple 简单模式：存档 + 暗号 | expert 高级模式：寄送、转交、知情过滤、自动注入
     autoKeywords: true,      // 简单模式下，保存时自动让 AI 生成关键词
     autoFill: true,          // 写新信时让 AI 根据剧情填信头
@@ -55,11 +56,15 @@ const DEFAULT_SETTINGS = {
         autoDate: true,      // 有在途的信时，自动推算剧情日期
         dateEvery: 6,        // 每隔几层推算一次
     },
+    backup: {
+        keep: 7,             // 每天第一次打开时自动备份档案，保留最近几份（0 = 不自动备份）
+    },
     memory: {
         when: 'first',       // 什么时候自动整理：first 有人第一次读这封信时 | every 每次读都整理 | off 不自动
         worldbook: true,     // 记忆写进这个聊天绑定的世界书，角色以后提起这封信时会想起来
         depth: 4,            // 世界书条目插入的深度
         rereadText: true,    // 信还在某人手里：TA 说要拿出来重读时，世界书给出原文
+        trackEvents: true,   // 用暗号读到信的那一轮：让 AI 记下剧情里这封信发生了什么（写好、寄出、收到、读、转交），记进时间线
     },
 };
 
@@ -94,6 +99,7 @@ function settings() {
         api: { ...DEFAULT_SETTINGS.api, ...(cur.api || {}) },
         delivery: { ...DEFAULT_SETTINGS.delivery, ...(cur.delivery || {}) },
         memory: { ...DEFAULT_SETTINGS.memory, ...(cur.memory || {}) },
+        backup: { ...DEFAULT_SETTINGS.backup, ...(cur.backup || {}) },
     };
     const mem = all[MODULE].memory;
     if (!['first', 'every', 'off'].includes(mem.when)) mem.when = mem.auto === false ? 'off' : 'first';
@@ -420,7 +426,15 @@ function runRetrieval() {
     return { viewer, storyDate, texts, result, enabled: s.enabled, reaction: reactionGuidance() };
 }
 
+// 设置里关掉了 AI 接口：插件只当记录本用，不调用任何 AI
+const aiOn = () => settings().useAI !== false;
+const injectOn = () => settings().enabled !== false;
 function ai(system, prompt, meta) {
+    if (!aiOn()) {
+        const e = new Error('AI 接口已在设置里关闭（设置 → 总开关）');
+        e.aiOff = true;
+        return Promise.reject(e);
+    }
     return callAI(settings().api, system, prompt, meta);
 }
 
@@ -492,16 +506,7 @@ function lettersReadAt(mesId) {
 }
 
 function sceneAround(mesId, { before = 2 } = {}) {
-    const chat = ctx().chat || [];
-    const parts = [];
-    for (let i = Math.max(0, mesId - before); i <= mesId; i++) {
-        const m = chat[i];
-        if (!m || m.is_system) continue;
-        const text = stripBlocks(m.mes);
-        const r = m.extra?.reasoning ? `\n（${m.name} 这一段的思考：${String(m.extra.reasoning).slice(0, 2500)}）` : '';
-        if (text || r) parts.push(`${m.name}：${text.slice(0, i === mesId ? 6000 : 2000)}${r}`);
-    }
-    return parts.join('\n\n');
+    return sceneText(ctx().chat || [], Math.max(0, mesId - before), mesId);
 }
 
 function safeBookName(text) {
@@ -577,7 +582,7 @@ function wiEntry(uid, { key, comment, content, tag, order = 100 }, old = null) {
     };
     if (old) {
         // 用户在世界书里自己改过的开关、顺序、位置，保留
-        Object.assign(e, { disable: !!old.disable, order: old.order ?? order, position: old.position ?? 4, depth: old.depth ?? depth, probability: old.probability ?? 100, displayIndex: old.displayIndex ?? uid });
+        Object.assign(e, { disable: !!old.disable && !old.epiOff, order: old.order ?? order, position: old.position ?? 4, depth: old.depth ?? depth, probability: old.probability ?? 100, displayIndex: old.displayIndex ?? uid });
         if (old.characterFilter) e.characterFilter = old.characterFilter;
         if (old.sticky != null) e.sticky = old.sticky;
         if (old.cooldown != null) e.cooldown = old.cooldown;
@@ -635,7 +640,7 @@ function desiredEntries() {
         const user = ctx().name1 || '';
         for (const l of letters) {
             const w = whereNow(l);
-            if (!REREADABLE.has(w.state) || !w.holder || (user && same(w.holder, user)) || !String(l.body || '').trim()) continue;
+            if (!w || !REREADABLE.has(w.state) || !w.holder || (user && same(w.holder, user)) || !String(l.body || '').trim()) continue;
             const read = l.memories.filter(isMine).some(m => same(m.person, w.holder)) || l.recipients.some(r => same(r, w.holder));
             if (!read) continue;
             const aliases = namesOf(l.author).filter(n => n !== l.author);
@@ -653,12 +658,13 @@ function desiredEntries() {
 }
 
 function shortWhere(letter, person) {
+    if (deliveryState(letter) === 'transit') return '信在路上';
     const w = whereNow(letter);
+    if (!w) return '';
     if (w.state === 'burned') return '信已经烧了';
     if (w.state === 'lost') return '信丢了';
-    if (w.state === 'transit') return '信在路上';
     if (w.holder && same(w.holder, person) && REREADABLE.has(w.state)) return `信还在${person}手里${w.place ? `，${w.place}` : ''}`;
-    if (w.holder && !w.derived) return `信在${w.holder}那里`;
+    if (w.holder) return `信在${w.holder}那里`;
     return '';
 }
 
@@ -671,6 +677,19 @@ function syncWorldBook() {
 
 async function syncWorldBookNow() {
     if (!hasChat() || !settings().memory.worldbook) return false;
+    if (!injectOn()) {
+        // 关掉了注入：书信簿写的条目先停用（打开以后恢复）
+        const c = ctx();
+        const name = c.chatMetadata?.world_info;
+        const data = name ? await c.loadWorldInfo(name) : null;
+        if (!data?.entries) return false;
+        let changed = false;
+        for (const e of Object.values(data.entries)) {
+            if (typeof e.comment === 'string' && EPI_TAG.test(e.comment) && !e.disable) { e.disable = true; e.epiOff = true; changed = true; }
+        }
+        if (changed) { await c.saveWorldInfo(name, data, true); try { c.reloadWorldInfoEditor?.(name); } catch { /* */ } }
+        return false;
+    }
     const want = desiredEntries();
     const book = await memoryBook({ create: want.length > 0 });
     if (!book) return false;
@@ -720,8 +739,43 @@ function upsertMemories(letter, found, { auto = true, fromMes = null } = {}) {
     return changed;
 }
 
-// 让 AI 从一段剧情里整理某封信的记忆（顺便看信最后放哪了）
-async function extractMemories(letter, scene, { quiet = false, past = false, fromMes = null } = {}) {
+// 剧情里这封信发生了什么：记进流转记录（时间线里显示），寄出 / 收到顺便改寄送状态
+function applyStoryEvents(letter, events, { fromMes = null, past = false, manual = false } = {}) {
+    const added = [];
+    const f = floor();
+    for (const e of events || []) {
+        const mes = e.mes != null && e.mes >= 0 && e.mes < f ? e.mes : fromMes;
+        const date = e.date || (past ? '' : getStoryDate());
+        if (!manual && (letter.events || []).some(x => x.type === e.type && same(x.who || '？', e.who || '？') && ((mes != null && x.mes === mes) || (date && x.date === date)))) continue;
+        const ev = { id: nextEventId(letter.events), type: e.type, who: e.who, date, segments: null, to: e.to || '', note: e.note || '', place: e.place || '', mes: manual ? null : mes, auto: !manual };
+        letter.events.push(ev);
+        added.push(ev);
+        const st = deliveryState(letter);
+        const d = letter.delivery || {};
+        const snap = () => !manual && letter.autoDelivery.push({ mes: mes ?? f, status: letter.status, delivery: letter.delivery ? JSON.parse(JSON.stringify(letter.delivery)) : null, placeTo: letter.placeTo });
+        const isRecipient = !e.who || letter.recipients.some(r => same(r, e.who));
+        if (e.type === 'sent' && (st === 'draft' || st === 'unsent')) {
+            snap();
+            letter.status = 'sent';
+            letter.delivery = { ...d, mode: d.mode || 'instant', status: 'transit', eta: d.eta || '', sentAt: date, reader: d.reader || letter.recipients[0] || '' };
+        } else if (e.type === 'received' && isRecipient && !(st === 'delivered' && d.arrivedAt)) {
+            snap();
+            letter.status = 'sent';
+            letter.delivery = { ...d, mode: d.mode || 'instant', status: 'viewed', stage: d.via ? 'done' : (d.stage || ''), arrivedAt: date, reader: e.who || d.reader || letter.recipients[0] || '' };
+            if (e.place && !letter.placeTo) letter.placeTo = e.place;
+        } else if ((e.type === 'received' && !isRecipient && st !== 'delivered') || (e.type === 'forwarded' && e.who && !isRecipient && !d.via)) {
+            // 先到了转交人手里 / 由谁转交
+            snap();
+            letter.status = 'sent';
+            letter.delivery = { ...d, mode: d.mode || 'instant', via: e.who, ...(e.type === 'received' ? { status: 'atVia', stage: 'atVia', viaArrivedAt: date } : {}) };
+        }
+    }
+    return added;
+}
+
+// 让 AI 从一段剧情里整理某封信：谁读了记得什么、这封信发生了什么、信最后放哪（建议）
+// memMode：first 只给还没有记忆的人写 | every 都更新 | off 不写记忆
+async function extractMemories(letter, scene, { quiet = false, past = false, fromMes = null, memMode = 'every' } = {}) {
     const { system, prompt } = buildMemoryPrompt(letter, scene, {
         existing: (letter.memories || []).filter(isMine),
         storyDate: past ? '' : getStoryDate(),
@@ -730,24 +784,26 @@ async function extractMemories(letter, scene, { quiet = false, past = false, fro
     const raw = await ai(system, prompt, { kind: 'memory' });
     const user = ctx().name1 || '';
     const res = parseMemoryResult(raw);
-    const found = res.memories.filter(f => !user || !sameName(store.archive, f.person, user));
+    let found = memMode === 'off' ? [] : res.memories.filter(f => !user || !sameName(store.archive, f.person, user));
+    if (memMode === 'first') found = found.filter(f => !(letter.memories || []).some(m => isMine(m) && same(m.person, f.person)));
     const changed = upsertMemories(letter, found, { fromMes });
+    const happened = settings().memory.trackEvents !== false ? applyStoryEvents(letter, res.events, { fromMes, past }) : [];
+    // 剧情日期往前走了
+    if (!past && res.storyDate && (!normalizeDate(getStoryDate()) || res.storyDate > normalizeDate(getStoryDate()))) setStoryDate(res.storyDate);
+    // 信最后放哪：只当建议，等你在阅读页确认
     let moved = false;
-    if (res.where) {
-        const cur = letter.whereabouts?.current;
-        const now = whereNow(letter);
-        const stale = past && (now.state === 'transit' || (cur && cur.mes != null && fromMes != null && cur.mes > fromMes));
-        if (!stale) moved = setWhere(letter, res.where, { by: 'ai', date: past ? '' : getStoryDate(), mes: fromMes });
-    }
-    if (!changed.length && !moved) return [];
+    if (res.where) moved = suggestWhere(letter, res.where, { date: past ? '' : getStoryDate(), mes: fromMes });
+    if (!changed.length && !moved && !happened.length) return [];
     letter.updatedAt = new Date().toISOString();
     store.save();
     const book = await syncWorldBook();
+    if (!quiet && happened.length) toastr.info(happened.map(e => `${e.who || '？'} ${EVENT_ZH[e.type] || e.type}${e.date ? `（${e.date}）` : ''}`).join('；'), `🕰 ${letter.author} 的信 · 记进时间线`, { timeOut: 5000 });
     if (!quiet && changed.length) toastr.success(`${changed.map(m => m.person).join('、')} 记住了 ${letter.author} 的这封信${book ? `（已写进世界书「${book}」）` : ''}`, '🧠 读信的记忆', { timeOut: 5000 });
-    if (!quiet && moved) toastr.info(`${letter.author} 的信：${whereText(whereNow(letter))}`, '📍 信现在在', { timeOut: 4000 });
+    if (!quiet && moved) toastr.info(`AI 觉得 ${letter.author} 的信现在：${whereText(letter.whereabouts.suggest)}。打开这封信，在最上面点“采用”才会记下。`, '📍 信在谁手里（待你确认）', { timeOut: 6000 });
     ui?.refresh?.();
     return changed;
 }
+const EVENT_ZH = { written: '写好了信', sent: '寄出', received: '收到', read: '读了', forwarded: '转交', kept: '收起来', mentioned: '提到' };
 
 // “只在第一次读时整理”：这封信在这次回复里有没有新的读者
 function hasNewReader(letter, mesId) {
@@ -769,16 +825,18 @@ function hasNewReader(letter, mesId) {
 function memoriesAfterReply(mesId) {
     const s = settings();
     const when = s.memory.when;
-    if (!s.enabled || when === 'off' || store.mode === 'unloaded') return;
+    if (!aiOn() || store.mode === 'unloaded') return;
+    if (when === 'off' && s.memory.trackEvents === false) return;
     const m = ctx().chat?.[mesId];
     if (!m || m.is_user || m.is_system || m.extra?.epistolary) return;
     let letters = lettersReadAt(mesId);
-    if (when === 'first') letters = letters.filter(l => hasNewReader(l, mesId));
+    // 只整理记忆、不记剧情时，“第一次读”模式下没有新读者就不调用
+    if (when === 'first' && s.memory.trackEvents === false) letters = letters.filter(l => hasNewReader(l, mesId));
     if (!letters.length) return;
     const scene = sceneAround(mesId);
     memoryQueue = memoryQueue.then(async () => {
         for (const l of letters) {
-            try { await extractMemories(l, scene, { fromMes: mesId }); } catch (e) { console.warn('[书信簿] 整理记忆失败', e); }
+            try { await extractMemories(l, scene, { fromMes: mesId, memMode: when }); } catch (e) { console.warn('[书信簿] 整理记忆失败', e); }
         }
     });
 }
@@ -789,6 +847,14 @@ async function revokeFrom(mesFrom) {
     let n = 0;
     for (const l of Object.values(store.archive.letters)) {
         let touched = revokeWhere(l, mesFrom);
+        const before = (l.events || []).length;
+        l.events = (l.events || []).filter(e => !(e.auto && e.mes != null && e.mes >= mesFrom));
+        if (l.events.length !== before) { touched = true; n += before - l.events.length; }
+        while (l.autoDelivery?.length && l.autoDelivery.at(-1).mes >= mesFrom) {
+            const p = l.autoDelivery.pop();
+            l.status = p.status; l.delivery = p.delivery; l.placeTo = p.placeTo ?? l.placeTo;
+            touched = true;
+        }
         for (const m of [...(l.memories || [])]) {
             if (!isMine(m) || m.auto === false || m.fromMes == null || m.fromMes < mesFrom) continue;
             if (m.prev && (m.prev.fromMes == null || m.prev.fromMes < mesFrom)) Object.assign(m, { text: m.prev.text, gist: m.prev.gist, fromMes: m.prev.fromMes, prev: null });
@@ -801,7 +867,7 @@ async function revokeFrom(mesFrom) {
     if (!n) return;
     store.save();
     await syncWorldBook();
-    toastr.info(`那一层整理出的 ${n} 段读信记忆已撤回${settings().memory.when !== 'off' ? '，新的回复出来后会重新整理' : ''}`, '🧠 书信簿', { timeOut: 4000 });
+    toastr.info(`那一层记下的 ${n} 条读信记忆 / 剧情记录已撤回${settings().memory.when !== 'off' ? '，新的回复出来后会重新整理' : ''}`, '🧠 书信簿', { timeOut: 4000 });
     ui?.refresh?.();
 }
 
@@ -822,7 +888,7 @@ function findPastScenes(letterId) {
 }
 
 // 按选好的楼层范围，一段一段整理（从早到晚，后面的会补进前面的记忆）
-async function memoriesFromFloors(letterId, ranges, { onProgress } = {}) {
+async function memoriesFromFloors(letterId, ranges, { onProgress, quiet = false } = {}) {
     const letter = store.archive.letters[letterId];
     if (!letter || !hasChat()) return [];
     const chat = ctx().chat || [];
@@ -840,7 +906,7 @@ async function memoriesFromFloors(letterId, ranges, { onProgress } = {}) {
         } catch (e) { console.warn('[书信簿] 整理记忆失败', e); toastr.error(String(e?.message || e), `第 ${r.from}–${r.to} 层整理失败`); }
     }
     const book = letter.memories.find(m => m.wiBook)?.wiBook;
-    if (people.size) toastr.success(`${[...people].join('、')} 记住了 ${letter.author} 的这封信${book ? `（已写进世界书「${book}」）` : ''}`, '🧠 从过去的楼层整理好了', { timeOut: 6000 });
+    if (people.size && !quiet) toastr.success(`${[...people].join('、')} 记住了 ${letter.author} 的这封信${book ? `（已写进世界书「${book}」）` : ''}`, '🧠 从过去的楼层整理好了', { timeOut: 6000 });
     return [...people];
 }
 
@@ -878,16 +944,230 @@ async function saveRecallKeys(letterId, keys) {
     await syncWorldBook();
 }
 
+// 手动改寄送状态（和“在谁手里”分开）
+async function saveDelivery(letterId, o) {
+    const l = store.archive.letters[letterId];
+    if (!l) return false;
+    const d = { ...(l.delivery || {}) };
+    const via = String(o.via || '').trim();
+    const reader = String(o.reader || '').trim() || l.recipients[0] || '';
+    switch (o.state) {
+        case 'draft': l.status = 'draft'; break;
+        case 'unsent': l.status = 'unsent'; break;
+        case 'lost': l.status = 'lost'; break;
+        case 'transit':
+            l.status = 'sent';
+            l.delivery = { ...d, mode: d.mode === 'floors' ? 'floors' : 'date', status: 'transit', eta: o.eta || d.eta || '', via, stage: via ? (d.stage === 'toRecipient' ? 'toRecipient' : 'toVia') : '', reader, sentFloor: d.sentFloor ?? floor(), floors: d.floors || 0 };
+            break;
+        case 'atVia':
+            l.status = 'sent';
+            l.delivery = { ...d, mode: d.mode || 'instant', status: 'atVia', stage: 'atVia', via: via || d.via || '', reader, viaArrivedAt: o.arrivedAt || d.viaArrivedAt || getStoryDate() };
+            break;
+        case 'delivered': {
+            l.status = 'sent';
+            const when = o.arrivedAt || d.arrivedAt || '';
+            l.delivery = { ...d, mode: d.mode || 'instant', status: 'viewed', stage: via ? 'done' : (d.stage || ''), via, reader, arrivedAt: when };
+            if (!(l.events || []).some(e => e.type === 'received')) l.events.push(...deliveryEvents(l, when, l.events));
+            if (via && !(l.events || []).some(e => e.type === 'forwarded')) l.events.push({ id: nextEventId(l.events), type: 'forwarded', who: via, date: o.forwardedAt || when, segments: null, to: l.recipients.join('、'), note: '' });
+            break;
+        }
+        default: return false;
+    }
+    if (o.placeTo !== undefined) l.placeTo = String(o.placeTo).trim();
+    l.updatedAt = new Date().toISOString();
+    store.save();
+    ui.renderPostbox();
+    await syncWorldBook();
+    return true;
+}
+
+async function addEvent(letterId, e) {
+    const l = store.archive.letters[letterId];
+    if (!l) return false;
+    applyStoryEvents(l, [{ ...e, date: normalizeDate(e.date) ? e.date : '' }], { manual: true, past: true });
+    l.updatedAt = new Date().toISOString();
+    store.save();
+    ui.renderPostbox();
+    await syncWorldBook();
+    return true;
+}
+
+async function deleteEvent(letterId, eventId) {
+    const l = store.archive.letters[letterId];
+    if (!l) return false;
+    l.events = (l.events || []).filter(e => e.id !== eventId);
+    l.updatedAt = new Date().toISOString();
+    store.save();
+    return true;
+}
+
+async function whereSuggestion(letterId, accept) {
+    const l = store.archive.letters[letterId];
+    if (!l) return false;
+    const ok = accept ? acceptSuggestion(l) : dismissSuggestion(l);
+    if (!ok) return false;
+    l.updatedAt = new Date().toISOString();
+    store.save();
+    await syncWorldBook();
+    return true;
+}
+
 // 手动改信的位置
 async function saveWhereabouts(letterId, w) {
     const letter = store.archive.letters[letterId];
     if (!letter) return false;
-    const ok = setWhere(letter, w, { by: 'user', date: getStoryDate() });
+    const ok = setWhere(letter, w, { date: getStoryDate() });
     if (!ok) return false;
     letter.updatedAt = new Date().toISOString();
     store.save();
     await syncWorldBook();
     return true;
+}
+
+// ---------- 时间线「更新」：不等自动，马上把各封信的状态对一遍 ----------
+
+function statusLine(l) {
+    const parts = [deliveryText(l).replace(/^\S+\s/, '')];
+    const readers = [...new Set([...(l.events || []).filter(e => ['read', 'heard'].includes(e.type)).map(e => e.who), ...(l.memories || []).map(m => m.person)].filter(Boolean))];
+    if (readers.length) parts.push(`${readers.join('、')} 读过`);
+    const w = whereNow(l);
+    if (w) parts.push(`信在：${whereText(w).replace(/^\S+\s/, '')}`);
+    return parts.join('；');
+}
+const STATUS_ZH = { draft: '草稿', sealed: '封好了没寄', unsent: '写了没寄', lost: '遗失' };
+
+// 和这个聊天有关的信：名字、暗号出现在这段剧情里，或者还在路上
+function lettersForStatus(text) {
+    const out = [];
+    for (const l of Object.values(store.archive.letters)) {
+        if (l.status === 'draft') continue;
+        const dv = l.delivery;
+        const pending = dv && ['transit', 'atVia', 'held', 'arrived'].includes(dv.status);
+        const names = [l.author, ...l.recipients, dv?.via].filter(Boolean).flatMap(n => namesOf(n));
+        const mentioned = (l.code && text.includes(l.code)) || (l.title && text.includes(l.title)) || names.some(n => n.length >= 2 && text.includes(n));
+        if (pending || mentioned) out.push(l);
+    }
+    return out.sort((a, b) => String(b.writtenAt).localeCompare(String(a.writtenAt))).slice(0, 20);
+}
+
+// 让 AI 看一段剧情，更新这几封信：收到了没有、谁读了、信放哪（建议）
+async function statusPass(letters, story, end, changes, onStep) {
+        const items = letters.map((letter, i) => ({ n: i + 1, letter, now: statusLine(letter) }));
+        const { system, prompt } = buildStatusPrompt(items, story, { storyDate: getStoryDate(), userName: ctx().name1 || '' });
+        const res = parseStatusResponse(await ai(system, prompt, { kind: 'status' }));
+        const user = ctx().name1 || '';
+        const toRemember = [];
+        for (const r of res) {
+            const l = items.find(x => x.n === r.n)?.letter;
+            if (!l) continue;
+            const label = `${l.author} → ${l.recipients.join('、')}${l.code ? ` ${l.code}` : ''}`;
+            const when = normalizeDate(r.receivedDate) ? r.receivedDate : getStoryDate();
+            const readBefore = new Set((l.events || []).filter(e => ['read', 'heard'].includes(e.type)).map(e => e.who));
+            // 收到了
+            if (r.received === true && !(l.delivery && ['viewed', 'arrived'].includes(l.delivery.status) && l.delivery.arrivedAt)) {
+                const reader = r.receivedBy || l.recipients[0] || '';
+                if (l.delivery?.status === 'transit' || l.delivery?.status === 'atVia') {
+                    if (l.delivery.status === 'atVia') { l.delivery.stage = 'done'; }
+                    l.events.push(...deliveryEvents(l, when, l.events));
+                    l.delivery = { ...l.delivery, status: 'viewed', arrivedAt: when, reader, detected: true };
+                } else {
+                    if (!(l.events || []).some(e => e.type === 'received')) l.events.push(...deliveryEvents(l, when, l.events));
+                    l.delivery = { mode: 'instant', ...(l.delivery || {}), status: 'viewed', arrivedAt: when, reader };
+                }
+                if (r.receivedPlace && !l.placeTo) l.placeTo = r.receivedPlace;
+                if (!(l.events || []).some(e => e.type === 'received' && e.mes != null && e.mes === r.mes)) l.events.push({ id: nextEventId(l.events), type: 'received', who: reader, date: when, segments: null, to: '', note: '', place: r.receivedPlace || '', mes: r.mes, auto: true });
+                changes.push(`${label}：${reader} ${when ? `${when} ` : ''}收到了${r.receivedPlace ? `（${r.receivedPlace}）` : ''}`);
+            }
+            // 谁读了
+            const newReaders = [];
+            for (const who of r.readers) {
+                if (user && sameName(store.archive, who, user)) continue;
+                const hasMemory = (l.memories || []).some(m => isMine(m) && same(m.person, who));
+                if ([...readBefore].some(x => same(x, who)) && hasMemory) continue;
+                if (!(l.events || []).some(e => ['read', 'heard'].includes(e.type) && same(e.who, who))) l.events.push({ id: nextEventId(l.events), type: 'read', who, date: getStoryDate(), segments: null, to: '', note: '', place: '', mes: r.mes, auto: r.mes != null });
+                if (hasMemory) continue;
+                newReaders.push(who);
+            }
+            if (newReaders.length) {
+                changes.push(`${label}：${newReaders.join('、')} 读了`);
+                if (r.mes != null) toRemember.push({ letter: l, mes: r.mes });
+            }
+            // 在哪
+            if (r.where && suggestWhere(l, r.where, { date: getStoryDate(), mes: r.mes })) changes.push(`${label}：AI 觉得信${whereText(l.whereabouts.suggest).replace(/^\S+\s/, '')}（只是建议，到这封信上面点“采用”才记下）`);
+            l.updatedAt = new Date().toISOString();
+        }
+        store.save();
+        // 新读者：顺便整理读后的反应
+        if (settings().memory.when !== 'off') {
+            for (const { letter, mes } of toRemember) {
+                if (letter.shell || !String(letter.body || '').trim()) continue;
+                onStep?.(`整理 ${letter.author} 那封信的读后反应`);
+                const got = await memoriesFromFloors(letter.id, [{ from: Math.max(0, mes - 1), to: Math.min(end, mes + 1) }], { quiet: true });
+                if (got.length) changes.push(`${letter.author} → ${letter.recipients.join('、')}${letter.code ? ` ${letter.code}` : ''}：记下了 ${got.join('、')} 读后的反应`);
+            }
+        }
+        await syncWorldBook();
+    
+}
+
+async function refreshStatuses({ onStep, letterIds = null } = {}) {
+    if (!hasChat() || store.mode === 'unloaded') return { changes: [], none: true };
+    const changes = [];
+    const chat = ctx().chat || [];
+    const meta = chatMeta();
+    // ① 高级模式：推算剧情日期、到日子的信送到
+    if (!isSimple() && mailInChat().length && aiOn()) {
+        onStep?.('推算剧情日期');
+        const before = getStoryDate();
+        await inferStoryDate({ force: true });
+        if (getStoryDate() !== before) changes.push(`剧情日期：${before || '（没有）'} → ${getStoryDate()}`);
+        meta.lastDateCheck = 0;
+        const transitBefore = mailInChat().filter(l => l.delivery.status === 'transit').map(l => l.id);
+        await checkMail({});
+        for (const id of transitBefore) {
+            const l = store.archive.letters[id];
+            if (l?.delivery?.status !== 'transit') changes.push(`${l.author} → ${l.recipients.join('、')}：${l.delivery.status === 'atVia' ? `到了 ${l.delivery.via} 手里` : '送到了'}`);
+        }
+    }
+    const end = chat.length - 1;
+    let from = Math.max(0, Math.min(end - 9, Math.max(meta.lastStatusFloor ?? 0, end - 39)));
+    if (letterIds) {
+        // ② 一个文件夹里的信：每封信在剧情里出现过的几段 + 最近 10 层，一批最多 12 封
+        const letters = letterIds.map(id => store.archive.letters[id]).filter(l => l && l.status !== 'draft');
+        for (let k = 0; k < letters.length; k += 12) {
+            const batch = letters.slice(k, k + 12);
+            const ranges = [{ from: Math.max(0, end - 9), to: end }];
+            for (const l of batch) {
+                const aliases = namesOf(l.author).filter(n => n !== l.author);
+                const sc = findReadingScenes(chat, l, { names: aliases, chatId: chatId() });
+                const strong = sc.filter(x => x.strong);
+                for (const x of (strong.length ? strong : sc).slice(-3)) ranges.push({ from: x.from, to: x.to });
+                for (const e of l.events || []) if (Number.isInteger(e.mes)) ranges.push({ from: Math.max(0, e.mes - 1), to: Math.min(end, e.mes + 1) });
+            }
+            ranges.sort((x, y) => x.from - y.from);
+            const merged = [];
+            for (const r of ranges) { const lastR = merged.at(-1); if (lastR && r.from <= lastR.to + 1) lastR.to = Math.max(lastR.to, r.to); else merged.push({ ...r }); }
+            const story = merged.map(r => sceneText(chat, r.from, r.to)).join('\n\n……\n\n');
+            from = merged[0]?.from ?? from;
+            onStep?.(`AI 查看 ${batch.length} 封信（${k + 1}–${k + batch.length}/${letters.length}）`);
+            await statusPass(batch, story, end, changes, onStep);
+        }
+        await syncWorldBook();
+        ui?.renderPostbox?.();
+        return { changes, from, end, checked: letters.length, folder: true };
+    }
+    // ② 让 AI 看从上次更新以后的剧情（至少最近 10 层，最多 40 层）
+    const story = sceneText(chat, from, end);
+    const letters = lettersForStatus(story);
+    if (letters.length && story.trim()) {
+        onStep?.(`AI 查看第 ${from}–${end} 层`);
+        await statusPass(letters, story, end, changes, onStep);
+        await syncWorldBook();
+    }
+    meta.lastStatusFloor = chat.length;
+    saveMeta();
+    ui?.renderPostbox?.();
+    return { changes, from, end, checked: letters.length };
 }
 
 // ---------- 寄送 ----------
@@ -1343,7 +1623,7 @@ async function checkMail({ fromCharacter = false } = {}) {
         // 推算剧情日期：平时每隔几层一次；快到日子时一层一次
         const dated = mail.some(l => (l.delivery.status === 'transit' && l.delivery.mode === 'date') || (['atVia', 'held'].includes(l.delivery.status) && l.delivery.viaDeadline));
         const every = urgentMail(mail) ? 1 : Math.max(1, s.delivery.dateEvery);
-        if (s.delivery.autoDate && dated && f - (meta.lastDateCheck || 0) >= every) {
+        if (aiOn() && s.delivery.autoDate && dated && f - (meta.lastDateCheck || 0) >= every) {
             meta.lastDateCheck = f;
             saveMeta();
             await inferStoryDate();
@@ -1354,7 +1634,7 @@ async function checkMail({ fromCharacter = false } = {}) {
             ? `${last.mes || ''}\n${last.extra?.reasoning || ''}` : '';
         if (lastText) detected = findReceipt(lastText);
         // 转交人：拆没拆、交不交，照剧情办
-        if (fromCharacter && s.detectArrival !== false && !detected) await processVia(lastText);
+        if (aiOn() && fromCharacter && s.detectArrival !== false && !detected) await processVia(lastText);
 
         const today = normalizeDate(getStoryDate());
         const arrivedNow = [];
@@ -1546,6 +1826,7 @@ async function sealIncoming(mesId) {
             enclosures: extractEnclosures(f.text),
             source: { chatId: chatId(), mes: mesId },
         });
+        letter.events.push({ id: nextEventId(letter.events), type: 'written', who: letter.author, date: getStoryDate(), segments: null, to: letter.recipients.join('、'), note: '角色在回复里写的', place: '', mes: mesId, auto: false });
         letter.events.push(...deliveryEvents(letter, '', letter.events, { sentOnly: true }));
         ids.push(letter.id);
     }
@@ -1785,6 +2066,8 @@ jQuery(async () => {
 
     ui = new UI(store, {
         getMode: () => settings().mode,
+        aiOn,
+        injectOn,
         setMode: mode => { settings().mode = mode; saveSettings(); ui?.renderPostbox(); },
         getSettings: settings,
         saveSettings,
@@ -1820,6 +2103,25 @@ jQuery(async () => {
         saveMemoryEdit,
         saveRecallKeys,
         saveWhereabouts,
+        saveDelivery,
+        addEvent,
+        deleteEvent,
+        whereSuggestion,
+        refreshStatuses,
+        getBackups: () => store.backups || [],
+        loadBackups: () => store.loadBackupIndex(),
+        backupNow: () => store.backupNow(),
+        removeBackup: name => store.removeBackup(name),
+        readBackup: name => store.readBackup(name),
+        restoreBackup: async name => {
+            await store.restoreBackup(name);
+            ensureCodes(store.archive);
+            store.save();
+            ui.refresh();
+            ui.renderPostbox();
+            await syncWorldBook();
+        },
+        getLastStatusFloor: () => (hasChat() ? chatMeta().lastStatusFloor ?? null : null),
         syncWorldBook,
         getMemoryBook: () => (hasChat() ? ctx().chatMetadata?.world_info || '' : ''),
         deliverNow,
@@ -1836,6 +2138,10 @@ jQuery(async () => {
     store.onChange(refreshStatus);
     await store.load();
     if (store.mode !== 'unloaded' && ensureCodes(store.archive)) store.save();
+    // 每天第一次打开：自动备份一份档案
+    store.autoBackup(Number(settings().backup.keep) || 0)
+        .then(made => { if (made) console.info(`[书信簿] 已自动备份档案：${made}`); ui?.refresh?.(); })
+        .catch(e => console.warn('[书信簿] 自动备份失败', e));
     refreshChatFields();
     refreshStatus();
     ui.renderPostbox();

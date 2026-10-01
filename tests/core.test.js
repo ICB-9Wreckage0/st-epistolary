@@ -148,3 +148,23 @@ test('暗号：自动编号、补括号、只认完整暗号', () => {
     assert.match(b, /正文一/); assert.match(b, /【信1】/);
     const old = cA(); old.letters.X = { id: 'X', code: '' }; assert.ok(ensureCodes(old)); assert.equal(old.letters.X.code, '【信1】');
 });
+
+test('文件夹：新建、移动、重命名、删除（信不删）', async () => {
+    const { createArchive, createLetter, addFolder, folderList, lettersInFolder, renameFolder, removeFolder, migrateArchive } = await import('../src/model.js');
+    const a = createArchive();
+    const l = createLetter(a, { author: 'A', recipients: ['B'], body: 'x' });
+    createLetter(a, { author: 'A', recipients: ['B'], body: 'y' });
+    assert.equal(addFolder(a, '  月信 '), '月信');
+    l.folder = '月信';
+    assert.deepEqual(folderList(a), ['月信']);
+    assert.equal(lettersInFolder(a, '月信').length, 1);
+    assert.equal(lettersInFolder(a, '').length, 1);
+    assert.ok(renameFolder(a, '月信', '勒鲁的月信'));
+    assert.equal(a.letters[l.id].folder, '勒鲁的月信');
+    const b = migrateArchive(JSON.parse(JSON.stringify(a)));
+    assert.deepEqual(b.folders, ['勒鲁的月信']);
+    removeFolder(a, '勒鲁的月信');
+    assert.equal(Object.keys(a.letters).length, 2);
+    assert.equal(a.letters[l.id].folder, '');
+    assert.deepEqual(folderList(a), []);
+});

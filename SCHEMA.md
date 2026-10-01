@@ -46,6 +46,7 @@
         // kind：money 钱 | sketch 速写 | photo 照片 | flower 压花 | gift 礼物 | document 附页 | letter 另一封信（letterRef = 信的编号）| other
       ],
       "code": "【信1】",           // 暗号：用户消息里出现它，那一轮就把这封信交给 AI（唯一）
+      "folder": "勒鲁的月信",      // 文件夹（空 = 未分类）；档案顶层 folders 是文件夹的顺序
       "shell": false,              // 空壳信：剧情里已经有这封信了，正文还没写（写了正文自动变 false）
       "memories": [                // 读过这封信的人记得什么（v0.21）；同步到聊天绑定的世界书
         { "person": "提奥", "text": "提奥记得……「原话」……", "gist": "一句话概括", "updatedAt": "…",
@@ -54,10 +55,10 @@
         // auto=false：用户改过，自动整理不再覆盖，也不会被撤回
         // fromMes：由哪一层整理出来；那一层被换掉 / 删掉时退回 prev（没有 prev 就删掉）
       ],
-      "whereabouts": {             // 信现在在谁手里（v0.22）；current 为空就按寄送状态推算
-        "current": { "holder": "提奥", "place": "抽屉", "state": "kept", "note": "", "date": "1890-07-01", "mes": 120, "by": "ai", "stamp": "sent|viewed|" },
-        // state：kept 收着 | carried 随身带着 | given 交给了别人 | burned 烧了 | lost 丢了 | draft | transit | unknown
-        // by：ai 剧情里写到的 | user 手动；stamp 是记下时的寄送状态，寄送状态变了就改回推算
+      "whereabouts": {             // 信在谁手里（v0.25 起只记用户填的；和寄送状态 delivery 分开）
+        "current": { "holder": "提奥", "place": "抽屉", "state": "kept", "note": "", "date": "1890-07-01", "by": "user" },
+        // state：kept 收着 | carried 随身带着 | given 交给了别人 | burned 烧了 | lost 丢了 | unknown
+        "suggest": { "holder": "提奥", "place": "抽屉", "state": "kept", "mes": 41, "by": "ai" }, // AI 的建议，用户点“采用”才变成 current
         "history": []
       },
       "recallKeys": ["七月的信"],  // 世界书条目的额外关键词

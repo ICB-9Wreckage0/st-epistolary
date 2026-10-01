@@ -82,3 +82,14 @@ test('新格式：记忆 + gist + 信的位置', async () => {
     assert.match(sum, /一共读过 1 封/);
     assert.match(sum, /信里说每月寄一封/);
 });
+
+test('读信那一轮的经过：寄出 / 收到 / 读 / 剧情日期', async () => {
+    const { parseMemoryResult } = await import('../src/correspondence.js');
+    const r = parseMemoryResult('{"memories":[],"events":[{"type":"sent","who":"勒鲁","to":"提奥","date":"1890-06-28","mes":"12"},{"type":"received","who":"文森特","place":"奥维尔"},{"type":"飞走","who":"x"}],"storyDate":"1890-07-02","letter":null}');
+    assert.equal(r.events.length, 2);
+    assert.equal(r.events[0].mes, 12);
+    assert.equal(r.events[0].to, '提奥');
+    assert.equal(r.events[1].place, '奥维尔');
+    assert.equal(r.events[1].mes, null);
+    assert.equal(r.storyDate, '1890-07-02');
+});

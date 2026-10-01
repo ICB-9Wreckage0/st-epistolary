@@ -76,18 +76,23 @@ globalThis.SillyTavern = { getContext: () => ctx };
 const realFetch = window.fetch.bind(window);
 window.fetch = async (url, opts = {}) => {
     const u = String(url);
-    if (u.includes('/user/files/epistolary_archive.json')) {
-        const text = localStorage.getItem(LS_ARCHIVE);
+    const key = name => (name === 'epistolary_archive.json' ? LS_ARCHIVE : `epi_demo_file:${name}`);
+    const m = u.match(/\/user\/files\/([^?]+)/);
+    if (m) {
+        const text = localStorage.getItem(key(decodeURIComponent(m[1])));
         return text ? new Response(text, { status: 200 }) : new Response('', { status: 404 });
     }
     if (u.includes('/api/files/upload')) {
         const body = JSON.parse(opts.body || '{}');
-        if (body.name === 'epistolary_archive.json') {
-            const bin = atob(body.data);
-            const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
-            localStorage.setItem(LS_ARCHIVE, new TextDecoder().decode(bytes));
-        }
+        const bin = atob(body.data);
+        const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+        localStorage.setItem(key(body.name), new TextDecoder().decode(bytes));
         return new Response('{}', { status: 200 });
+    }
+    if (u.includes('/api/files/delete')) {
+        const body = JSON.parse(opts.body || '{}');
+        localStorage.removeItem(key(String(body.path || '').replace(/^user\/files\//, '')));
+        return new Response('', { status: 200 });
     }
     return realFetch(url, opts);
 };
@@ -225,6 +230,17 @@ globalThis.__epistolaryDemoMock = async ({ prompt, kind, target }) => {
             return { n: l.n, opened: was, action: 'unclear', note: '还看不出来' };
         }));
     }
+    if (kind === 'status') {
+        const story = prompt.split('【最近的剧情】')[1] || '';
+        const out = [];
+        for (const m of prompt.matchAll(/^#(\d+)：(.+?) 写给 (.+?)[，。]/gm)) {
+            const to = m[3].split('、')[0];
+            const hit = story.match(new RegExp(`\\[第 (\\d+) 层\\][^\\n]*${to}[^\\n]{0,30}收到`));
+            if (!hit) continue;
+            out.push({ n: Number(m[1]), received: true, receivedBy: to, receivedDate: '', receivedPlace: /奥维尔/.test(story) ? '奥维尔' : '', readers: /读/.test(story) ? [to] : [], where: /口袋/.test(story) ? { holder: to, place: '上衣口袋', state: 'carried' } : null, mes: Number(hit[1]) });
+        }
+        return JSON.stringify(out);
+    }
     if (kind === 'memory') {
         const scene = prompt.split('【读信的那段剧情】')[1] || '';
         const body = (prompt.split('【信】')[1] || '').split('【读信的那段剧情】')[0].split('\n').slice(1).join('\n');
@@ -233,7 +249,15 @@ globalThis.__epistolaryDemoMock = async ({ prompt, kind, target }) => {
         const lines = body.split(/\n+/).map(x => x.trim()).filter(x => x.length > 6 && !/^亲爱的|^[^\s]{1,6}$/.test(x));
         const q = lines[0] || '';
         const where = /抽屉/.test(scene) ? { holder: reader, place: '书桌的抽屉', state: 'kept' } : /烧/.test(scene) ? { holder: reader, place: '', state: 'burned' } : /调色板/.test(scene) ? { holder: reader, place: '调色板底下', state: 'kept' } : null;
-        return JSON.stringify({ memories: [{ person: reader, memory: `${reader}记得，他是在剧情里拆开这封信读的（演示）。信里写着「${q.slice(0, 20)}」，他读到这里停了一下。还有一句他记成了「这句话信里没有」。读完以后，他把信折好收了起来。`, gist: `（演示）${q.slice(0, 16)}` }], letter: where });
+        const mesM = scene.match(/\[第 (\d+) 层\][^\n]*(收到|读|拆)/);
+        const mes = mesM ? Number(mesM[1]) : null;
+        const dm = scene.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
+        const sd = dm ? `${dm[1]}-${String(dm[2]).padStart(2, '0')}-${String(dm[3]).padStart(2, '0')}` : '';
+        const place = (scene.match(/在(奥维尔|巴黎|圣雷米|阿尔勒)/) || [])[1] || '';
+        const events = [];
+        if (/收到/.test(scene)) events.push({ type: 'received', who: reader, date: sd, place, mes });
+        events.push({ type: 'read', who: reader, date: sd, place, mes });
+        return JSON.stringify({ events, storyDate: sd, memories: [{ person: reader, memory: `${reader}记得，他是在剧情里拆开这封信读的（演示）。信里写着「${q.slice(0, 20)}」，他读到这里停了一下。还有一句他记成了「这句话信里没有」。读完以后，他把信折好收了起来。`, gist: `（演示）${q.slice(0, 16)}` }], letter: where });
     }
     if (kind === 'reply') {
         const m = prompt.match(/§\d+ ([^\n]{4,40})/g) || [];

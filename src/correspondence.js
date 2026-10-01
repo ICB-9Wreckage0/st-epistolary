@@ -736,6 +736,9 @@ export function buildMemoryPrompt(letter, scene, { existing = [], storyDate = ''
 另外每人写一句 gist：不超过 40 字，这个人会怎么一句话概括这封信（比如“勒鲁说每月寄一封信，托我按时转交”）。
 只写剧情和信里确实有的，不要补充、不要编。剧情里没读这封信的人不要写；写信人自己不算读者，除非剧情里 TA 重读了这封信。
 
+再看**这封信本身**在这段剧情里发生了什么（events，按先后）：type 是 written 写好 | sent 寄出 / 交给信差 / 托人带走 | received 收到 | read 读了 | forwarded 转交给别人 | kept 收起来 | mentioned 只是提到；who 是谁做的；to 是寄给 / 交给谁（sent、forwarded 时写）；date 是剧情里的日期（YYYY-MM-DD，看得出来才写）；place 是在哪（城市或地方，看得出来才写）；mes 是第几层（剧情前面标着楼层号就写）。分清楚：**写信人寄出**是 sent，**收信人拿到**是 received，拿到以后打开看是 read。剧情里没发生的不要写。
+storyDate：这段剧情发生在哪天（YYYY-MM-DD），看不出来就写空字符串。
+
 最后看这段剧情结束时，**这封信本身**在哪里：在谁手里（holder）、放在什么地方（place，比如“书桌左边的抽屉”）、状态（state）：kept 收着 | carried 随身带着 | given 交给了别人 | burned 烧了或毁了 | lost 丢了。剧情里没写到信最后放哪，letter 就写 null，不要猜。
 ${prev}
 【信】${letter.author || '？'} 写给 ${(letter.recipients || []).join('、') || '？'}${letter.writtenAt ? `，${letter.writtenAt}` : ''}${letter.code ? `，暗号 ${letter.code}` : ''}
@@ -745,7 +748,7 @@ ${String(letter.body || '').slice(0, 12000)}
 ${String(scene || '').slice(0, 12000)}
 
 只输出一个 JSON 对象，例如：
-{"memories": [{"person": "提奥", "memory": "提奥记得，1890 年 7 月 1 日早上……他记得信里写着「（信里的原句）」……读完以后……", "gist": "……"}], "letter": {"holder": "提奥", "place": "画廊办公室的抽屉", "state": "kept"}}
+{"memories": [{"person": "提奥", "memory": "提奥记得，1890 年 7 月 1 日早上……他记得信里写着「（信里的原句）」……读完以后……", "gist": "……"}], "events": [{"type": "received", "who": "提奥", "date": "1890-07-01", "place": "巴黎", "mes": 120}, {"type": "read", "who": "提奥", "date": "1890-07-01", "place": "巴黎", "mes": 120}], "storyDate": "1890-07-01", "letter": {"holder": "提奥", "place": "画廊办公室的抽屉", "state": "kept"}}
 没有人读这封信，memories 就是 []。`;
     return { system, prompt };
 }
@@ -756,7 +759,22 @@ function cleanMemories(arr) {
         .map(x => ({ person: String(x.person).trim().slice(0, 40), text: String(x.memory).trim().slice(0, 1500), gist: String(x.gist || '').trim().slice(0, 120) }));
 }
 
-// { memories: [{person, text, gist}], where: {holder, place, state} | null }
+const STORY_EVENT_TYPES = new Set(['written', 'sent', 'received', 'read', 'forwarded', 'kept', 'mentioned']);
+function cleanEvents(arr) {
+    return (Array.isArray(arr) ? arr : [])
+        .filter(x => x && STORY_EVENT_TYPES.has(String(x.type)))
+        .map(x => ({
+            type: String(x.type),
+            who: String(x.who || '').trim().slice(0, 40),
+            to: String(x.to || '').trim().slice(0, 60),
+            date: normalizeDate(x.date) ? String(x.date).trim() : '',
+            place: String(x.place || '').trim().slice(0, 60),
+            mes: Number.isInteger(Number(x.mes)) && x.mes !== '' && x.mes != null ? Number(x.mes) : null,
+            note: String(x.note || '').trim().slice(0, 120),
+        }));
+}
+
+// { memories: [{person, text, gist}], where: {holder, place, state} | null, events: [...], storyDate }
 export function parseMemoryResult(text) {
     const t = String(text || '');
     const obj = t.match(/\{[\s\S]*\}/);
@@ -765,12 +783,12 @@ export function parseMemoryResult(text) {
             const o = JSON.parse(obj[0]);
             const w = o.letter && typeof o.letter === 'object' ? o.letter : null;
             const where = w && (w.holder || w.place || w.state) ? { holder: String(w.holder || ''), place: String(w.place || ''), state: String(w.state || 'kept'), note: String(w.note || '') } : null;
-            return { memories: cleanMemories(o.memories), where };
+            return { memories: cleanMemories(o.memories), where, events: cleanEvents(o.events), storyDate: normalizeDate(o.storyDate) ? String(o.storyDate).trim() : '' };
         } catch { /* 往下试数组 */ }
     }
     const arr = t.match(/\[[\s\S]*\]/);
-    if (!arr) return { memories: [], where: null };
-    try { return { memories: cleanMemories(JSON.parse(arr[0])), where: null }; } catch { return { memories: [], where: null }; }
+    if (!arr) return { memories: [], where: null, events: [], storyDate: '' };
+    try { return { memories: cleanMemories(JSON.parse(arr[0])), where: null, events: [], storyDate: '' }; } catch { return { memories: [], where: null, events: [], storyDate: '' }; }
 }
 
 export function parseMemories(text) {
@@ -851,4 +869,50 @@ export function rereadKey(letter, names = []) {
 
 export function rereadEntryContent(letter, holder, place = '') {
     return `【信件原文｜${letterLabel(letter)}｜现在在 ${holder} 手里${place ? `（${place}）` : ''}】\n${String(letter.body || '').trim()}\n【信件完】\n（${holder} 把这封信拿出来重读时，读到的就是上面的原文。没有这封信的人读不到。）`;
+}
+
+// ---------- 时间线「更新」：一次看完最近的剧情，各封信的状态有没有变 ----------
+
+export function buildStatusPrompt(items, story, { storyDate = '', userName = '' } = {}) {
+    const system = '你是剧情记录员，负责根据剧情更新信件的状态。只写剧情里确实发生了的事，不猜。只输出 JSON。';
+    const list = items.map(({ n, letter, now }) => `#${n}：${letter.author || '？'} 写给 ${(letter.recipients || []).join('、') || '？'}${letter.writtenAt ? `，${letter.writtenAt} 写的` : ''}${letter.code ? `，暗号 ${letter.code}` : ''}${letter.title ? `，信封上写着「${letter.title}」` : ''}。开头：${String(letter.body || '').replace(/\s+/g, ' ').slice(0, 40) || '（正文还没写）'}。目前记录：${now}`).join('\n');
+    const prompt = `下面是一些信，以及最近的一段剧情（每段前标着楼层号）。请看剧情里这些信**有没有发生新的事**：
+
+- received：收信人是不是在这段剧情里收到了这封信（true / false；没写到就 null）；receivedBy 谁收到的；receivedDate 哪天收到（YYYY-MM-DD，剧情里看得出来才写）；receivedPlace 在哪收到（城市、住处，看得出来才写）
+- readers：这段剧情里读了这封信（或听人念过）的人${userName ? `（不算 ${userName}）` : ''}，没有就 []
+- where：这段剧情结束时信在哪：holder 在谁手里，place 放在哪，state 是 kept 收着 | carried 随身带着 | given 交给了别人 | burned 烧了 | lost 丢了；剧情里没写到就 null
+- mes：这些事发生在第几层（楼层号）
+${storyDate ? `当前剧情日期：${storyDate}。` : ''}
+剧情里没提到的信不要输出。只写剧情里确实写到的。
+
+【信】
+${list}
+
+【最近的剧情】
+${String(story || '').slice(-40000)}
+
+只输出一个 JSON 数组，例如：
+[{"n": 1, "received": true, "receivedBy": "文森特", "receivedDate": "1890-07-02", "receivedPlace": "奥维尔", "readers": ["文森特"], "where": {"holder": "文森特", "place": "上衣口袋", "state": "carried"}, "mes": 312}]
+都没有变化就输出 []。`;
+    return { system, prompt };
+}
+
+export function parseStatusResponse(text) {
+    const m = String(text || '').match(/\[[\s\S]*\]/);
+    if (!m) return [];
+    try {
+        const arr = JSON.parse(m[0]);
+        return (Array.isArray(arr) ? arr : []).filter(x => x && Number.isInteger(Number(x.n))).map(x => ({
+            n: Number(x.n),
+            received: x.received === true ? true : x.received === false ? false : null,
+            receivedBy: String(x.receivedBy || '').trim(),
+            receivedDate: String(x.receivedDate || '').trim(),
+            receivedPlace: String(x.receivedPlace || '').trim(),
+            readers: Array.isArray(x.readers) ? x.readers.map(r => String(r).trim()).filter(Boolean) : [],
+            where: x.where && typeof x.where === 'object' && (x.where.holder || x.where.place || x.where.state) ? { holder: String(x.where.holder || ''), place: String(x.where.place || ''), state: String(x.where.state || 'kept') } : null,
+            mes: Number.isInteger(Number(x.mes)) ? Number(x.mes) : null,
+        }));
+    } catch {
+        return [];
+    }
 }

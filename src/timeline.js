@@ -6,8 +6,29 @@ import { whereNow } from './whereabouts.js';
 
 const canon = (archive, name) => findPerson(archive, name)?.name || String(name || '').trim();
 
+// 这封信在故事里的时间：信上的日期；没写日期就用剧情里第一次出现（写好 / 寄出 / 收到……）的日期
 function dateOf(l) {
-    return normalizeDate(l.writtenAt) || '';
+    const own = normalizeDate(l.writtenAt);
+    if (own) return own;
+    const ds = (l.events || []).map(e => normalizeDate(e.date)).filter(Boolean).sort();
+    return ds[0] || '';
+}
+
+// 在第几层第一次出现
+function floorOf(l) {
+    const ms = (l.events || []).map(e => e.mes).filter(Number.isInteger);
+    if (Number.isInteger(l.source?.mes)) ms.push(l.source.mes);
+    return ms.length ? Math.min(...ms) : null;
+}
+
+const EVENT_LABELS = { written: '写好了信', sent: '寄出', received: '收到', read: '读了', heard: '听人念了', told: '听人转述', aware: '知道有这封信', copied: '抄了一份', forwarded: '转交', returned: '退回', lost: '弄丢了', kept: '收起来', mentioned: '提到' };
+
+// 这封信的经过（按楼层、日期排）
+export function letterStory(l) {
+    return (l.events || [])
+        .filter(e => EVENT_LABELS[e.type])
+        .map(e => ({ ...e, label: EVENT_LABELS[e.type] }))
+        .sort((a, b) => (a.mes ?? 1e9) - (b.mes ?? 1e9) || String(a.date).localeCompare(String(b.date)));
 }
 
 function daysBetween(a, b) {
@@ -50,7 +71,7 @@ const READ_TYPES = new Set(['read', 'heard', 'told', 'copied']);
 export function buildTimeline(archive, { a = '', b = '' } = {}) {
     const letters = Object.values(archive.letters || {})
         .filter(l => !a || involves(archive, l, a, b))
-        .sort((x, y) => (dateOf(x) || '9999').localeCompare(dateOf(y) || '9999') || String(x.createdAt).localeCompare(String(y.createdAt)));
+        .sort((x, y) => (dateOf(x) || '9999').localeCompare(dateOf(y) || '9999') || (floorOf(x) ?? 1e9) - (floorOf(y) ?? 1e9) || String(x.createdAt).localeCompare(String(y.createdAt)));
     const items = [];
     let prevDate = '';
     for (const l of letters) {
@@ -71,6 +92,8 @@ export function buildTimeline(archive, { a = '', b = '' } = {}) {
         items.push({
             letter: l,
             date: d,
+            floor: floorOf(l),
+            story: letterStory(l),
             month: d ? d.slice(0, 7) : '',
             gap: prevDate && d ? daysBetween(prevDate, d) : null,
             from: l.author,

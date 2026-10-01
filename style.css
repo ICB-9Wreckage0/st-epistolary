@@ -1376,3 +1376,80 @@ details.epi-fold[open] { padding-bottom: 8px; }
 .epi-imp-batch { border: 1px solid var(--epi-border, rgba(255,255,255,.15)); border-radius: 6px; padding: 6px 10px; margin: 6px 0; display: flex; flex-direction: column; gap: 4px; }
 .epi-imp-batch[hidden], .epi-imp-custom[hidden] { display: none; }
 .epi-imp-custom { margin: 4px 0; }
+.epi-tl-mem { margin-top: 6px; border-top: 1px dashed rgba(200, 180, 140, .35); padding-top: 4px; cursor: default; }
+.epi-tl-mem summary { cursor: pointer; font-size: .9em; color: var(--epi-accent, #d9a441); }
+.epi-tl-mem-one { margin: 6px 0; font-size: .92em; }
+.epi-tl-mem-text { white-space: pre-wrap; line-height: 1.7; opacity: .85; margin-top: 2px; padding-left: 8px; border-left: 2px solid rgba(200, 180, 140, .3); }
+.epi-tl-mem-edit { font-size: .85em; }
+.epi-tl-nomem { font-size: .85em; margin-top: 4px; }
+.epi-tl-where { margin-top: 6px; font-size: .88em; line-height: 1.6; padding: 4px 8px; border-radius: 6px; background: rgba(0,0,0,.18); cursor: pointer; }
+.epi-tl-where:hover { background: rgba(0,0,0,.3); }
+.epi-tl-where .epi-muted { margin-left: 4px; }
+.epi-tl-bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-end; justify-content: space-between; }
+.epi-tl-update { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.epi-tl-update .menu_button { width: auto; margin: 0; }
+.epi-tl-result { font-size: .9em; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(200, 180, 140, .45); background: rgba(200, 180, 140, .08); }
+.epi-tl-result ul { margin: 4px 0 0 18px; padding: 0; }
+.epi-tl-result { position: relative; }
+.epi-tl-result-x { position: absolute; right: 6px; top: 4px; background: none; border: 0; color: inherit; cursor: pointer; opacity: .7; }
+
+/* ---- 设置分组 ---- */
+details.epi-sec-card > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+details.epi-sec-card > summary::-webkit-details-marker { display: none; }
+details.epi-sec-card > summary::before { content: '▸'; opacity: .6; width: 1em; }
+details.epi-sec-card[open] > summary::before { content: '▾'; }
+details.epi-sec-card > summary h4 { margin: 0; display: inline; }
+details.epi-sec-card[open] > summary { margin-bottom: 8px; }
+.epi-sec-sum { font-size: .85em; opacity: .65; }
+details.epi-sec-card[open] .epi-sec-sum { display: none; }
+details.epi-sec-card[hidden] { display: none; }
+.epi-sec-tools { text-align: right; font-size: .88em; margin-bottom: 4px; }
+.epi-backups { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow-y: auto; margin-top: 6px; }
+.epi-backup { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 6px; border-radius: 4px; background: rgba(0,0,0,.15); }
+.epi-backup-acts { display: flex; gap: 4px; }
+.epi-backup-acts .menu_button { margin: 0 !important; }
+
+/* ---- 寄送 / 信在谁手里：分开两行 ---- */
+.epi-st-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 2px 0; }
+.epi-st-k { flex: 0 0 auto; min-width: 7.5em; font-weight: bold; opacity: .9; }
+.epi-st-v { flex: 1 1 12em; }
+.epi-st-edit { flex: 0 0 auto; font-size: .9em; }
+.epi-st-sug { margin: 2px 0 2px 7.5em; font-size: .9em; padding: 2px 8px; border-left: 2px solid var(--epi-accent, #d9a441); }
+.epi-where { margin: 10px 0 12px; }
+.epi-tl-where { margin: 6px 0; font-size: .88em; line-height: 1.5; padding: 4px 8px; border-radius: 6px; background: rgba(0,0,0,.18); cursor: default; }
+.epi-tl-where .epi-st-k { min-width: 6.5em; }
+.epi-tl-where .epi-st-sug { margin-left: 6.5em; }
+@media (max-width: 760px) { .epi-st-sug { margin-left: 0; } }
+.epi-lh-field { position: relative; }
+.epi-lh-pick { max-width: 4.6em; padding: 1px 2px; font-size: .85em; background: transparent; color: inherit; border: 1px solid rgba(0,0,0,.25); border-radius: 4px; cursor: pointer; margin-left: 4px; }
+.epi-lh-pick option { color: #222; }
+.epi-lh-field:has(.epi-lh-pick) { grid-template-columns: 4.6em minmax(0, 1fr) auto !important; }
+
+/* ---- 时间线：经过、剧情指针 ---- */
+.epi-tl-story { margin: 4px 0 6px; font-size: .86em; line-height: 1.55; }
+.epi-tl-ev-head { font-weight: bold; opacity: .85; display: flex; gap: 10px; align-items: baseline; }
+.epi-tl-ev-head a { font-weight: normal; font-size: .95em; }
+.epi-tl-ev { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 1px 0 1px 10px; border-left: 2px solid rgba(200, 180, 140, .35); cursor: default; }
+.epi-tl-ev-d { font-variant-numeric: tabular-nums; }
+.epi-tl-ev .epi-chip { font-size: .8em; padding: 0 5px; }
+.epi-tl-ev-x { margin-left: auto; opacity: .5; text-decoration: none; }
+.epi-tl-ev-x:hover { opacity: 1; }
+.epi-tl-story-empty .epi-muted { display: block; padding-left: 10px; }
+.epi-tl-now { position: relative; z-index: 2; align-self: stretch; display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; margin: 8px 0; padding: 5px 12px; border-radius: 16px; font-size: .9em; color: #fff; background: linear-gradient(90deg, rgba(181, 82, 59, .85), rgba(217, 164, 65, .85)); box-shadow: 0 0 0 2px rgba(217, 164, 65, .35); }
+.epi-tl-now a { color: #fff; opacity: .9; }
+.epi-tl-now-dot { width: 9px; height: 9px; border-radius: 50%; background: #fff; box-shadow: 0 0 6px #fff; }
+
+/* ---- 文件夹 ---- */
+.epi-folders { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
+.epi-folder { border: 1px solid var(--epi-border, rgba(255,255,255,.2)); background: transparent; color: inherit; border-radius: 14px; padding: 3px 10px; cursor: pointer; font-size: .9em; }
+.epi-folder span { opacity: .6; margin-left: 2px; font-size: .9em; }
+.epi-folder.active { border-color: var(--epi-accent, #d9a441); color: var(--epi-accent, #d9a441); background: rgba(217, 164, 65, .1); }
+.epi-folder-new { border-style: dashed; opacity: .8; }
+.epi-folder-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; background: rgba(217, 164, 65, .07); }
+.epi-folder-tools .menu_button { width: auto; margin: 0; }
+.epi-card { position: relative; }
+.epi-sel { align-self: center; margin: 0 4px 0 0; flex: 0 0 auto; cursor: pointer; }
+.epi-move { width: auto !important; max-width: 9em; padding: 2px 4px; font-size: .85em; margin: 0; }
+.epi-move-bulk { width: auto !important; max-width: 11em; font-size: .85em; }
+.epi-folder-chip { opacity: .85; }
+.epi-lh-folder select { max-width: 14em; }
