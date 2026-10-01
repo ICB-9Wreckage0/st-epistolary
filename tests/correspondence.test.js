@@ -100,7 +100,7 @@ test('托人转交：转交人只知道有信，拆看后才知道内容，收�
 });
 
 test('托人转交：解析转交人的决定', () => {
-    assert.deepEqual(parseViaDecision('好的：{"opened": true, "resealed": true, "action": "forward", "note": "明天送去"}'), { opened: true, resealed: true, openly: false, action: 'forward', envelopeNote: '', note: '明天送去' });
+    assert.deepEqual(parseViaDecision('好的：{"opened": true, "resealed": true, "action": "forward", "note": "明天送去"}'), { n: 1, opened: true, resealed: true, openly: false, action: 'forward', envelopeNote: '', note: '明天送去' });
     assert.equal(parseViaDecision('{"opened": false, "action": "burn"}').action, 'unclear');
     assert.equal(parseViaDecision('不知道'), null);
 });
@@ -186,4 +186,21 @@ test('转交人公开拆阅：收信人那边看得到说明', () => {
     assert.match(g, /没有隐瞒/); assert.match(g, /拆阅核验/);
     const p = parseViaDecision('{"opened":true,"openly":true,"action":"forward","envelopeNote":"Lees rustig."}');
     assert.equal(p.openly, true); assert.equal(p.envelopeNote, 'Lees rustig.');
+});
+
+// ---------- 随信附上 ----------
+import { extractEnclosures, enclosuresForAI, enclosureFeel } from '../src/enclosures.js';
+import { buildCodeBlock as bcb, parseFill as pf, describeEnvelope as de } from '../src/correspondence.js';
+
+test('随信附上：从正文识别、告诉 AI、隔着信封摸得出来', () => {
+    const found = extractEnclosures('随信附上100法郎，作为保管费。另附一张麦田的速写。');
+    assert.deepEqual(found.map(e => [e.kind, e.value || e.name]), [['money', '100法郎'], ['sketch', '一张麦田的速写']]);
+    const a = mkArchive();
+    const l = mkLetter(a, { author: '勒鲁', recipients: ['提奥'], body: '正文', enclosures: [{ kind: 'money', name: '五枚二十法郎金币', value: '100 法郎' }] });
+    assert.match(enclosuresForAI(l, a), /五枚二十法郎金币，100 法郎/);
+    assert.match(bcb(a, l), /随信附上/);
+    assert.match(brg(a, l, '提奥', '1890-06-27', {}), /金币/);
+    assert.match(enclosureFeel(l), /硬币/);
+    assert.match(de(l), /硬币/);
+    assert.equal(pf('{"enclosures":[{"kind":"gift","name":"围巾"},{"name":""}]}').enclosures.length, 1);
 });

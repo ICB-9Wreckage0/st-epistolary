@@ -1,10 +1,11 @@
 // 书信簿 · 界面
 // 简单模式：信件 / 写信 / 人物。写信页像文档一样，直接在信纸上写。
-// 专家模式：多出段落与关键词、流转记录、知情一览、套语管理、注入预览。
+// 简单模式：存档 + 暗号（聊天里写信的暗号，这一轮就把信交给 AI）。
+// 高级模式：寄送、转交、知情过滤、自动注入，以及段落与关键词、流转记录、知情一览、套语、注入预览。
 
 import {
     KINDS, STATUSES, AUTHENTICITY, EVENT_TYPES, LEVEL_LABELS,
-    createLetter, normalizeLetter, normalizePerson, resegment, segmentPosition, knowledgeTable,
+    createLetter, normalizeLetter, normalizePerson, resegment, segmentPosition, knowledgeTable, normalizeCode, nextCode,
     parseTags, parseNames, splitSamples, findPerson, clone, normalizeDate,
 } from './model.js';
 import { allPresets, POSITIONS, LANGS } from './presets.js';
@@ -12,14 +13,15 @@ import {
     addDays, formatDateLine, guessLang, deliveryEvents, arrivalOf,
     buildReplyPrompt, cleanReply, EXAMPLE_PROFILES,
     buildTranslatePrompt, TRANSLATE_TARGETS, TRANSLATE_STYLES,
-    viaReceivedEvents, VIA_ACTIONS, threadBetween, viaDeadline,
+    viaReceivedEvents, VIA_ACTIONS, threadBetween, viaDeadline, nextEventId,
     HEAD_FIELDS, guessHeadFromThread, buildFillPrompt, parseFill,
 } from './correspondence.js';
-import { detectInChat, chunkChat, buildImportPrompt, parseImportResponse, sliceVerbatim, findDuplicate } from './importer.js';
+import { detectInChat, chunkChat, buildImportPrompt, parseImportResponse, sliceVerbatim, dropParagraphs, findDuplicate, buildShellPrompt, parseShellResponse, findShellDuplicate, SHELL_STATES } from './importer.js';
 import { API_MODES, listProfiles, testConnection, fetchModels } from './api.js';
 import { playSeal, playOpen, WAX_LABELS, ENVELOPE_LABELS } from './envelope.js';
 import { STYLE_PACKS, applyStyle, pickStyle } from './styles.js';
 import { meaningOf, labelWithWarn, lookWarnings } from './meanings.js';
+import { ENCLOSURE_KINDS, normalizeEnclosure, extractEnclosures, enclosureText } from './enclosures.js';
 import { HANDS, ORIENTATIONS, paperClasses, renderBody, analyze, scriptLang, renderOptions, WOBBLE_LABELS, WEAR_LABELS, paperLayer, ensureWearFilters, hashSeed, INKS, inkColor, inkContrast, paperStyle, SIZE_LABELS } from './render.js';
 
 const PAPERS = { plain: '素白', cream: '奶油棉纸', aged: '泛黄旧纸', lined: '横格信笺', redline: '红线信笺', blue: '淡蓝航空信纸' };
@@ -77,8 +79,8 @@ export class UI {
                 <div class="epi-header">
                     <span class="epi-title">✉ 书信簿</span>
                     <nav class="epi-tabs"></nav>
-                    <div class="epi-mode" title="简单模式只显示写信需要的东西；专家模式显示段落、流转、注入等全部细节">
-                        <button data-act="mode" data-mode="simple">简单</button><button data-act="mode" data-mode="expert">专家</button>
+                    <div class="epi-mode" title="简单模式：存档信件 + 暗号。高级模式：寄送、转交、知情过滤、自动注入等全部功能">
+                        <button data-act="mode" data-mode="simple">简单</button><button data-act="mode" data-mode="expert">高级</button>
                     </div>
                     <button class="epi-close" data-act="close" title="关闭">✕</button>
                 </div>
@@ -175,22 +177,24 @@ export class UI {
             <div class="epi-card">
                 <div class="epi-card-main" data-act="read" data-id="${esc(l.id)}">
                     <div class="epi-card-top">
+                        ${l.code ? `<button class="epi-chip epi-code" data-act="copy-code" data-code="${esc(l.code)}" title="点一下复制暗号">${esc(l.code)}</button>` : ''}
                         <b>${esc(l.author || '？')} → ${esc(l.recipients.join('、') || '？')}</b>
                         <span class="epi-muted">${esc(l.writtenAt || '日期不详')}</span>
                         ${l.status !== 'sent' ? `<span class="epi-chip epi-status-${esc(l.status)}">${esc(STATUSES[l.status])}</span>` : ''}
-                        ${l.delivery?.status === 'transit' ? `<span class="epi-chip epi-transit">📮 在途 · ${esc(this.etaText(l))}</span>` : ''}
-                        ${l.delivery?.status === 'arrived' ? `<span class="epi-chip epi-transit">📬 刚送到</span>` : ''}
-                        ${this.viaChip(l)}
+                        ${ex && l.delivery?.status === 'transit' ? `<span class="epi-chip epi-transit">📮 在途 · ${esc(this.etaText(l))}</span>` : ''}
+                        ${ex && l.delivery?.status === 'arrived' ? `<span class="epi-chip epi-transit">📬 刚送到</span>` : ''}
+                        ${ex ? this.viaChip(l) : ''}
+                        ${l.shell ? '<span class="epi-chip epi-shell" title="剧情里已经有这封信了，正文还没写。点「编辑」写正文">📄 空壳 · 待写正文</span>' : ''}
                         ${l.inReplyTo ? `<span class="epi-chip">↩ 回信</span>` : ''}
                         ${ex ? `<span class="epi-muted">${esc(l.id)}</span>` : ''}
                         ${ex && l.authenticity !== 'original' ? `<span class="epi-chip">${esc(AUTHENTICITY[l.authenticity])}</span>` : ''}
                     </div>
-                    <div class="epi-muted">${esc(preview(l.body, 90))}</div>
+                    <div class="epi-muted">${l.title ? `「${esc(l.title)}」 ` : ''}${l.shell ? '（正文还没写）' : esc(preview(l.body, 90))}</div>
                     ${ex && l.tags.length ? `<div class="epi-tags">${l.tags.map(t => `<span>#${esc(t)}</span>`).join('')}</div>` : ''}
                 </div>
                 <div class="epi-card-actions">
-                    ${l.delivery?.status === 'transit' ? `<button class="menu_button" data-act="deliver-now" data-id="${esc(l.id)}" title="不等了，现在就送到">现在送达</button>` : ''}
-                    ${['atVia', 'held', 'withheld'].includes(l.delivery?.status) && this.isMe(l.delivery.via) ? `<button class="menu_button" data-act="via-forward" data-id="${esc(l.id)}" title="${esc(l.delivery.via)} 改主意了，把信转交出去">让 ${esc(l.delivery.via)} 转交</button>` : ''}
+                    ${ex && l.delivery?.status === 'transit' ? `<button class="menu_button" data-act="deliver-now" data-id="${esc(l.id)}" title="不等了，现在就送到">现在送达</button>` : ''}
+                    ${ex && ['atVia', 'held', 'withheld'].includes(l.delivery?.status) && this.isMe(l.delivery.via) ? `<button class="menu_button" data-act="via-forward" data-id="${esc(l.id)}" title="${esc(l.delivery.via)} 改主意了，把信转交出去">让 ${esc(l.delivery.via)} 转交</button>` : ''}
                     <button class="menu_button" data-act="edit" data-id="${esc(l.id)}">编辑</button>
                     <button class="menu_button" data-act="delete" data-id="${esc(l.id)}">删除</button>
                 </div>
@@ -220,6 +224,7 @@ export class UI {
                 author: this.hooks.getUserName() || '',
                 recipients: [this.hooks.getCharName()].filter(Boolean),
                 writtenAt: this.hooks.getStoryDate() || '',
+                code: nextCode(this.archive),
             }, '');
             // 沿用两人之前通信的地点和语言
             const g = guessHeadFromThread(this.archive, this.draft.author, this.draft.recipients[0]);
@@ -289,6 +294,12 @@ export class UI {
                 if (inp && inp !== document.activeElement) { inp.value = val; inp.classList.add('epi-lh-ai'); }
             }
             if (out.travelDays != null) this.draftTravel = out.travelDays;
+            if (out.enclosures?.length && !d.enclosures.length) {
+                d.enclosures = out.enclosures.map((x, k) => ({ ...normalizeEnclosure(x, k), id: `ENC${Date.now().toString(36)}${k}` }));
+                filled.push('enclosures');
+                const box = this.root.querySelector('.epi-enc');
+                if (box) box.outerHTML = this.renderEnclosures(d);
+            }
             this.headFilled = true;
             if (filled.includes('author') && !this.fontTouched) { this.applyAuthorHand(d); this.refreshPaper(); }
             if (filled.length) {
@@ -414,7 +425,9 @@ export class UI {
         const orig = d.inReplyTo ? this.archive.letters[d.inReplyTo] : null;
 
         let banner = '';
-        if (d.aiDraft) {
+        if (d.shell && !d.aiDraft) {
+            banner = `<div class="epi-banner">📄 这是一封<b>空壳信</b>：剧情里已经有这封信了，正文还没写。直接在下面的信纸上写，保存就行，寄送状态（在谁手里、哪天送到）不会变。</div>`;
+        } else if (d.aiDraft) {
             banner = `<div class="epi-banner">
                 <div>这是 AI 按 <b>${esc(d.author)}</b> 的口吻代写的回信草稿。可以直接在信纸上修改。</div>
                 <div class="epi-banner-actions">
@@ -432,7 +445,7 @@ export class UI {
             <div class="epi-ribbon">
                 <div class="epi-rgroup">
                     <button class="epi-rbtn epi-primary" data-act="save" title="保存（Ctrl+S）">💾 保存</button>
-                    ${d.aiDraft ? '' : `<button class="epi-rbtn" data-act="send-open" title="把信寄出去：选择路上走多久，到了以后再切过去看收信反应">✉ 寄出</button>`}
+                    ${d.aiDraft || !ex ? '' : `<button class="epi-rbtn" data-act="send-open" title="把信寄出去：选择路上走多久，到了以后再切过去看收信反应">✉ 寄出</button>`}
                     ${canAskReply ? `<button class="epi-rbtn" data-act="reply-open" title="让收信人用自己的口吻写回信">↩ 让对方回信</button>` : ''}
                     <button class="epi-rbtn" data-act="translate-open" title="把这封信翻译成另一种语言，比如中文草稿译成法语">🌐 翻译</button>
                 </div>
@@ -465,6 +478,12 @@ export class UI {
                 ${field('placeFrom', '寄出地', d.placeFrom, '如 Paris', '从哪里寄出。会写在日期行和信封上。')}
                 ${field('placeTo', '寄往地', d.placeTo, '如 Saint-Rémy', '寄到哪里。会写在信封的地址上。')}
                 ${field('language', '书信语言', d.language, '留空 = 中文', '信实际用什么语言写。影响套语、日期写法、翻译和回信的语言。“法语（中文显示）”表示人物之间用法语通信，但纸上用中文写出来。')}
+                <div class="epi-lh-code">
+                    <span class="epi-lh-label">暗号</span>
+                    <input class="epi-lh-input epi-code-input" data-f="code" value="${esc(d.code)}" placeholder="如【信1】">
+                    <button class="menu_button epi-mini" data-act="copy-code" data-code="${esc(d.code)}" title="复制暗号">复制</button>
+                    <span class="epi-muted">在聊天里写上这个暗号（连括号一起），那一轮 AI 就会读到这封信。</span>
+                </div>
                 <div class="epi-lh-fill">
                     <button class="menu_button" data-act="ai-fill" title="让 AI 根据最近的剧情和信的正文，填写信人、收信人、日期、地点和语言，并估算路上要走几天。你自己改过的格子不会被覆盖。">${this.filling ? '✨ 填写中…' : '✨ AI 填写'}</button>
                     <span class="epi-muted" data-role="fill-note">${this.lhAI?.size ? '标黄的是 AI 填的，可以直接改' : '不想自己填？写完正文点这里，AI 会根据剧情补全'}</span>
@@ -479,6 +498,7 @@ export class UI {
                     <textarea class="epi-page" data-f="body" spellcheck="false" placeholder="在这里写信……&#10;&#10;空一行就是新的一段。上面的「插入」可以加称呼、结尾语和日期行。">${esc(d.body)}</textarea>
                 </div>
             </div>
+            ${this.renderEnclosures(d)}
             <div class="epi-docstatus">
                 <span>${esc(STATUSES[d.status])}${d.delivery?.status === 'transit' ? `（在途，${esc(this.etaText(d))}）` : ''}</span>
                 <span data-role="count">${charCount(d.body)} 字</span>
@@ -600,11 +620,18 @@ export class UI {
         this.commitRaw(d);
         resegment(d);
         d.links.works = parseTags(d.links.works);
-        for (const e of d.events) if (e.type === 'forwarded') e.to = e.note;
+        for (const e of d.events) if (e.type === 'forwarded' && !e.to) e.to = e.note;
+        d.code = normalizeCode(d.code);
+        const clash = d.code && Object.values(this.archive.letters).find(l => l.id !== d.id && l.code === d.code);
+        if (clash) {
+            toastr?.warning(`暗号 ${d.code} 已经给了 ${clash.author} → ${clash.recipients.join('、')} 那封信，这封换成了新的暗号`);
+            d.code = '';
+        }
         let letter;
         if (this.draftIsNew) {
             letter = createLetter(this.archive, { ...d, id: undefined });
         } else {
+            if (!d.code) d.code = nextCode(this.archive);
             letter = normalizeLetter(d, d.id);
             letter.updatedAt = new Date().toISOString();
             this.archive.letters[d.id] = letter;
@@ -618,9 +645,57 @@ export class UI {
         return letter;
     }
 
+    // ================= 随信附上 =================
+
+    renderEnclosures(d) {
+        const list = d.enclosures || [];
+        const kindOpts = Object.fromEntries(Object.entries(ENCLOSURE_KINDS).map(([k, v]) => [k, `${v.icon} ${v.label}`]));
+        const others = Object.values(this.archive.letters).filter(l => l.id !== d.id);
+        const mentions = !list.length && extractEnclosures(d.body).length;
+        const rows = list.map((e, i) => `
+            <div class="epi-enc-row">
+                <select class="text_pole epi-enc-kind" data-enc="${i}" data-ef="kind">${options(kindOpts, e.kind)}</select>
+                ${e.kind === 'letter'
+                    ? `<select class="text_pole" data-enc="${i}" data-ef="letterRef"><option value="">选一封档案里的信…</option>${others.map(l => `<option value="${esc(l.id)}" ${l.id === e.letterRef ? 'selected' : ''}>${esc(l.code || l.id)} ${esc(l.author)} → ${esc(l.recipients.join('、'))}${l.writtenAt ? ` · ${esc(l.writtenAt)}` : ''}</option>`).join('')}</select>`
+                    : `<input class="text_pole" data-enc="${i}" data-ef="name" value="${esc(e.name)}" placeholder="是什么，如：五枚二十法郎金币、一张麦田速写">`}
+                ${e.kind === 'money' ? `<input class="text_pole epi-enc-value" data-enc="${i}" data-ef="value" value="${esc(e.value)}" placeholder="金额，如 100 法郎">` : ''}
+                <input class="text_pole" data-enc="${i}" data-ef="desc" value="${esc(e.desc)}" placeholder="样子 / 细节（可选）">
+                <button class="menu_button epi-mini" data-act="enc-del" data-i="${i}" title="删掉这件">✕</button>
+            </div>`).join('');
+        return `
+            <div class="epi-enc">
+                <div class="epi-enc-head">
+                    <b>📎 随信附上</b>
+                    <span class="epi-muted">钱、礼物、速写、照片、压花、附页、另一封信……收信人拆信时会一起拿到，AI 也会知道。</span>
+                </div>
+                ${rows}
+                <div class="epi-row">
+                    <button class="menu_button epi-mini" data-act="enc-add">＋ 添加一件</button>
+                    <button class="menu_button epi-mini" data-act="enc-detect" title="在正文里找“随信附上……”“另附……”“ci-joint……”这样的句子">从正文里找</button>
+                    ${mentions ? '<span class="epi-warn">正文里提到了随信附上的东西，点「从正文里找」记下来。</span>' : ''}
+                </div>
+            </div>`;
+    }
+
+    // 复制暗号
+    async copyCode(code) {
+        if (!code) { toastr?.info('这封信还没有暗号'); return; }
+        try {
+            await navigator.clipboard.writeText(code);
+        } catch {
+            const ta = document.createElement('textarea');
+            ta.value = code;
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand('copy'); } catch { /* 复制不了就算了 */ }
+            ta.remove();
+        }
+        toastr?.success(`已复制 ${code}。在聊天里写上它，那一轮 AI 就会读到这封信`);
+    }
+
     // 简单模式下，保存后自动为没有关键词的段落生成关键词
     maybeAutoAnalyze(id) {
-        if (this.expert || !this.hooks.getSettings().autoKeywords) return;
+        if (!this.expert || !this.hooks.getSettings().autoKeywords) return; // 关键词只在高级模式的自动注入里用
         const l = this.archive.letters[id];
         if (!l || l.aiDraft || !l.segments.length) return;
         const missing = l.segments.some(s => !s.tags.length && !s.aiTags.length);
@@ -1054,6 +1129,15 @@ ${list}`;
     // 收下 AI 写的回信：选择怎么送到“我”手上
     acceptReply() {
         const d = this.draft;
+        if (!this.expert) {
+            // 简单模式：没有寄送，直接存进档案
+            d.aiDraft = false;
+            d.status = 'sent';
+            const letter = this.saveDraft({ silent: true });
+            toastr?.success(`回信已存进档案。暗号是 ${letter.code}，在聊天里写上它，AI 就会读到这封回信`);
+            this.show('edit');
+            return;
+        }
         const o = this.archive.letters[d.inReplyTo];
         // 回信路上走的天数，沿用来信的天数
         let days = 3;
@@ -1233,9 +1317,11 @@ ${list}`;
                 <label>方法<select class="text_pole" id="epi-imp-method">
                     <option value="format">按格式识别：快，不调用 AI</option>
                     <option value="ai">AI 识别：更准，会调用 AI</option>
+                    ${this.expert ? '<option value="shell">找空壳信：剧情里提到了、正文还没写的信（AI）</option>' : ''}
                 </select></label>
             </div>
             <p class="epi-muted" id="epi-imp-est"></p>
+            <p class="epi-muted" ${this.expert ? '' : 'hidden'}>空壳信：比如“他写了五封信交给提奥保管”，信已经存在，但正文没出现在聊天里。会建好这几封信、记下在谁手里、哪天该送到，正文之后再写。</p>
             <p class="epi-muted">按格式识别：找“称呼……结尾/署名”这样的段落。AI 识别：AI 只负责指出每封信从哪句开始、到哪句结束，正文一律从聊天原文逐字截取，AI 改写过的内容不会进档案。</p>
             <div class="epi-dialog-actions">
                 <button class="menu_button" data-act="dialog-close">取消</button>
@@ -1252,7 +1338,7 @@ ${list}`;
         if (!el || !rangeSel) return;
         const k = rangeSel.selectedOptions[0]?.dataset.k;
         this.impRange = k === 'all' ? 'all' : parseInt(k, 10) || 50;
-        if (this.root.querySelector('#epi-imp-method').value !== 'ai') { el.textContent = ''; return; }
+        if (this.root.querySelector('#epi-imp-method').value === 'format') { el.textContent = ''; return; }
         const from = parseInt(rangeSel.value, 10) || 0;
         const batches = chunkChat(this.hooks.getChat(), { from }).length;
         el.textContent = batches > 1
@@ -1267,6 +1353,8 @@ ${list}`;
         const box = this.root.querySelector('#epi-imp-result');
         const btn = this.root.querySelector('[data-act="import-run"]');
         btn.disabled = true;
+        this.importMode = method;
+        if (method === 'shell') { await this.runShellImport(chat, from, box, btn); return; }
         let found = [];
         try {
             if (method === 'ai') {
@@ -1278,7 +1366,8 @@ ${list}`;
                     for (const r of parseImportResponse(out)) {
                         const m = chat[Number(r.message)];
                         if (!m) continue;
-                        const text = sliceVerbatim(m.mes, r.start, r.end);
+                        const sliced = sliceVerbatim(m.mes, r.start, r.end);
+                        const text = sliced && dropParagraphs(sliced, r.skip);
                         if (!text) continue;
                         found.push({ mesIndex: Number(r.message), speaker: m.name, text, author: r.author || m.name || '', recipient: r.recipient || '', date: normalizeDate(r.date) ? r.date : '', place: r.place || '' });
                     }
@@ -1320,7 +1409,116 @@ ${list}`;
             </div>`;
     }
 
+    // 空壳信：AI 只找“提到了的信”，不写内容
+    async runShellImport(chat, from, box, btn) {
+        let found = [];
+        try {
+            const chunks = chunkChat(chat, { from });
+            for (let i = 0; i < chunks.length; i++) {
+                btn.textContent = `AI 查找中 ${i + 1}/${chunks.length}……`;
+                const { system, prompt } = buildShellPrompt(chunks[i], { userName: this.hooks.getUserName(), storyDate: this.hooks.getStoryDate() });
+                found.push(...parseShellResponse(await this.hooks.callAI(system, prompt, { kind: 'shell' })));
+            }
+        } catch (e) {
+            console.error(e);
+            box.innerHTML = `<p class="epi-warn">查找失败：${esc(e.message || e)}</p>`;
+            btn.disabled = false; btn.textContent = '重新查找';
+            return;
+        }
+        btn.disabled = false; btn.textContent = '重新查找';
+        this.shellFound = found.map(f => ({ ...f, dup: findShellDuplicate(this.archive, f) }));
+        if (!found.length) { box.innerHTML = '<p class="epi-muted">没有找到提到了、但正文没写的信。</p>'; return; }
+        const storyDate = this.hooks.getStoryDate();
+        const stateSel = (i, v) => `<select class="text_pole" data-imp-f="state" data-i="${i}">${options(SHELL_STATES, v)}</select>`;
+        box.innerHTML = `
+            <h4>找到 ${found.length} 封空壳信</h4>
+            ${this.shellFound.map((f, i) => `
+                <div class="epi-imp-item">
+                    <label class="checkbox_label"><input type="checkbox" data-imp="${i}" ${f.dup ? '' : 'checked'}> 第 ${f.message} 条消息提到${f.label ? `：信封上写着「${esc(f.label)}」` : ''}${f.dup ? `<span class="epi-chip">档案里已有：${esc(f.dup)}</span>` : ''}</label>
+                    ${f.note ? `<div class="epi-muted">${esc(f.note)}</div>` : ''}
+                    <div class="epi-grid3">
+                        <label>写信人<input class="text_pole" data-imp-f="author" data-i="${i}" value="${esc(f.author)}"></label>
+                        <label>收信人<input class="text_pole" data-imp-f="recipient" data-i="${i}" value="${esc(f.recipients.join('、'))}"></label>
+                        <label>写信日期<input class="text_pole" data-imp-f="date" data-i="${i}" value="${esc(f.writtenAt || storyDate)}"></label>
+                        <label>信封上的字<input class="text_pole" data-imp-f="label" data-i="${i}" value="${esc(f.label)}"></label>
+                        <label>现在<span>${stateSel(i, f.state)}</span></label>
+                        <label>在谁手里（转交 / 保管人）<input class="text_pole" data-imp-f="holder" data-i="${i}" value="${esc(f.holder)}"></label>
+                        <label>该哪天送到<input class="text_pole" data-imp-f="target" data-i="${i}" value="${esc(f.target)}" placeholder="不知道就留空"></label>
+                        <label>从保管人那里寄出后路上几天<input class="text_pole epi-num" type="number" min="0" data-imp-f="leg" data-i="${i}" value="${esc(f.legDays)}"></label>
+                        <label>已经读过的人<input class="text_pole" data-imp-f="readers" data-i="${i}" value="${esc(f.readers.join('、'))}"></label>
+                    </div>
+                </div>`).join('')}
+            <p class="epi-muted">建好以后，信件列表里会标着「📄 空壳 · 待写正文」。正文可以之后再写；在那之前，谁拆开这封信，AI 只会写到拆开为止，不会自己编内容。</p>
+            <div class="epi-dialog-actions">
+                <button class="menu_button epi-primary" data-act="import-confirm">建立勾选的空壳信</button>
+            </div>`;
+    }
+
+    confirmShellImport() {
+        const items = [...this.root.querySelectorAll('[data-imp]')].filter(c => c.checked).map(c => parseInt(c.dataset.imp, 10));
+        if (!items.length) { toastr?.info('没有勾选'); return; }
+        const val = (i, f) => this.root.querySelector(`[data-imp-f="${f}"][data-i="${i}"]`)?.value.trim() || '';
+        const today = this.hooks.getStoryDate();
+        const created = [];
+        for (const i of items) {
+            const f = this.shellFound[i];
+            const author = val(i, 'author');
+            const date = val(i, 'date');
+            const state = val(i, 'state') || 'sealed';
+            const holder = val(i, 'holder');
+            const target = normalizeDate(val(i, 'target')) ? val(i, 'target') : '';
+            const leg = Math.max(0, parseInt(val(i, 'leg'), 10) || 0);
+            const letter = createLetter(this.archive, {
+                author,
+                recipients: parseNames(val(i, 'recipient')),
+                writtenAt: date,
+                title: val(i, 'label'),
+                body: '',
+                shell: true,
+                status: state === 'sealed' ? 'sealed' : 'sent',
+                appearance: { font: findPerson(this.archive, author)?.hand || 'personal', ...(f.wax ? { wax: f.wax } : {}) },
+                source: { chatId: this.hooks.getChatId(), mes: f.message },
+            });
+            const reader = letter.recipients[0] || '';
+            const when = today || date;
+            const base = { chatId: this.hooks.getChatId(), sentFloor: this.hooks.getFloor(), reader };
+            if (state === 'withVia' && holder) {
+                letter.events = viaReceivedEvents(letter, holder, when, []);
+                letter.delivery = {
+                    ...base, mode: 'instant', status: 'held', stage: 'atVia', via: holder, eta: '',
+                    viaArrivedAt: when, viaArrivedFloor: this.hooks.getFloor(),
+                    leg2: { days: leg, floors: Math.max(1, leg || 2) },
+                    target, viaDeadline: target ? viaDeadline(target, leg) : '',
+                };
+            } else if (state === 'transit') {
+                letter.events = deliveryEvents(letter, '', [], { sentOnly: true });
+                letter.delivery = { ...base, mode: target ? 'date' : 'floors', eta: target, floors: target ? 0 : 8, status: 'transit' };
+            } else if (state === 'delivered') {
+                letter.events = deliveryEvents(letter, '', [], { sentOnly: true });
+                for (const r of letter.recipients) letter.events.push({ id: nextEventId(letter.events), type: 'received', who: r, date: when, segments: null, to: '', note: '' });
+                letter.delivery = { ...base, mode: 'instant', status: 'arrived', eta: when, arrivedAt: when };
+            } else if (state === 'read') {
+                letter.events = deliveryEvents(letter, when, []);
+                letter.delivery = { ...base, mode: 'instant', status: 'viewed', eta: when, arrivedAt: when };
+            } else {
+                letter.events = [];
+                letter.delivery = null;
+            }
+            for (const r of parseNames(val(i, 'readers'))) {
+                if (!letter.events.some(e => e.type === 'read' && e.who === r)) letter.events.push({ id: nextEventId(letter.events), type: 'read', who: r, date: when, segments: null, to: '', note: '' });
+                if (letter.delivery && r === letter.delivery.via) letter.delivery.opened = true;
+            }
+            created.push(letter.id);
+        }
+        this.store.save();
+        this.closeDialog();
+        this.renderPostbox();
+        toastr?.success(`已建立 ${created.length} 封空壳信，正文可以之后再写`);
+        this.show('list');
+    }
+
     confirmImport() {
+        if (this.importMode === 'shell') { this.confirmShellImport(); return; }
         const read = this.root.querySelector('#epi-imp-read')?.checked;
         const items = [...this.root.querySelectorAll('[data-imp]')].filter(c => c.checked).map(c => parseInt(c.dataset.imp, 10));
         if (!items.length) { toastr?.info('没有勾选'); return; }
@@ -1337,6 +1535,7 @@ ${list}`;
                 body: f.text,
                 status: 'sent',
                 appearance: { font: findPerson(this.archive, val(i, 'author'))?.hand || 'personal' },
+                enclosures: extractEnclosures(f.text),
                 source: { chatId: this.hooks.getChatId(), mes: f.mesIndex },
             });
             letter.events = read ? deliveryEvents(letter, date, []) : deliveryEvents(letter, '', [], { sentOnly: true });
@@ -1475,6 +1674,22 @@ ${list}`;
     renderPostbox() {
         const box = this.postbox;
         if (!box) return;
+        // 角色回复里寄给你、还封着的信（两种模式都有）
+        const sealed = this.hooks.getSealed?.() || [];
+        const sealedItems = sealed.map(s => s.received
+            ? `<div class="epi-pb-item epi-pb-new">
+                <div>📬 你收到了 <b>${esc(s.author)}</b> 的信${s.letterIds.length > 1 ? `（${s.letterIds.length} 封）` : ''}</div>
+                <div class="epi-pb-actions"><button class="menu_button" data-pb="unseal" data-mes="${s.mesId}">拆开</button></div></div>`
+            : `<div class="epi-pb-item">
+                <div>✉ <b>${esc(s.author)}</b> 写了一封给你的信，还没到你手里。</div>
+                <div class="epi-muted">剧情里写到你收到了，就会提醒你拆。</div>
+                <div class="epi-pb-actions"><button class="menu_button epi-mini" data-pb="unseal" data-mes="${s.mesId}" title="剧情里其实已经收到了，现在就拆">已经收到了，拆开</button></div></div>`);
+        if (!this.expert) {
+            // 简单模式没有寄送，只有来信
+            box.innerHTML = sealedItems.join('');
+            box.hidden = !sealedItems.length;
+            return;
+        }
         const letters = this.chatLetters();
         const arrived = letters.filter(l => l.delivery.status === 'arrived');
         const follow = letters.filter(l => l.delivery.status === 'viewed' && l.delivery.followup);
@@ -1483,14 +1698,14 @@ ${list}`;
         const viaFollow = letters.filter(l => l.delivery.viaFollowup && l.delivery.status !== 'atVia');
         const held = letters.filter(l => l.delivery.status === 'held');
         const queued = (this.hooks.getInbox?.() || []).filter(i => this.archive.letters[i.letterId]);
-        if (!arrived.length && !follow.length && !transit.length && !atVia.length && !viaFollow.length && !held.length && !queued.length) { box.hidden = true; box.innerHTML = ''; return; }
-        const items = [];
+        if (!arrived.length && !follow.length && !transit.length && !atVia.length && !viaFollow.length && !held.length && !queued.length && !sealedItems.length) { box.hidden = true; box.innerHTML = ''; return; }
+        const items = [...sealedItems];
         for (const i of queued) {
             const l = this.archive.letters[i.letterId];
             items.push(`<div class="epi-pb-item">
                 <div>📖 下一次生成时，<b>${esc(i.reader)}</b> 会读到 ${esc(l.author)} 的信${i.peek ? '（拆开了别人托转交的信）' : ''}。</div>
-                <div class="epi-muted">原文直接交给 AI，不发进聊天。</div>
-                <div class="epi-pb-actions"><button class="menu_button epi-mini" data-pb="open-text" data-id="${esc(l.id)}">看原文</button></div></div>`);
+                ${l.shell ? '<div class="epi-warn">⚠ 这是空壳信，正文还没写。现在 AI 只会写到拆开为止；写好正文以后，下一次生成就会读到。</div>' : '<div class="epi-muted">原文直接交给 AI，不发进聊天。</div>'}
+                <div class="epi-pb-actions">${l.shell ? `<button class="menu_button epi-mini" data-pb="write" data-id="${esc(l.id)}">写正文</button>` : `<button class="menu_button epi-mini" data-pb="open-text" data-id="${esc(l.id)}">看原文</button>`}</div></div>`);
         }
         for (const l of atVia) items.push(this.viaItem(l));
         for (const l of viaFollow) {
@@ -1612,6 +1827,7 @@ ${list}`;
     async onPostboxClick(e) {
         const el = e.target.closest('[data-pb]');
         if (!el) return;
+        if (el.dataset.pb === 'unseal') { await this.hooks.unseal(parseInt(el.dataset.mes, 10)); return; }
         const l = this.archive.letters[el.dataset.id];
         if (!l) return;
         const act = el.dataset.pb;
@@ -1641,6 +1857,9 @@ ${list}`;
             this.store.save();
         } else if (act === 'deliver') {
             this.hooks.deliverNow(l.id);
+        } else if (act === 'write') {
+            this.open('list');
+            this.startEdit(l.id);
         } else if (act === 'open-text') {
             this.open('list');
             this.openReader(l.id);
@@ -1706,6 +1925,12 @@ ${list}`;
             </section>
 
             <section class="epi-sec-card">
+                <h4>🔑 暗号</h4>
+                <p>每封信都有一个暗号，比如 <b>【信1】</b>。在聊天里写上它（连括号一起），那一轮生成时 AI 就会读到这封信的全文；没写暗号，就不会注入。</p>
+                <p class="epi-muted">暗号在写信页的信头里改，信件列表和阅读页里点一下就能复制。暗号本身不会出现在 AI 的回复里。${ex ? '高级模式下，暗号和下面的自动注入、寄送功能同时生效。' : '想要寄送（信在路上走几天）、托人转交、按“谁读过”自动注入，切到「高级」模式。'}</p>
+            </section>
+
+            <section class="epi-sec-card" ${ex ? '' : 'hidden'}>
                 <h4>📮 寄信与送达</h4>
                 <label>当前剧情日期（只对这个聊天）<div class="epi-row"><input class="text_pole" data-chat="storyDate" value="${esc(storyDate)}" placeholder="如 1889-06-08" ${this.hooks.hasChat() ? '' : 'disabled'}><button class="menu_button" data-act="date-now" ${this.hooks.hasChat() ? '' : 'disabled'}>让 AI 推算</button></div></label>
                 ${chk('delivery.autoDate', '自动推算剧情日期', '有在途的信时，每隔几层让 AI 根据最近的对话推算故事里现在是哪天。日期只会往后走。')}
@@ -1716,19 +1941,20 @@ ${list}`;
 
             <section class="epi-sec-card">
                 <h4>🖋 显示</h4>
-                <label>界面模式<select class="text_pole" data-s="mode"><option value="simple" ${s.mode === 'simple' ? 'selected' : ''}>简单：只显示写信需要的东西</option><option value="expert" ${s.mode === 'expert' ? 'selected' : ''}>专家：段落、流转、注入预览全部显示</option></select></label>
+                <label>模式<select class="text_pole" data-s="mode"><option value="simple" ${s.mode === 'simple' ? 'selected' : ''}>简单：存档信件 + 暗号</option><option value="expert" ${s.mode === 'expert' ? 'selected' : ''}>高级：寄送、转交、知情过滤、自动注入，以及段落、流转、注入预览</option></select></label>
                 ${chk('animations', '寄信时的封缄动画、收信时的拆信动画')}
                 ${chk('jitter', '手写随机感（阅读时每个字轻微的歪斜和墨色深浅）')}
                 ${chk('onlineFonts', '在线加载中文书信字体（霞鹜文楷、思源宋体、马善政楷书）', '英文和法文字体已随插件附带；中文字体从 jsDelivr 按需加载，只下载用到的字。关闭后用电脑自带的楷体和宋体（刷新后生效）。')}
-                ${chk('autoKeywords', '简单模式下保存信件时，自动用 AI 生成检索关键词')}
-                ${chk('detectArrival', '剧情里写到收信、拆信时，自动把信的原文交给 AI', '角色的回复（包括它的思考过程）或你自己的消息里，写到收信人收到信（名字 + 收信/来信/拆信等说法 + 送达日期，或者信已经到了），就把原文发进聊天让角色读；写到转交人拆信、转交、扣下，也会照办。还会提醒 AI：已经送到但还没读的信不要自己编内容。')}
+                ${ex ? chk('autoKeywords', '保存信件时，自动用 AI 给没有关键词的段落生成检索关键词') : ''}
+                ${ex ? chk('detectArrival', '剧情里写到收信、拆信时，自动把信的原文交给 AI', '角色的回复（包括它的思考过程）或你自己的消息里，写到收信人收到信（名字 + 收信/来信/拆信等说法 + 送达日期，或者信已经到了），就把原文发进聊天让角色读；写到转交人拆信、转交、扣下，也会照办。还会提醒 AI：已经送到但还没读的信不要自己编内容。') : ''}
+                ${chk('sealIncoming', '角色写给你的信：先藏起来，剧情里收到了再拆（拆信动画以后才看得到内容）', '按格式认出“称呼是你”的信（称呼要对得上你的用户名，或者「人物」页里你的别名）。认出以后存进档案，聊天里只把信的那几段藏起来，旁白照常显示。之后剧情里写到你收到了（AI 的回复、思考，或者你自己写“我收到了信”），右下角提醒你拆；点「拆开」播放拆信动画、打开信纸，藏起来的那几段才露出来。开着流式输出时，一写到给你的称呼，那条消息会先模糊掉。')}
                 ${chk('describeLook', '读信时把信的样子告诉 AI（信纸、墨水、字迹、字号、信封、封口）', '角色收信、读信时，AI 会知道这封信摸上去、看上去是什么样，比如字写得潦草发抖、纸很旧、封着火漆。正文永远会给。')}
                 ${chk('autoFill', '写新信时让 AI 自动填信头（写信人、收信人、日期、地点、语言）', '根据最近的剧情推断，并估算路上要走几天。你自己改过的格子不会被覆盖。写信页里随时可以点「✨ AI 填写」重新填。')}
             </section>
 
             <section class="epi-sec-card">
                 <h4>🧠 注入给 AI</h4>
-                ${chk('enabled', '聊天生成时，把角色知道的相关信件内容注入给 AI')}
+                ${chk('enabled', ex ? '聊天生成时注入信件：暗号点名的信，以及角色知道的相关段落' : '聊天生成时注入暗号点名的信')}
                 ${ex ? `
                 <label>视角角色<select class="text_pole" data-s="viewpointMode">
                     <option value="auto" ${s.viewpointMode === 'auto' ? 'selected' : ''}>跟随当前发言的角色</option>
@@ -1747,7 +1973,7 @@ ${list}`;
                         <option value="2" ${String(s.position) === '2' ? 'selected' : ''}>系统提示词之前</option>
                     </select></label>
                     <label>深度<input type="number" min="0" max="100" class="text_pole" data-s="depth" value="${esc(s.depth)}"></label>
-                </div>` : '<p class="epi-muted">视角、注入预算等更多选项在专家模式里。</p>'}
+                </div>` : '<p class="epi-muted">简单模式只认暗号。按“谁读过、谁知道”自动注入相关段落的功能在高级模式里。</p>'}
             </section>
 
             <section class="epi-sec-card">
@@ -1855,7 +2081,10 @@ ${list}`;
         // 正文第一行已经写了地点日期，就不再在信头重复
         const hasDateline = analyze(l.body)[0]?.lines[0]?.role === 'dateline';
         const place = hasDateline ? '' : formatDateLine(scriptLang(l.language) === 'zh' ? 'zh' : guessLang(l.language), l.placeFrom, l.writtenAt);
-        const attach = l.attachments.length ? `<div class="epi-paper-note">附件：${esc(l.attachments.join('、'))}</div>` : '';
+        const attach = l.enclosures?.length ? `<div class="epi-paper-note epi-enc-read"><b>📎 随信附上</b>${l.enclosures.map(e => {
+            const target = e.kind === 'letter' && e.letterRef ? (this.archive.letters[e.letterRef] || null) : null;
+            return `<div>${target ? `<a href="#" data-act="read" data-id="${esc(target.id)}">${esc(enclosureText(e, { archive: this.archive }))}</a>` : esc(enclosureText(e, { archive: this.archive }))}</div>`;
+        }).join('')}</div>` : '';
         const showSign = l.signature && !l.body.trim().endsWith(l.signature.trim());
         const orig = l.inReplyTo ? this.archive.letters[l.inReplyTo] : null;
         const replies = Object.values(this.archive.letters).filter(x => x.inReplyTo === l.id);
@@ -1867,6 +2096,7 @@ ${list}`;
                         ${l.status !== 'sent' ? `<span class="epi-chip">${esc(STATUSES[l.status])}</span>` : ''}
                         ${l.authenticity !== 'original' ? `<span class="epi-chip">${esc(AUTHENTICITY[l.authenticity])}</span>` : ''}</span>
                     <span class="epi-reader-actions">
+                        ${l.code ? `<button class="menu_button epi-code" data-act="copy-code" data-code="${esc(l.code)}" title="在聊天里写上这个暗号，那一轮 AI 就会读到这封信。点一下复制">暗号 ${esc(l.code)}</button>` : ''}
                         <button class="menu_button" data-act="user-reply" data-id="${esc(l.id)}" title="以 ${esc(recipient || '收件人')} 的身份写回信">✎ 回复这封信</button>
                         ${recipient ? `<button class="menu_button" data-act="reply-open-for" data-id="${esc(l.id)}">↩ 让 ${esc(recipient)} 回信</button>` : ''}
                         ${scriptLang(l.language) === 'lat' ? `<button class="menu_button" data-act="reader-translate" data-id="${esc(l.id)}" title="用 AI 翻译成中文看（只是给你看，不改原信）">🌐 中文译文</button>` : ''}
@@ -1877,7 +2107,7 @@ ${list}`;
                 ${orig ? `<div class="epi-reader-link">↩ 这是对 <a href="#" data-act="read" data-id="${esc(orig.id)}">${esc(orig.author)} ${esc(orig.writtenAt)} 来信</a> 的回复</div>` : ''}
                 <div class="${esc(paperClasses(l))} epi-paper-read" style="${esc(paperStyle(l))}">${paperLayer(l, hashSeed(l.id + l.author))}
                     ${place ? `<div class="epi-paper-place">${esc(place)}</div>` : ''}
-                    <div class="epi-paper-body">${renderBody(l.body, this.renderOpts(l))}</div>
+                    <div class="epi-paper-body">${l.shell ? '<p class="epi-muted">（这封信的正文还没写。点「编辑」写正文。）</p>' : renderBody(l.body, this.renderOpts(l))}</div>
                     ${showSign ? `<div class="epi-paper-sign">${esc(l.signature)}</div>` : ''}
                     ${attach}
                 </div>
@@ -1946,6 +2176,23 @@ ${list}`;
             case 'save': this.saveDraft(); this.rerenderKeepScroll(); break;
             case 'send-open': this.openSendDialog(); break;
             case 'ai-fill': this.aiFillHead(); break;
+            case 'enc-add':
+                this.draft.enclosures.push(normalizeEnclosure({ kind: 'other', name: '' }, this.draft.enclosures.length));
+                this.draft.enclosures.at(-1).id = `ENC${Date.now().toString(36)}`;
+                this.setDirty(); this.rerenderKeepScroll();
+                break;
+            case 'enc-del':
+                this.draft.enclosures.splice(parseInt(el.dataset.i, 10), 1);
+                this.setDirty(); this.rerenderKeepScroll();
+                break;
+            case 'enc-detect': {
+                const found = extractEnclosures(this.draft.body).filter(f => !this.draft.enclosures.some(e => e.name === f.name));
+                found.forEach((f, k) => { f.id = `ENC${Date.now().toString(36)}${k}`; this.draft.enclosures.push(f); });
+                toastr?.[found.length ? 'success' : 'info'](found.length ? `找到 ${found.length} 件，名字和金额可以再改` : '正文里没找到“随信附上……”这样的句子');
+                if (found.length) { this.setDirty(); this.rerenderKeepScroll(); }
+                break;
+            }
+            case 'copy-code': this.copyCode(el.closest('.epi-lh-code') ? normalizeCode(this.draft?.code) : el.dataset.code); break;
             case 'days': {
                 const inp = this.root.querySelector(el.dataset.target);
                 if (inp) inp.value = addDays(el.dataset.base, parseInt(el.dataset.days, 10));
@@ -2226,6 +2473,15 @@ ${list}`;
             if (t.dataset.f === 'language' && e.type === 'change' && !this.presetLang) {
                 this.commitRaw(d); this.rerenderKeepScroll();
             }
+            this.setDirty();
+            return;
+        }
+        if (t.dataset.enc !== undefined && d) {
+            const item = d.enclosures[parseInt(t.dataset.enc, 10)];
+            if (!item) return;
+            item[t.dataset.ef] = t.value;
+            // 换了种类（钱要填金额、另一封信要选信）：重绘这一块
+            if (t.dataset.ef === 'kind' && e.type === 'change') this.rerenderKeepScroll();
             this.setDirty();
             return;
         }

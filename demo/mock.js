@@ -96,6 +96,14 @@ function demoReply() {
     const last = lastUserText();
     const inj = ctx.extensionPrompts.epistolary_letters?.value || '';
     const reaction = ctx.extensionPrompts.epistolary_reaction?.value || '';
+    if (/回信|写信给我|给我写信/.test(last?.mes || '') && !last?.extra?.epistolary) {
+        return `*文森特想了想，铺开信纸，写道：*\n\n亲爱的 E.：\n\n你的信我收到了。这几天麦田全黄了，我每天早上都出去画，风一吹，整片麦子像海浪一样。随信附上一张麦田的速写。\n\n*写到这里，他停下笔，望着窗外的麦田出了一会儿神。*\n\n等秋天到了，我想再画一次星空。\n\n紧握你的手，\n文森特\n\n*他把信折好，交给了邮差。*`;
+    }
+    const code = ctx.extensionPrompts.epistolary_code?.value || '';
+    const codeM = code.match(/【暗号 (\S+) 指的是下面这封信】\n([^\n]*)/);
+    if (codeM) {
+        return `*（演示回复：你在消息里写了暗号 ${codeM[1]}，这一轮 AI 读到了那封信的全文（${codeM[2]}）。真实使用时，角色会按剧情用到信里的内容。注入的原文见右边“本轮注入给 AI 的内容”。）*`;
+    }
     // 书信簿直接注入的信（原文不在聊天里）
     const peekM = reaction.match(/【(.+?) 拆开的这封信/);
     if (peekM) {
@@ -182,17 +190,30 @@ globalThis.__epistolaryDemoMock = async ({ prompt, kind, target }) => {
         const date = (prompt.match(/【当前剧情日期】(\d{4}-\d{2}-\d{2})/) || [])[1] || '1889-06-10';
         const to = (prompt.match(/【当前聊天的角色】(.+)/) || [])[1] || '文森特';
         const where = { 文森特: '圣雷米', 提奥: '巴黎', 高更: '阿旺桥' }[to] || '';
-        return JSON.stringify({ author: 'E.', recipients: [to], writtenAt: date, placeFrom: to === '提奥' ? '巴黎（另一区）' : '巴黎', placeTo: where, language: '法语（中文显示）', travelDays: to === '提奥' ? 1 : 3, note: `演示：E. 在巴黎，${to} 在${where}；1889 年铁路邮政大约要 ${to === '提奥' ? 1 : 3} 天` });
+        return JSON.stringify({ author: 'E.', recipients: [to], writtenAt: date, placeFrom: to === '提奥' ? '巴黎（另一区）' : '巴黎', placeTo: where, language: '法语（中文显示）', travelDays: to === '提奥' ? 1 : 3, enclosures: /附上|附寄|速写/.test(prompt.split('【信的正文】')[1] || '') ? [{ kind: 'sketch', name: '一张星夜的速写', value: '' }] : [], note: `演示：E. 在巴黎，${to} 在${where}；1889 年铁路邮政大约要 ${to === '提奥' ? 1 : 3} 天` });
+    }
+    if (kind === 'shell') {
+        const m = prompt.match(/<<消息 #(\d+)｜[^>]*>>\n[^<]*五只白色信封/);
+        if (!m) return '[]';
+        const months = [['1er juillet', '1890-07-01'], ['1er août', '1890-08-01'], ['1er septembre', '1890-09-01'], ['1er octobre', '1890-10-01'], ['1er novembre', '1890-11-01']];
+        return JSON.stringify(months.map(([label, target]) => ({ message: Number(m[1]), author: '勒鲁', recipients: ['文森特'], writtenAt: '1890-06-27', label, holder: '提奥', target, legDays: 1, state: 'withVia', readers: [], wax: 'crimson', note: '托提奥每月月底寄出的五封信之一（演示）' })));
     }
     if (kind === 'via') {
         globalThis.__viaJudgeCalls = (globalThis.__viaJudgeCalls || 0) + 1;
         const story = prompt.split('【剧情】')[1] || '';
-        const was = prompt.includes('之前已经拆开读过');
-        if (/送过去|重新封好|重新粘好|火漆/.test(story) && was) return JSON.stringify({ opened: true, resealed: !/火漆/.test(story), openly: /火漆|拆阅/.test(story), action: 'forward', envelopeNote: /拆阅核验/.test(story) ? '已由 T. v. G. 拆阅核验。未见恶兆。请宽心阅读。' : '', note: '读完封好，准备转交' });
-        if (/挑开了封口|割开/.test(story) && !was) return '{"opened": true, "action": "unclear", "note": "拆开了信"}';
-        if (/放回抽屉|推了回去/.test(story)) return JSON.stringify({ opened: was, action: 'later', note: '先放着' });
-        if (/照常转交/.test(story)) return '{"opened": false, "action": "forward", "note": "照常转交"}';
-        return JSON.stringify({ opened: was, action: 'unclear', note: '还看不出来' });
+        const list = [...prompt.matchAll(/^#(\d+)：([^\n]*)$/gm)].map(m => ({ n: Number(m[1]), line: m[2], label: (m[2].match(/「(.+?)」/) || [])[1] || '' }));
+        // 剧情提到了哪封（按信封上的字）；都没提就算第一封
+        const lastPart = story.trim().split(/\n\n/).pop() || '';
+        const hit = list.filter(l => l.label && lastPart.includes(l.label));
+        const targets = hit.length ? hit : list.slice(0, 1);
+        return JSON.stringify(targets.map(l => {
+            const was = l.line.includes('之前已经拆开读过');
+            if (/送过去|重新封好|重新粘好|火漆/.test(story) && was) return { n: l.n, opened: true, resealed: !/火漆/.test(story), openly: /火漆|拆阅/.test(story), action: 'forward', envelopeNote: /拆阅核验/.test(story) ? '已由 T. v. G. 拆阅核验。未见恶兆。请宽心阅读。' : '', note: '读完封好，准备转交' };
+            if (/挑开了封口|割开/.test(story) && !was) return { n: l.n, opened: true, action: 'unclear', note: '拆开了信' };
+            if (/放回抽屉|推了回去|压在账册/.test(story)) return { n: l.n, opened: was, action: 'later', note: '先放着' };
+            if (/照常转交/.test(story)) return { n: l.n, opened: false, action: 'forward', note: '照常转交' };
+            return { n: l.n, opened: was, action: 'unclear', note: '还看不出来' };
+        }));
     }
     if (kind === 'reply') {
         const m = prompt.match(/§\d+ ([^\n]{4,40})/g) || [];
@@ -213,11 +234,14 @@ function esc(s) {
 export function renderMessage(msg) {
     const box = document.getElementById('demo-chat');
     const el = document.createElement('div');
-    el.className = `demo-msg ${msg.is_user ? 'user' : 'char'}`;
+    el.className = `demo-msg mes ${msg.is_user ? 'user' : 'char'}`;
+    el.setAttribute('mesid', String(ctx.chat.indexOf(msg)));
+    box.querySelectorAll('.last_mes').forEach(x => x.classList.remove('last_mes'));
+    el.classList.add('last_mes');
     const tag = msg.extra?.epistolary?.kind === 'letter' ? '<span class="demo-tag">✉ 寄出的信</span>'
         : msg.extra?.epistolary?.kind === 'reply' ? '<span class="demo-tag">✉ 回信</span>'
         : msg.extra?.epistolary?.kind === 'via' ? '<span class="demo-tag">🤝 托人转交</span>' : '';
-    el.innerHTML = `<div class="demo-name">${esc(msg.name)} ${tag}</div><div class="demo-text">${esc(msg.mes).replace(/\*(.+?)\*/gs, '<i>$1</i>')}</div>`;
+    el.innerHTML = `<div class="demo-name">${esc(msg.name)} ${tag}</div><div class="demo-text mes_text">${String(msg.mes || '').split(/\n[ \t]*\n/).map(p => `<p>${esc(p).replace(/\*(.+?)\*/gs, '<i>$1</i>')}</p>`).join('')}</div>`;
     box.appendChild(el);
     box.scrollTop = box.scrollHeight;
     return el;
@@ -228,7 +252,8 @@ export function showInjection() {
     const letters = ctx.extensionPrompts.epistolary_letters?.value || '';
     const reaction = ctx.extensionPrompts.epistolary_reaction?.value || '';
     const pending = ctx.extensionPrompts.epistolary_pending?.value || '';
-    el.textContent = [letters, pending, reaction].filter(Boolean).join('\n\n') || '（这一轮没有注入任何内容）';
+    const code = ctx.extensionPrompts.epistolary_code?.value || '';
+    el.textContent = [code, letters, pending, reaction].filter(Boolean).join('\n\n') || '（这一轮没有注入任何内容）';
 }
 
 export function rerenderChat() {

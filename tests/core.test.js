@@ -127,3 +127,24 @@ test('迁移：旧数据缺字段也能读', () => {
     assert.equal(m.letters['LETTER-0001'].status, 'draft');
     assert.deepEqual(m.letters['LETTER-0001'].events, []);
 });
+
+// ---------- 暗号 ----------
+import { normalizeCode, nextCode, lettersByCode, ensureCodes, createArchive as cA, createLetter as cL } from '../src/model.js';
+import { buildCodeBlock } from '../src/correspondence.js';
+
+test('暗号：自动编号、补括号、只认完整暗号', () => {
+    const a = cA();
+    const l1 = cL(a, { author: 'A', recipients: ['B'], body: '正文一' });
+    const l2 = cL(a, { author: 'A', recipients: ['B'], body: '正文二', code: '密信' });
+    assert.equal(l1.code, '【信1】');
+    assert.equal(l2.code, '【密信】');
+    assert.equal(normalizeCode('[x]'), '[x]');
+    assert.equal(nextCode(a), '【信2】');
+    for (let i = 0; i < 9; i++) cL(a, { author: 'A', body: 'x' });
+    assert.deepEqual(lettersByCode(a, '她又读了【信1】').map(l => l.id), [l1.id]);
+    assert.deepEqual(lettersByCode(a, '信1 和 信1】'), []);
+    assert.ok(!lettersByCode(a, '【信10】').some(l => l.id === l1.id));
+    const b = buildCodeBlock(a, l1, {});
+    assert.match(b, /正文一/); assert.match(b, /【信1】/);
+    const old = cA(); old.letters.X = { id: 'X', code: '' }; assert.ok(ensureCodes(old)); assert.equal(old.letters.X.code, '【信1】');
+});

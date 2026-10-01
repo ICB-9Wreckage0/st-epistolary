@@ -1,5 +1,6 @@
 // 书信簿 · 数据模型
 // 纯函数，不依赖酒馆，也不碰 DOM —— 所以可以在 Node 里单独测试。
+import { normalizeEnclosures } from './enclosures.js';
 
 export const SCHEMA_VERSION = 1;
 
@@ -185,9 +186,12 @@ export function normalizeLetter(l, id) {
         language: l.language || '',
         tags: parseTags(l.tags),
         body: typeof l.body === 'string' ? l.body : '',
+        shell: !!l.shell && !String(l.body || '').trim(),          // 空壳信：剧情里已经有了，正文还没写
+        code: normalizeCode(l.code),                              // 暗号：用户消息里出现它，这一轮就把信交给 AI
         segments: Array.isArray(l.segments) ? l.segments.map(normalizeSegment) : [],
         events: Array.isArray(l.events) ? l.events.map(normalizeEvent) : [],
         attachments: Array.isArray(l.attachments) ? l.attachments : [],
+        enclosures: normalizeEnclosures(l.enclosures, l.attachments), // 随信附上的东西：钱、礼物、速写……
         appearance: normalizeAppearance(l.appearance),
         links: { works: [], ...(l.links || {}) },
         inReplyTo: l.inReplyTo || '',   // 回复的是哪封信
@@ -225,9 +229,40 @@ function normalizeEvent(e) {
     };
 }
 
+// ---------- 暗号 ----------
+
+// 没写括号的，自动加上【】：“信1” → “【信1】”
+export function normalizeCode(code) {
+    const c = String(code || '').trim();
+    if (!c) return '';
+    return /^[【\[〔「『《<（({]/.test(c) ? c : `【${c}】`;
+}
+
+// 下一个没被用过的暗号：【信1】【信2】……
+export function nextCode(archive) {
+    const used = new Set(Object.values(archive.letters).map(l => l.code));
+    for (let n = 1; ; n++) if (!used.has(`【信${n}】`)) return `【信${n}】`;
+}
+
+// 一段文字里出现了哪些信的暗号
+export function lettersByCode(archive, text) {
+    const t = String(text || '');
+    if (!t) return [];
+    return Object.values(archive.letters).filter(l => l.code && t.includes(l.code));
+}
+
+// 旧档案里没有暗号的信，按编号顺序补上
+export function ensureCodes(archive) {
+    let changed = false;
+    for (const l of Object.values(archive.letters).sort((a, b) => a.id.localeCompare(b.id))) {
+        if (!l.code) { l.code = nextCode(archive); changed = true; }
+    }
+    return changed;
+}
+
 export function createLetter(archive, partial = {}) {
     const id = nextId(archive, 'letter');
-    const letter = normalizeLetter({ ...partial, id }, id);
+    const letter = normalizeLetter({ ...partial, id, code: partial.code || nextCode(archive) }, id);
     resegment(letter);
     archive.letters[id] = letter;
     return letter;

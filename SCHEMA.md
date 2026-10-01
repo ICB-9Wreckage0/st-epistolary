@@ -1,4 +1,4 @@
-# 书信簿 · 数据结构（schema 1，v0.12）
+# 书信簿 · 数据结构（schema 1，v0.16）
 
 整个档案是一个 JSON 文件。原则只有三条：
 
@@ -41,6 +41,12 @@
       "language": "法语（中文显示）",
       "tags": ["佛罗里达"],        // 整封信的关键词（命中时权重减半）
       "body": "亲爱的提奥：……",   // 逐字原文
+      "enclosures": [                // 随信附上的东西（旧版本的 attachments 字符串数组会自动转成这个）
+        { "id": "ENC1", "kind": "money", "name": "五枚二十法郎金币", "value": "100 法郎", "desc": "用亚麻布包着", "letterRef": "" }
+        // kind：money 钱 | sketch 速写 | photo 照片 | flower 压花 | gift 礼物 | document 附页 | letter 另一封信（letterRef = 信的编号）| other
+      ],
+      "code": "【信1】",           // 暗号：用户消息里出现它，那一轮就把这封信交给 AI（唯一）
+      "shell": false,              // 空壳信：剧情里已经有这封信了，正文还没写（写了正文自动变 false）
 
       "segments": [
         {

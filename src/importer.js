@@ -9,7 +9,7 @@ const SALUTATION = /^(亲爱的|敬爱的|尊敬的|最亲爱的|致|吾)|^(Dear
 const NAME_SALUTATION = /^[^\s，,。.!！?？]{1,12}[：:,，]\s*$/;
 const NARRATION = /(写下|写道|写着|写了|信中|信上|信里|说|道|écrivit|écrit|wrote|writes|schrieb|said|says)/i;
 
-function isSalutation(line) {
+export function isSalutation(line) {
     const l = String(line || '').trim();
     if (!l || l.length > 40) return false;
     if (SALUTATION.test(l)) return true;
@@ -76,8 +76,29 @@ function guessDate(text) {
  * 按格式识别一条消息里的信
  * @returns {Array<{text, salutation, signoff}>}
  */
+// 信中间夹着的旁白：整段包在 *星号* 或（括号）里，或者是第三人称的写信动作（“他停下笔，想了想”）
+const NARR_BREAK = /(停下笔|停了笔|搁下笔|放下笔|顿了顿|想了想|写到这里|写到这儿|抬起头|抬头看|叹了口气|蘸了蘸墨|蘸墨|又写道|继续写|接着写|笔尖|划掉|涂掉|揉掉|paused|stopped writing|set down (?:the|his|her) pen|dipped (?:the|his|her) pen|crossed out|went on writing)/i;
+
+function rawParagraphs(text) {
+    return String(text || '').replace(/\r\n?/g, '\n').split(/\n[ \t　]*\n/).filter(p => p.trim()).map(raw => {
+        const lines = raw.split('\n').filter(l => l.trim());
+        const t = raw.trim();
+        return {
+            text: clean(raw).replace(/^\n+|\n+$/g, ''),
+            quoted: lines.length > 0 && lines.every(l => /^\s*>/.test(l)),
+            wrapped: /^\*[^*][\s\S]*\*$/.test(t) || /^_[^_][\s\S]*_$/.test(t) || /^[（(][\s\S]*[）)]$/.test(t),
+        };
+    }).filter(p => p.text.trim());
+}
+
+function looksLikeNarration(p) {
+    const t = p.text.trim();
+    return t.length <= 160 && NARR_BREAK.test(t) && !/我/.test(t) && !/\b(I|my|je|mon|ma)\b/i.test(t);
+}
+
 export function detectInMessage(text) {
-    const ps = paragraphs(text);
+    const raws = rawParagraphs(text);
+    const ps = raws.map(p => p.text);
     const out = [];
     let i = 0;
     while (i < ps.length) {
@@ -118,9 +139,17 @@ export function detectInMessage(text) {
             }
             break;
         }
-        const body = ps.slice(begin, stop + 1).join('\n\n');
+        // 去掉夹在信中间的旁白：信是引用格式（>）时，不在引用里的段落都是旁白
+        const quotedMode = raws[startIdx].quoted;
+        const parts = [];
+        for (let k = begin; k <= stop; k++) {
+            const r = raws[k];
+            if (k !== startIdx && (r.wrapped || (quotedMode && !r.quoted) || looksLikeNarration(r))) continue;
+            parts.push(r.text);
+        }
+        const body = parts.join('\n\n');
         if (body.replace(/\s/g, '').length >= 30) {
-            out.push({ text: body, salutation, signoff: lastLine(ps[stop]) });
+            out.push({ text: body, salutation, signoff: lastLine(parts[parts.length - 1] || ps[stop]), parts });
         }
         i = stop + 1;
     }
@@ -178,13 +207,14 @@ export function buildImportPrompt(chunk) {
 - message：所在消息的编号（数字）
 - start：信的第一句话，**从原文逐字复制**前 12 到 20 个字
 - end：信的最后一句话（通常是署名），**从原文逐字复制**最后 6 到 16 个字
+- skip：如果信写到一半夹着旁白或动作描写（比如“他停下笔，望着窗外想了很久。”），把这些旁白段落的开头 8 到 15 个字**逐字复制**列出来（数组），没有就空数组
 - author：写信人
 - recipient：收信人
 - date：信上写的日期或剧情里的日期，格式 YYYY-MM-DD，不知道就留空字符串
 - place：写信地点，不知道就留空字符串
 
 只输出一个 JSON 数组，例如：
-[{"message": 12, "start": "亲爱的提奥：近来可好", "end": "紧握你的手，文森特", "author": "文森特", "recipient": "提奥", "date": "1889-06-05", "place": "圣雷米"}]
+[{"message": 12, "start": "亲爱的提奥：近来可好", "end": "紧握你的手，文森特", "skip": ["他停下笔，望着窗外"], "author": "文森特", "recipient": "提奥", "date": "1889-06-05", "place": "圣雷米"}]
 没有找到任何信，就输出 []。
 
 【聊天记录】
@@ -242,4 +272,86 @@ export function findDuplicate(archive, text) {
         if (shorter.length > 40 && longer.includes(shorter.slice(0, Math.min(60, shorter.length))) && shorter.length / longer.length > 0.8) return l.id;
     }
     return null;
+}
+
+// ---------- 空壳信：剧情里已经有了、但正文还没写出来的信 ----------
+
+export const SHELL_STATES = {
+    sealed: '写好封好了，还没寄',
+    transit: '在路上',
+    withVia: '在转交人 / 保管人手里',
+    delivered: '送到了，还没拆',
+    read: '已经拆开读过',
+};
+
+export function buildShellPrompt(chunk, { userName = '', storyDate = '' } = {}) {
+    const system = '你是书信档案整理员。你只负责从剧情里找出“提到了、但正文没有写出来”的信，不替任何人写信的内容。只输出 JSON。';
+    const body = chunk.map(m => `<<消息 #${m.idx}｜${m.name}>>\n${m.text}`).join('\n\n');
+    const prompt = `下面是一段角色扮演的聊天记录，每条消息前标有编号。${userName ? `用户扮演的角色是 ${userName}。` : ''}${storyDate ? `当前剧情日期是 ${storyDate}。` : ''}
+请找出剧情里**已经存在、但正文没有写出来**的信：比如“他写了五封信封好交给提奥”“信使带来了一封信”“抽屉里还压着三封没寄的信”。
+不要列出正文已经完整写在聊天里的信，也不要列出只是“打算写”、还没写的信。
+如果一次提到好几封（比如五封），**每封单独列一项**，用信封上的字或顺序区分。
+
+每封信输出：
+- message：最早提到它的消息编号（数字）
+- author：写信人
+- recipients：收信人（数组）
+- writtenAt：写信日期，YYYY-MM-DD，不知道就空字符串
+- label：信封上写的字（照原文，比如“1er juillet”“请先拆这个”），没有就空字符串
+- holder：这封信现在在谁手里、由谁转交或保管（不是收信人本人时才填），没有就空字符串
+- target：应该在哪天送到收信人手里，YYYY-MM-DD，不知道就空字符串
+- legDays：从保管人那里寄到收信人手里大约要走几天（整数），不知道就 1
+- state：sealed（写好封好、还没寄）| transit（在路上）| withVia（在转交人 / 保管人手里）| delivered（送到了还没拆）| read（已经拆开读过）
+- readers：已经读过这封信的人（数组，没有就空数组）
+- wax：封口的样子，按剧情选一个：crimson（红火漆）| navy | forest | black（黑火漆）| gold | chop（中式印章）| none（胶封或没写）
+- note：一句话说明依据
+
+只输出 JSON 数组，例如：
+[{"message": 649, "author": "勒鲁", "recipients": ["文森特"], "writtenAt": "1890-06-27", "label": "1er juillet", "holder": "提奥", "target": "1890-07-01", "legDays": 1, "state": "withVia", "readers": [], "wax": "crimson", "note": "托提奥每月月底寄出的五封信之一"}]
+没有就输出 []。
+
+【聊天记录】
+${body}`;
+    return { system, prompt };
+}
+
+export function parseShellResponse(text) {
+    const m = String(text || '').match(/\[[\s\S]*\]/);
+    if (!m) return [];
+    let arr;
+    try { arr = JSON.parse(m[0]); } catch { return []; }
+    if (!Array.isArray(arr)) return [];
+    const str = v => (typeof v === 'string' ? v.trim() : '');
+    const date = v => (/^\d{1,4}-\d{1,2}-\d{1,2}$/.test(str(v)) ? str(v) : '');
+    return arr.filter(x => x && typeof x === 'object').map(x => ({
+        message: Number(x.message) || 0,
+        author: str(x.author),
+        recipients: (Array.isArray(x.recipients) ? x.recipients : String(x.recipients || '').split(/[,，、]/)).map(s => String(s).trim()).filter(Boolean),
+        writtenAt: date(x.writtenAt),
+        label: str(x.label),
+        holder: str(x.holder),
+        target: date(x.target),
+        legDays: Math.max(0, Math.min(60, parseInt(x.legDays, 10) || 1)),
+        state: SHELL_STATES[x.state] ? x.state : (str(x.holder) ? 'withVia' : 'sealed'),
+        readers: (Array.isArray(x.readers) ? x.readers : []).map(s => String(s).trim()).filter(Boolean),
+        wax: ['crimson', 'navy', 'forest', 'black', 'gold', 'chop', 'none'].includes(x.wax) ? x.wax : '',
+        note: str(x.note).slice(0, 120),
+    })).filter(x => x.author || x.recipients.length);
+}
+
+// 档案里是不是已经有这封空壳信了（同一个写信人、收信人、信封上的字）
+export function findShellDuplicate(archive, s) {
+    const key = l => [l.author, (l.recipients || []).join('、'), l.title || ''].join('|');
+    const k = key({ author: s.author, recipients: s.recipients, title: s.label });
+    return Object.values(archive.letters).find(l => key(l) === k && (l.shell || !!s.label))?.id || '';
+}
+
+// 去掉 AI 指出的旁白段落（按段落开头逐字比对）
+export function dropParagraphs(text, skips) {
+    const list = (Array.isArray(skips) ? skips : []).map(normalizeSpace).filter(x => x.length >= 4);
+    if (!list.length) return text;
+    return String(text || '').split(/\n[ \t　]*\n/).filter(p => {
+        const flat = normalizeSpace(p).replace(/^[*_（(]+/, '');
+        return !list.some(sk => flat.startsWith(sk.replace(/^[*_（(]+/, '')));
+    }).join('\n\n');
 }

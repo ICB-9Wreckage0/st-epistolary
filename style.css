@@ -1245,3 +1245,32 @@
 /* ---- 外观选项的含义 ---- */
 .epi-meaning { display: inline-block; margin-top: 2px; opacity: 0.9; }
 .epi-meaning-warn { color: #e0a24a; opacity: 1; }
+.epi-shell { border-color: #9aa7b8 !important; color: #b9c4d2; border-style: dashed !important; }
+
+/* ---- 暗号 ---- */
+.epi-code { font-family: inherit; cursor: copy; border-color: var(--epi-accent, #e8b86b) !important; color: var(--epi-accent, #e8b86b); background: transparent; }
+button.epi-chip.epi-code { padding: 0 8px; border-radius: 999px; border: 1px solid; font-size: 0.85em; line-height: 1.7; margin: 0; }
+.epi-lh-code { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#epi-root .epi-letterhead .epi-code-input { width: 9em !important; flex: 0 0 auto; font-weight: bold; color: var(--epi-accent, #e8b86b); }
+.epi-letterhead .epi-lh-code .epi-muted { white-space: normal; font-size: 0.88em; }
+
+/* ---- 随信附上 ---- */
+.epi-enc { max-width: 760px; margin: 14px auto 0; padding: 10px 12px; border: 1px dashed var(--SmartThemeBorderColor, rgba(255,255,255,.2)); border-radius: 8px; display: flex; flex-direction: column; gap: 8px; }
+.epi-enc-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.epi-enc-row { display: grid; grid-template-columns: 9.5em minmax(0, 1.4fr) auto minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.epi-enc-row .epi-enc-value { width: 8em !important; }
+.epi-enc-row:not(:has(.epi-enc-value)) { grid-template-columns: 9.5em minmax(0, 1.4fr) minmax(0, 1fr) auto; }
+.epi-enc-read b { display: block; margin-bottom: 4px; }
+@media (max-width: 760px) {
+    .epi-enc-row, .epi-enc-row:not(:has(.epi-enc-value)) { grid-template-columns: minmax(0, 1fr) auto; }
+    .epi-enc-row > * { grid-column: 1 / 2; }
+    .epi-enc-row > .menu_button { grid-column: 2; grid-row: 1; }
+}
+
+/* ---- 来信先封起来 ---- */
+.mes.epi-sealing .mes_text { filter: blur(7px); user-select: none; transition: filter .3s; }
+.epi-sealed-card { display: flex; align-items: center; gap: 12px; margin: 6px 0; padding: 10px 14px; border: 1px solid var(--SmartThemeQuoteColor, #e8b86b); border-radius: 10px; background: rgba(232, 184, 107, 0.08); }
+.epi-sealed-env { font-size: 28px; line-height: 1; }
+.epi-sealed-info { flex: 1; min-width: 0; }
+.epi-sealed-card .menu_button { width: auto !important; white-space: nowrap; margin: 0; }
+.mes .epi-letter-hidden { display: none !important; }

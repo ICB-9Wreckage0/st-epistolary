@@ -3,6 +3,7 @@
 
 import { findPerson, sameName, segmentPosition, normalizeDate } from './model.js';
 import { effectiveWobble, normalizeHand, INKS } from './render.js';
+import { enclosuresForAI, enclosureFeel, ENCLOSURE_KINDS } from './enclosures.js';
 
 // ---------- 日期 ----------
 
@@ -252,6 +253,7 @@ export function buildReactionGuidance(archive, letter, reader, arrival, extra = 
             `- ${reader} 只知道信里写到的内容和自己本来就知道的事。不要复述整封信。`,
         );
         if (person?.historical) lines.push(`- ${reader} 是真实历史人物，反应要符合此人在这个时期的真实状况和性格。`);
+        if (letter.enclosures?.length) lines.push(enclosuresForAI(letter, archive));
         if (extra.look) lines.push(...lookLines(archive, letter, { envelope: false }));
         return lines.join('\n');
     }
@@ -274,6 +276,7 @@ export function buildReactionGuidance(archive, letter, reader, arrival, extra = 
     if (person?.historical) {
         lines.push(`- ${reader} 是真实历史人物，反应、想法和说话方式要符合此人在这个时期的真实状况和性格。`);
     }
+    if (letter.enclosures?.length) lines.push(`${enclosuresForAI(letter, archive)}收信人会注意到它们，可以对它们有反应。`);
     if (extra.look) lines.push(...lookLines(archive, letter));
     return lines.join('\n');
 }
@@ -314,52 +317,64 @@ export function buildViaGuidance(archive, letter, via, arrival, { look = false }
     ];
     if (person?.historical) lines.push(`- ${via} 是真实历史人物，做法要符合此人在这个时期的真实状况和性格。`);
     if (look) lines.push(...lookLines(archive, letter, { paper: false }));
+    else if (enclosureFeel(letter)) lines.push(`信封：${enclosureFeel(letter)}。`);
     return lines.join('\n');
 }
 
 export const VIA_ACTIONS = { forward: '转交', later: '先留着', withhold: '不转交' };
 
 // 让 AI 从转交人那一段剧情里判断：拆没拆、打算怎么办
-export function buildViaDecisionPrompt(via, recipient, text, { opened = false, held = false } = {}) {
+// letters：同一个转交人手里的几封信 [{ n, recipient, label, target, opened, held }]
+export function buildViaDecisionPrompt(via, letters, text) {
     const system = '你是剧情记录员，只输出 JSON。';
-    const known = [
-        opened ? `${via} 之前已经拆开读过这封信了。` : '',
-        held ? `${via} 之前已经决定先把信留着。` : '',
-    ].filter(Boolean).join('');
-    const prompt = `下面是一段角色扮演的最近剧情（可能包括角色的思考过程）。${via} 手里有一封别人托 TA 转交给 ${recipient} 的信。${known}
-请根据剧情判断 ${via} 现在的状态：
-1. opened：${via} 有没有拆开这封信（拆开、划开、偷看都算；只是隔着信封对光看、摸厚度不算）？
-2. action：${via} 对这封信的打算——
-   - forward：转交。已经寄出、交给送信人、亲手送去，或者已经准备好要送（重新封好、在信封上写了给收信人的话、放进要寄的信里）都算。
-   - later：先压着、放回抽屉、等某个日子再说。
-   - withhold：不交了、扣下、烧掉、退回。
-   - unclear：剧情里还看不出来。
-3. resealed：拆开过的话，有没有把封口弄回原样、让人看不出被拆过？
-4. openly：拆开过的话，是不是光明正大、不打算隐瞒（比如有写信人的授权、在信封上注明自己拆阅过、换上自己的火漆印）？
-5. envelopeNote：${via} 在信封上写的字或附上的字条（照原文抄，外语就抄外语原文和括号里的翻译），没有就空字符串。
-6. note：一句中文概括。
+    const list = letters.map(l => `#${l.n}：给 ${l.recipient}${l.label ? `，信封上写着「${l.label}」` : ''}${l.target ? `，该在 ${l.target} 前送到` : ''}${l.opened ? '（之前已经拆开读过）' : ''}${l.held ? '（之前决定先留着）' : ''}`).join('\n');
+    const prompt = `下面是一段角色扮演的最近剧情（可能包括角色的思考过程）。${via} 手里有${letters.length > 1 ? ` ${letters.length} 封` : '一封'}别人托 TA 转交的信：
+${list}
 
-只输出一行 JSON，例如：{"opened": true, "resealed": false, "openly": true, "action": "forward", "envelopeNote": "已由 T. 拆阅核验。", "note": "他拆阅后用自己的火漆重新封好，准备转交"}
+请根据剧情，**逐封**判断 ${via} 对每封信做了什么。剧情只动了其中一封的话，其他几封照旧（opened 保持原样，action 写 unclear）。分不清剧情说的是哪一封时，按信封上的字、日期、顺序来对。
+- opened：有没有拆开这封信（拆开、划开、偷看都算；只是隔着信封对光看、摸厚度不算）
+- action：forward（转交：已经寄出、交给送信人、亲手送去，或者已经准备好要送——重新封好、在信封上写了给收信人的话、放进要寄的信里——都算）| later（先压着、放回抽屉、等某个日子再说）| withhold（不交了、扣下、烧掉、退回）| unclear（剧情里看不出来）
+- resealed：拆开过的话，有没有把封口弄回原样、让人看不出被拆过
+- openly：拆开过的话，是不是光明正大、不打算隐瞒（有写信人授权、在信封上注明拆阅过、换上自己的火漆印）
+- envelopeNote：在信封上写的字或附上的字条（照原文抄），没有就空字符串
+- note：一句中文概括
+
+只输出 JSON 数组，每封一项，例如：
+[{"n": 1, "opened": true, "resealed": false, "openly": true, "action": "forward", "envelopeNote": "已由 T. 拆阅核验。", "note": "拆阅后换上自己的火漆，准备转交"}]
 
 【剧情】
 ${text}`;
     return { system, prompt };
 }
 
+function oneDecision(j) {
+    const action = ['forward', 'later', 'withhold'].includes(j.action) ? j.action : 'unclear';
+    return {
+        n: Number(j.n) || 1,
+        opened: !!j.opened, resealed: !!j.resealed, openly: !!j.openly, action,
+        envelopeNote: String(j.envelopeNote || '').slice(0, 300),
+        note: String(j.note || '').slice(0, 80),
+    };
+}
+
+// 返回第一封的判断（只有一封信时用）
 export function parseViaDecision(text) {
-    const m = String(text || '').match(/\{[\s\S]*\}/);
-    if (!m) return null;
-    try {
-        const j = JSON.parse(m[0]);
-        const action = ['forward', 'later', 'withhold'].includes(j.action) ? j.action : 'unclear';
-        return {
-            opened: !!j.opened, resealed: !!j.resealed, openly: !!j.openly, action,
-            envelopeNote: String(j.envelopeNote || '').slice(0, 300),
-            note: String(j.note || '').slice(0, 80),
-        };
-    } catch {
-        return null;
+    return parseViaDecisions(text)[0] || null;
+}
+
+// 返回每封信的判断
+export function parseViaDecisions(text) {
+    const t = String(text || '');
+    const arr = t.match(/\[[\s\S]*\]/);
+    if (arr) {
+        try {
+            const j = JSON.parse(arr[0]);
+            if (Array.isArray(j)) return j.filter(x => x && typeof x === 'object').map(oneDecision);
+        } catch { /* 试试单个对象 */ }
     }
+    const obj = t.match(/\{[\s\S]*\}/);
+    if (!obj) return [];
+    try { return [oneDecision(JSON.parse(obj[0]))]; } catch { return []; }
 }
 
 // 转交人收到：只知道有这封信
@@ -524,10 +539,11 @@ ${cur}
 - placeFrom 寄出地、placeTo 寄往地：写信人和收信人此刻所在的地方，用剧情里的地名，尽量具体到城市或地点。
 - language 两人实际用什么语言通信，如“法语”“英语”；如果是用中文写出来、但人物之间其实说外语，写成“法语（中文显示）”；就是中文写空字符串。
 - travelDays：按故事的时代、两地距离和交通方式，估计这封信路上要走几天（整数）。同城当天或一两天，跨国一周左右，跨洋两三周以上。
+- enclosures：信里或剧情里提到随信附上、夹在信里的东西（钱、礼物、速写、照片、压花、附页、另一封信……），数组，每项 {"kind": "money|sketch|photo|flower|gift|document|letter|other", "name": "是什么", "value": "钱的数目，不是钱就空"}。没有就空数组。
 - 推断不出的字段留空字符串，不要编造。
 
 只输出一行 JSON，例如：
-{"author":"E.","recipients":["文森特"],"writtenAt":"1889-06-10","placeFrom":"巴黎","placeTo":"圣雷米","language":"法语（中文显示）","travelDays":3,"note":"一句话说明依据"}`;
+{"author":"E.","recipients":["文森特"],"writtenAt":"1889-06-10","placeFrom":"巴黎","placeTo":"圣雷米","language":"法语（中文显示）","travelDays":3,"enclosures":[{"kind":"money","name":"五枚二十法郎金币","value":"100 法郎"}],"note":"一句话说明依据"}`;
     return { system, prompt };
 }
 
@@ -547,6 +563,10 @@ export function parseFill(text) {
     const n = parseInt(j.travelDays, 10);
     if (Number.isFinite(n) && n >= 0 && n <= 365) out.travelDays = n;
     if (str(j.note)) out.note = str(j.note).slice(0, 120);
+    if (Array.isArray(j.enclosures)) {
+        out.enclosures = j.enclosures.filter(e => e && typeof e === 'object' && str(e.name)).slice(0, 12)
+            .map(e => ({ kind: ENCLOSURE_KINDS[e.kind] ? e.kind : 'other', name: str(e.name), value: str(e.value) }));
+    }
     return out;
 }
 
@@ -565,7 +585,8 @@ export function describeEnvelope(letter) {
     const a = letter.appearance || {};
     const env = LOOK_ENVELOPE[a.envelope] || '信封';
     const seal = a.wax === 'none' ? '用胶水封着口' : `封口压着${LOOK_WAX[a.wax] || '火漆'}`;
-    const thick = (letter.body || '').length > 1500 ? '，摸上去很厚' : '';
+    const feel = enclosureFeel(letter);
+    const thick = feel ? `，${feel}` : (letter.body || '').length > 1500 ? '，摸上去很厚' : '';
     return `${env}，${seal}${thick}`;
 }
 
@@ -673,4 +694,26 @@ export function inlineGuidance(text) {
 export function viaDeadline(target, legDays) {
     if (!normalizeDate(target)) return '';
     return addDays(target, -Math.max(0, legDays || 0));
+}
+
+// ---------- 暗号：用户消息里写了某封信的暗号，这一轮把整封信交给 AI ----------
+
+export function buildCodeBlock(archive, letter, { look = false } = {}) {
+    const head = [
+        letter.author && `写信人：${letter.author}`,
+        letter.recipients?.length && `收信人：${letter.recipients.join('、')}`,
+        letter.writtenAt && `写信日期：${letter.writtenAt}`,
+        (letter.placeFrom || letter.placeTo) && `${letter.placeFrom || '?'} → ${letter.placeTo || '?'}`,
+        letter.language && `语言：${letter.language}`,
+    ].filter(Boolean).join('；');
+    const lines = [`【暗号 ${letter.code} 指的是下面这封信】`, head];
+    if (look) lines.push(...lookLines(archive, letter).slice(0, 2));
+    if (letter.shell || !String(letter.body || '').trim()) {
+        lines.push('这封信的正文还没写好。剧情里如果有人读它，只写到拆开为止，不要编造内容。');
+    } else {
+        lines.push('原文：', letter.body, '【原文完】');
+    }
+    if (letter.enclosures?.length) lines.push(enclosuresForAI(letter, archive));
+    lines.push(`用户在消息里写了 ${letter.code}，表示这一轮剧情要用到这封信（比如有人读它、提起它、拿着它）。按剧情需要使用，可以引用信里的句子，不要整封复述，也不要在回复里写出“${letter.code}”这个暗号本身。`);
+    return lines.filter(Boolean).join('\n');
 }

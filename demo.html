@@ -30,6 +30,8 @@
     .demo-name { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
     .demo-tag { color: var(--accent); margin-left: 6px; }
     .demo-text { white-space: pre-wrap; word-break: break-word; }
+    .demo-text p { margin: 0 0 .6em; }
+    .demo-text p:last-child { margin-bottom: 0; }
     .demo-input { display: flex; gap: 8px; margin-top: 10px; }
     .demo-input textarea { flex: 1; min-height: 44px; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
@@ -61,7 +63,7 @@
         </div>
         <div id="demo-chat"></div>
         <div class="demo-input">
-            <textarea id="demo-text" class="text_pole" placeholder="试着提到信里的内容，比如：你还记得她信里写的那种蓝色的鸟吗？"></textarea>
+            <textarea id="demo-text" class="text_pole" placeholder="试试：在消息里写上信的暗号，比如“文森特又把【信2】读了一遍”；或者说“给我回信吧”，再说“第二天，我收到了文森特的信”，看看来信怎么先藏起来、收到了才拆。"></textarea>
             <button class="menu_button" id="demo-send">发送</button>
         </div>
     </section>
@@ -73,7 +75,7 @@
                     <option>文森特</option><option>提奥</option><option>高更</option>
                 </select>
             </div>
-            <p class="hint">切换角色，再发一句提到信件内容的话，看看不同的人各自“记得”什么。文森特只听提奥念过讲鸟的那一段，提奥读过全文，高更什么都不知道。</p>
+            <p class="hint">简单模式：打开书信簿，每封信都有暗号（如【信1】）。在消息里写上暗号，这一轮 AI 就会读到那封信，右边能看到注入了什么。<br>高级模式（书信簿右上角切换）：还有寄送、托人转交，以及按“谁读过”自动注入——切换角色，再发一句提到信件内容的话，看看不同的人各自“记得”什么。</p>
         </section>
         <section class="card" style="margin-top:14px">
             <h2>本轮注入给 AI 的内容</h2>

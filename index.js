@@ -5,28 +5,32 @@
 import { Store } from './src/store.js';
 import { UI } from './src/ui.js';
 import { retrieve, DEFAULT_RETRIEVAL } from './src/retrieval.js';
-import { sameName, normalizeDate, findPerson } from './src/model.js';
+import { sameName, normalizeDate, findPerson, lettersByCode, ensureCodes, createLetter } from './src/model.js';
 import {
     buildReactionGuidance, replyChatMessage, sceneSwitchMessage, sceneReturnMessage,
     deliveryEvents, buildDatePrompt, parseStoryDate, addDays,
-    viaSceneMessage, viaPeekMessage, buildViaGuidance, buildViaDecisionPrompt, parseViaDecision,
+    viaSceneMessage, viaPeekMessage, buildViaGuidance, buildViaDecisionPrompt, parseViaDecisions,
     viaReceivedEvents, nextEventId, VIA_ACTIONS,
-    mentionsReceipt, mentionsDate, mentionsName, buildPendingHints, inlineLetterBlock, inlineGuidance,
+    mentionsReceipt, mentionsDate, mentionsName, buildPendingHints, inlineLetterBlock, inlineGuidance, buildCodeBlock,
 } from './src/correspondence.js';
 import { playSeal, playOpen } from './src/envelope.js';
+import { detectInMessage, guessRecipient, guessAuthor, findDuplicate, isSalutation } from './src/importer.js';
+import { extractEnclosures } from './src/enclosures.js';
 import { callAI, DEFAULT_API } from './src/api.js';
 
 const MODULE = 'epistolary';
 const PROMPT_KEY = 'epistolary_letters';
 const REACTION_KEY = 'epistolary_reaction';
 const PENDING_KEY = 'epistolary_pending';
+const CODE_KEY = 'epistolary_code';
 
 const DEFAULT_SETTINGS = {
     enabled: true,
-    mode: 'simple',          // simple 简单模式 | expert 专家模式
+    mode: 'simple',          // simple 简单模式：存档 + 暗号 | expert 高级模式：寄送、转交、知情过滤、自动注入
     autoKeywords: true,      // 简单模式下，保存时自动让 AI 生成关键词
     autoFill: true,          // 写新信时让 AI 根据剧情填信头
     describeLook: true,
+    sealIncoming: true,      // 角色回复里出现寄给你的信：先封起来，拆信动画以后才显示
     detectArrival: true,     // 剧情里（包括 AI 的思考）写到收信人收到信、转交人动了信，就自动处理      // 收信反应时，把信纸、墨水、字迹、字号、信封、封口告诉 AI
     animations: true,        // 寄信封缄、收信拆信动画
     jitter: true,            // 手写随机感
@@ -48,6 +52,7 @@ const DEFAULT_SETTINGS = {
 };
 
 const ctx = () => SillyTavern.getContext();
+const isSimple = () => settings().mode !== 'expert';
 
 // 中文字体很大，不随插件附带，按需从 jsDelivr 加载：字体被切成很多小片，
 // 信里用到哪些字才下载哪些片，下载过的会被浏览器缓存。
@@ -165,6 +170,7 @@ function inbox() {
 
 // 排队：下一次生成时把这封信的原文交给 AI
 function queueLetter(letter, { reader, arrival = '', peek = false }) {
+    if (letter.shell) toastr.warning(`${letter.author} 的这封信还是空壳，正文还没写。写好以前，AI 只会写到拆开为止。`, '📄 空壳信', { timeOut: 8000 });
     const box = inbox();
     if (box.some(i => i.letterId === letter.id && i.reader === reader && !i.answeredAt)) return;
     box.push({ letterId: letter.id, reader, arrival, peek, queuedAt: floor(), answeredAt: 0 });
@@ -184,7 +190,12 @@ function activeInbox() {
 function markInboxAnswered() {
     const f = floor();
     let changed = false;
-    for (const i of inbox()) if (!i.answeredAt && f > i.queuedAt) { i.answeredAt = f; changed = true; }
+    for (const i of inbox()) {
+        if (i.answeredAt || f <= i.queuedAt) continue;
+        if (store.archive.letters[i.letterId]?.shell) continue; // 空壳信：等正文写好再算读过
+        i.answeredAt = f;
+        changed = true;
+    }
     if (changed) saveMeta();
 }
 
@@ -194,6 +205,11 @@ function reactionGuidance() {
     for (const i of activeInbox()) {
         const letter = store.archive.letters[i.letterId];
         if (!letter) continue;
+        if (letter.shell) {
+            // 空壳信：正文还没写，不能让 AI 自己编
+            parts.push(`【${i.reader} ${i.peek ? '拆开的' : '收到的'}这封信（${letter.author} 写的${letter.title ? `，信封上写着「${letter.title}」` : ''}），正文还没有定下来】\n描写 ${i.reader} 拆信、展开信纸为止，或者写 TA 拿着信的样子。**不要编造信里写了什么**，原文会之后给出。`);
+            continue;
+        }
         const g = buildReactionGuidance(store.archive, letter, i.reader, i.arrival, { peek: i.peek, look });
         parts.push(`${inlineLetterBlock(letter, i.reader, i.arrival, { peek: i.peek })}\n\n${inlineGuidance(g)}`);
     }
@@ -208,6 +224,22 @@ function reactionGuidance() {
     return parts.join('\n\n');
 }
 
+// 最近一条用户消息里写了哪些信的暗号
+function codeLetters() {
+    const chat = ctx().chat || [];
+    for (let i = chat.length - 1; i >= 0; i--) {
+        const m = chat[i];
+        if (!m || m.is_system) continue;
+        if (m.is_user) return lettersByCode(store.archive, m.mes);
+    }
+    return [];
+}
+
+function codeInjection() {
+    const look = settings().describeLook !== false;
+    return codeLetters().map(l => buildCodeBlock(store.archive, l, { look })).join('\n\n');
+}
+
 function runRetrieval() {
     const s = settings();
     const viewer = getViewer();
@@ -215,7 +247,7 @@ function runRetrieval() {
     // 用原始聊天记录（带消息附加信息），而不是拦截器拿到的副本
     const msgs = recentMessages(ctx().chat, s.scanDepth);
     const texts = msgs.map(m => m.mes).reverse();
-    const exclude = new Set([...msgs.map(m => m.extra?.epistolary?.letterId), ...activeInbox().map(i => i.letterId)].filter(Boolean));
+    const exclude = new Set([...msgs.map(m => m.extra?.epistolary?.letterId), ...activeInbox().map(i => i.letterId), ...codeLetters().map(l => l.id)].filter(Boolean));
     const result = retrieve(store.archive, { texts, viewer, storyDate, settings: s, exclude });
     return { viewer, storyDate, texts, result, enabled: s.enabled, reaction: reactionGuidance() };
 }
@@ -392,19 +424,23 @@ function storyWindow(fromIdx) {
         }).join('\n\n');
 }
 
-// 让 AI 读最近的剧情，判断转交人拆没拆、打算怎么办
-async function judgeViaDecision(letter, text = '') {
-    const dv = letter.delivery;
-    const via = viaOf(letter);
-    text = text || storyWindow(dv.decisionFrom);
-    if (!text) return null;
-    const { system, prompt } = buildViaDecisionPrompt(via, letter.recipients.join('、'), text, { opened: !!dv.opened, held: dv.status === 'held' });
+// 让 AI 读最近的剧情，判断转交人对手里的每封信做了什么。返回 Map(信 → 判断)
+async function judgeVia(letters, text = '') {
+    if (!letters.length) return new Map();
+    const via = viaOf(letters[0]);
+    const froms = letters.map(l => l.delivery.decisionFrom).filter(n => Number.isFinite(n));
+    text = text || storyWindow(froms.length ? Math.min(...froms) : undefined);
+    if (!text) return new Map();
+    const list = letters.map((l, i) => ({ n: i + 1, recipient: l.recipients.join('、'), label: l.title || '', target: l.delivery.target || '', opened: !!l.delivery.opened, held: l.delivery.status === 'held' }));
+    const { system, prompt } = buildViaDecisionPrompt(via, list, text);
     try {
-        const out = await ai(system, prompt, { kind: 'via', via, opened: !!dv.opened });
-        return parseViaDecision(out);
+        const out = parseViaDecisions(await ai(system, prompt, { kind: 'via', via, letters: list }));
+        const map = new Map();
+        for (const d of out) if (letters[d.n - 1]) map.set(letters[d.n - 1], d);
+        return map;
     } catch (e) {
         console.warn('[书信簿] 判断转交人的决定失败', e);
-        return null;
+        return new Map();
     }
 }
 
@@ -444,16 +480,21 @@ function viaActive(l, lastText) {
 }
 
 async function processVia(lastText, { fromCharacter = true } = {}) {
+    // 同一个转交人手里的几封信一起判断，免得拆了一封、几封都算拆了
+    const groups = new Map();
     for (const l of mailInChat()) {
         const dv = l.delivery;
         if (!['atVia', 'held'].includes(dv.status) || ui.isMe(dv.via)) continue;
-        if (!viaActive(l, lastText)) continue;
-        if (dv.lastJudged === floor()) continue;
-        dv.lastJudged = floor();
-        dv.awaitingDecision = false;
+        if (!groups.has(dv.via)) groups.set(dv.via, []);
+        groups.get(dv.via).push(l);
+    }
+    for (const [, letters] of groups) {
+        if (!letters.some(l => viaActive(l, lastText))) continue;
+        if (letters.every(l => l.delivery.lastJudged === floor())) continue;
+        for (const l of letters) { l.delivery.lastJudged = floor(); l.delivery.awaitingDecision = false; }
         store.save();
-        const guess = await judgeViaDecision(l);
-        if (guess) await applyViaDecision(l, guess, { fromCharacter });
+        const decisions = await judgeVia(letters);
+        for (const [l, d] of decisions) await applyViaDecision(l, d, { fromCharacter });
         ui.renderPostbox();
     }
 }
@@ -608,21 +649,30 @@ async function deliverDetected(hit) {
 
 // 你自己的消息里写到转交人动了信（在拦截器里调用，这一轮生成之前）
 async function viaFromUser(text) {
+    if (!VIA_LETTER_RE.test(text)) return null;
+    const groups = new Map();
     for (const l of mailInChat()) {
         const dv = l.delivery;
         if (!['atVia', 'held'].includes(dv.status) || ui.isMe(dv.via)) continue;
-        if (!VIA_LETTER_RE.test(text) || !(mentionsName(text, namesOf(dv.via)) || isCurrentCharacter(dv.via))) continue;
-        const guess = await judgeViaDecision(l, storyWindow());
-        if (!guess) continue;
-        if (guess.opened && !dv.opened) {
-            await letViaRead(l, { post: false });
-            return { letter: l, peek: true };
-        }
-        await applyViaDecision(l, guess);
-        ui.renderPostbox();
-        return null;
+        if (!(mentionsName(text, namesOf(dv.via)) || isCurrentCharacter(dv.via))) continue;
+        if (!groups.has(dv.via)) groups.set(dv.via, []);
+        groups.get(dv.via).push(l);
     }
-    return null;
+    let peek = null;
+    for (const [, letters] of groups) {
+        const decisions = await judgeVia(letters, storyWindow());
+        for (const [l, d] of decisions) {
+            if (d.opened && !l.delivery.opened) {
+                await letViaRead(l, { post: false });
+                peek = peek || [];
+                peek.push(l);
+            } else {
+                await applyViaDecision(l, d);
+            }
+        }
+        ui.renderPostbox();
+    }
+    return peek;
 }
 
 // 转交人拿着信太久：提醒
@@ -667,6 +717,7 @@ function urgentMail(mail) {
 let checkAgain = null;
 async function checkMail({ fromCharacter = false } = {}) {
     if (!hasChat() || store.mode === 'unloaded') return;
+    if (isSimple()) { ui.renderPostbox(); return; } // 简单模式没有寄送
     if (fromCharacter) markInboxAnswered();
     if (busy) {
         // 上一次检查还没做完（比如正在等 AI 推算日期）：做完以后再补一次，不漏掉这条消息
@@ -754,13 +805,13 @@ async function detectFromUser() {
         queueLetter(hit.letter, { reader: hit.reader, arrival });
         return;
     }
-    const peek = await viaFromUser(m.mes || '');
-    if (peek) {
-        const dv = peek.letter.delivery;
+    const peeked = await viaFromUser(m.mes || '');
+    for (const l of peeked || []) {
+        const dv = l.delivery;
         dv.awaitingDecision = true;
         dv.decisionFrom = floor();
         store.save();
-        queueLetter(peek.letter, { reader: dv.via, arrival: getStoryDate(), peek: true });
+        queueLetter(l, { reader: dv.via, arrival: getStoryDate(), peek: true });
     }
 }
 
@@ -776,6 +827,231 @@ function pendingHints() {
     });
 }
 
+// ---------- 写给你的信：写的时候先藏起来，剧情里“收到”了才拆 ----------
+// 角色在回复里写了一封给你的信 → 存进档案，聊天里只把信的那几段藏起来（旁白照常显示）。
+// 之后剧情里写到你收到了（“邮差送来一封信”“你收到了文森特的信”，或者你自己写“我收到了信”）
+// → 右下角提示“📬 拆开” → 拆信动画 → 打开信纸 → 聊天里藏起来的那几段才露出来。
+
+// 这段文字里有没有寄给“我”的信
+function lettersToMe(text) {
+    return detectInMessage(text).filter(c => ui.isMe(guessRecipient(c.salutation)));
+}
+
+// 正在生成的文字里，是不是已经开始写一封给“我”的信了（流式输出时先模糊掉）
+function startsLetterToMe(text) {
+    return String(text || '').split('\n').some(line => {
+        const l = line.replace(/^[>\s*_「『【“"]+/, '').trim();
+        return l.length <= 40 && isSalutation(l) && ui.isMe(guessRecipient(l));
+    });
+}
+
+function mesEl(mesId) {
+    return document.querySelector(`.mes[mesid="${mesId}"]`);
+}
+
+function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+const flat = t => String(t || '').replace(/[\s>*_“”"「」『』]/g, '');
+
+// 只藏信的那几段：按段落文字比对；一段都对不上时，整条消息藏起来
+function hideLetterNodes(el, letters) {
+    const box = el.querySelector('.mes_text');
+    if (!box) return null;
+    const bodies = letters.map(l => flat(l.body)).filter(Boolean);
+    const hidden = [];
+    for (const node of box.querySelectorAll('p, li, pre, h1, h2, h3, h4, h5, h6')) {
+        if (node.closest('.epi-letter-hidden')) continue;
+        const t = flat(node.textContent);
+        if (t.length < 2) continue;
+        if (bodies.some(b => b.includes(t) || (t.length > 40 && t.includes(b.slice(0, 30))))) {
+            node.classList.add('epi-letter-hidden');
+            hidden.push(node);
+        }
+    }
+    // 引用块里的段落全藏了，引用块本身也藏起来
+    for (const q of box.querySelectorAll('blockquote')) {
+        const inner = q.querySelectorAll('p, li');
+        if (inner.length && [...inner].every(n => n.classList.contains('epi-letter-hidden'))) q.classList.add('epi-letter-hidden');
+    }
+    if (!hidden.length) { box.classList.add('epi-letter-hidden'); return box; }
+    return hidden[0].closest('blockquote.epi-letter-hidden') || hidden[0];
+}
+
+// 在聊天里藏起信的内容，放一张小卡片
+function applySeal(mesId) {
+    const m = ctx().chat?.[mesId];
+    const seal = m?.extra?.epistolarySeal;
+    const el = mesEl(mesId);
+    if (!el || !seal || seal.opened) return;
+    const letters = seal.letterIds.map(id => store.archive.letters[id]).filter(Boolean);
+    if (!letters.length) return;
+    el.classList.remove('epi-sealing');
+    el.classList.add('epi-sealed-mes');
+    el.querySelector('.epi-sealed-card')?.remove();
+    const first = hideLetterNodes(el, letters);
+    const card = document.createElement('div');
+    card.className = 'epi-sealed-card';
+    const author = letters[0].author || m.name;
+    card.innerHTML = seal.received
+        ? `<div class="epi-sealed-env">📬</div><div class="epi-sealed-info"><b>你收到了 ${esc(author)} 的信</b><div class="epi-muted">拆开以后，这里藏着的信也会显示出来。</div></div>
+           <button class="menu_button" data-epi-unseal="${mesId}">拆开</button>`
+        : `<div class="epi-sealed-env">✉</div><div class="epi-sealed-info"><b>${esc(author)} 写了一封给你的信</b><div class="epi-muted">信还没到你手里，内容先藏起来。剧情里写到你收到了，就可以拆。</div></div>
+           <button class="menu_button epi-mini" data-epi-receive="${mesId}" title="剧情里其实已经收到了，现在就拆">已经收到了</button>`;
+    card.addEventListener('click', ev => {
+        if (ev.target.closest('[data-epi-unseal]')) unseal(mesId);
+        else if (ev.target.closest('[data-epi-receive]')) { markSealReceived(mesId, { quiet: true }); unseal(mesId); }
+    });
+    if (first && first.parentNode) first.parentNode.insertBefore(card, first);
+    else (el.querySelector('.mes_text') || el).after(card);
+}
+
+function removeSeal(mesId) {
+    const el = mesEl(mesId);
+    if (!el) return;
+    el.classList.remove('epi-sealed-mes', 'epi-sealing');
+    el.querySelectorAll('.epi-letter-hidden').forEach(n => n.classList.remove('epi-letter-hidden'));
+    el.querySelector('.epi-sealed-card')?.remove();
+}
+
+// 角色刚写完一条：里面有写给我的信，就存进档案、把信的内容藏起来
+async function sealIncoming(mesId) {
+    if (settings().sealIncoming === false || !hasChat() || store.mode === 'unloaded') return false;
+    const c = ctx();
+    const m = c.chat?.[mesId];
+    if (!m || m.is_user || m.is_system || m.extra?.epistolary || m.extra?.epistolarySeal) return false;
+    const found = lettersToMe(m.mes || '');
+    if (!found.length) { removeSeal(mesId); return false; }
+    const ids = [];
+    for (const f of found) {
+        const dup = findDuplicate(store.archive, f.text);
+        if (dup) {
+            if (!store.archive.letters[dup]?.openedAt) ids.push(dup);
+            continue;
+        }
+        const letter = createLetter(store.archive, {
+            author: guessAuthor(f.signoff) || m.name,
+            recipients: [c.name1],
+            writtenAt: getStoryDate(),
+            body: f.text,
+            status: 'sent',
+            appearance: { font: findPerson(store.archive, m.name)?.hand || 'personal' },
+            enclosures: extractEnclosures(f.text),
+            source: { chatId: chatId(), mes: mesId },
+        });
+        letter.events.push(...deliveryEvents(letter, '', letter.events, { sentOnly: true }));
+        ids.push(letter.id);
+    }
+    if (!ids.length) { removeSeal(mesId); return false; }
+    store.save();
+    m.extra = { ...(m.extra || {}), epistolarySeal: { letterIds: ids, received: false, opened: false } };
+    await c.saveChat();
+    applySeal(mesId);
+    ui.refresh();
+    ui.renderPostbox();
+    return true;
+}
+
+// 剧情里“收到”了
+async function markSealReceived(mesId, { quiet = false } = {}) {
+    const m = ctx().chat?.[mesId];
+    const seal = m?.extra?.epistolarySeal;
+    if (!seal || seal.received) return;
+    seal.received = true;
+    const letters = seal.letterIds.map(id => store.archive.letters[id]).filter(Boolean);
+    for (const l of letters) {
+        if (!l.events.some(e => e.type === 'received' && ui.isMe(e.who))) {
+            l.events.push(...deliveryEvents(l, getStoryDate(), l.events));
+        }
+    }
+    store.save();
+    await ctx().saveChat();
+    applySeal(mesId);
+    ui.renderPostbox();
+    if (!quiet && letters[0]) toastr.success(`你收到了 ${letters[0].author} 的信，在右下角或聊天里点「拆开」`, '📬 信到了');
+}
+
+// 这条文字里，有没有写到“我”收到了某封还没收到的信
+function myNames() {
+    const me = ctx().name1 || '';
+    const p = findPerson(store.archive, me);
+    return [me, ...(p ? [p.name, ...(p.aliases || [])] : [])].filter(Boolean);
+}
+
+// “我”是收信的那个人：你收到了信 / 把信递给你 / 邮差送来一封信……（“他收到了你的来信”不算）
+function saysIReceived(text, names) {
+    const t = String(text || '');
+    const alt = names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    if (!alt) return false;
+    const pats = [
+        new RegExp(`(${alt})[^。！？.!?\\n]{0,10}(收到|接到|拿到|接过|拆开|打开|展开)[^。！？.!?\\n]{0,14}(信|信封|来信|letter|lettre)`, 'i'),
+        new RegExp(`(递给|交给|送给|塞给|带给|交到|送到|塞进)(${alt})[^。！？.!?\\n]{0,10}(信|信封|letter|lettre)`, 'i'),
+        new RegExp(`(信|信封|letter|lettre)[^。！？.!?\\n]{0,10}(递给|交给|送到|交到|到了)(${alt})`, 'i'),
+        new RegExp(`\\b(${alt})\\b[^.!?\\n]{0,20}\\b(receive[sd]?|open(s|ed)?|get|got)\\b[^.!?\\n]{0,20}\\bletter`, 'i'),
+        /(邮差|信差|送信的|信使|邮递员|postman|mailman|messenger|facteur)[^。！？.!?\n]{0,20}(送来|递来|带来|塞进|投进|delivered|brought|handed)/i,
+    ];
+    return pats.some(p => p.test(t));
+}
+
+async function detectMyReceipt(text, { fromUser = false, skipMes = -1 } = {}) {
+    if (settings().sealIncoming === false || !text) return;
+    const pending = sealedInChat().filter(s => !s.received && s.mesId !== skipMes);
+    if (!pending.length) return;
+    // 去掉信本身的文字（信里写“你收到我的上一封信了吗”不算）
+    let t = String(text);
+    for (const s of pending) for (const id of s.letterIds) t = t.split(store.archive.letters[id]?.body || '\u0000').join('');
+    const names = [...myNames(), fromUser ? '我' : '你'];
+    if (!saysIReceived(t, names)) return;
+    // 提到了写信人的，优先算那几封；都没提就算最早那封
+    const named = pending.filter(s => mentionsName(t, namesOf(s.author)));
+    // 一次只算收到一封：最早写的那封先到
+    const hit = (named.length ? named : pending)[0];
+    if (hit) await markSealReceived(hit.mesId);
+}
+
+// 拆开：先播动画，再打开信纸，最后才露出聊天里藏着的信
+async function unseal(mesId) {
+    const m = ctx().chat?.[mesId];
+    const seal = m?.extra?.epistolarySeal;
+    if (!seal || seal.opened) return;
+    if (!seal.received) await markSealReceived(mesId, { quiet: true });
+    const letters = seal.letterIds.map(id => store.archive.letters[id]).filter(Boolean);
+    seal.opened = true;
+    await ctx().saveChat();
+    ui.renderPostbox();
+    if (letters[0] && settings().animations !== false) await playOpen(letters[0], { render: ui.renderOpts(letters[0]) });
+    for (const l of letters) if (!l.openedAt) l.openedAt = new Date().toISOString();
+    store.save();
+    removeSeal(mesId);
+    if (letters[0]) { ui.open('list'); ui.openReader(letters[0].id); }
+}
+
+function sealedInChat() {
+    if (!hasChat()) return [];
+    const out = [];
+    (ctx().chat || []).forEach((m, i) => {
+        const seal = m?.extra?.epistolarySeal;
+        if (seal && !seal.opened) out.push({ mesId: i, letterIds: seal.letterIds, received: !!seal.received, author: store.archive.letters[seal.letterIds[0]]?.author || m.name });
+    });
+    return out;
+}
+
+function reapplySeals() {
+    for (const s of sealedInChat()) applySeal(s.mesId);
+}
+
+// 流式输出时：一看到写给我的称呼，就先把正在生成的这条模糊掉
+let streamCheck = 0;
+function onStreamToken(text) {
+    if (settings().sealIncoming === false) return;
+    const now = Date.now();
+    if (now - streamCheck < 250) return;
+    streamCheck = now;
+    const t = typeof text === 'string' ? text : (ctx().chat?.at(-1)?.mes || '');
+    if (startsLetterToMe(t)) document.querySelector('.last_mes')?.classList.add('epi-sealing');
+}
+
 // ---------- 生成前拦截：在这里计算要注入的信件内容 ----------
 globalThis.epistolaryInterceptor = async function (_chat, _contextSize, _abort, type) {
     const c = ctx();
@@ -785,12 +1061,24 @@ globalThis.epistolaryInterceptor = async function (_chat, _contextSize, _abort, 
             c.setExtensionPrompt(PROMPT_KEY, '', s.position, s.depth);
             c.setExtensionPrompt(REACTION_KEY, '', 1, 0);
             c.setExtensionPrompt(PENDING_KEY, '', 1, 1);
+            c.setExtensionPrompt(CODE_KEY, '', 1, 1);
+            return;
+        }
+        // 暗号：两种模式都有。放在最新那条消息之前
+        const code = codeInjection();
+        c.setExtensionPrompt(CODE_KEY, code, 1, 1, false, 0);
+        if (isSimple()) {
+            // 简单模式：只认暗号，不做别的
+            lastInjection = code;
+            c.setExtensionPrompt(PROMPT_KEY, '', s.position, s.depth);
+            c.setExtensionPrompt(REACTION_KEY, '', 1, 0);
+            c.setExtensionPrompt(PENDING_KEY, '', 1, 1);
             return;
         }
         if (type !== 'swipe' && type !== 'regenerate') await detectFromUser();
         const { result, reaction } = runRetrieval();
         const hints = pendingHints();
-        lastInjection = [result.text, hints, reaction].filter(Boolean).join('\n\n');
+        lastInjection = [result.text, hints, code, reaction].filter(Boolean).join('\n\n');
         c.setExtensionPrompt(PROMPT_KEY, result.text, s.position, s.depth, false, 0);
         c.setExtensionPrompt(PENDING_KEY, hints, 1, 1, false, 0);
         // 收信反应引导放在最新消息之后，影响最直接
@@ -800,6 +1088,7 @@ globalThis.epistolaryInterceptor = async function (_chat, _contextSize, _abort, 
         c.setExtensionPrompt(PROMPT_KEY, '', s.position, s.depth);
         c.setExtensionPrompt(REACTION_KEY, '', 1, 0);
         c.setExtensionPrompt(PENDING_KEY, '', 1, 1);
+        c.setExtensionPrompt(CODE_KEY, '', 1, 1);
     }
 };
 
@@ -888,7 +1177,7 @@ jQuery(async () => {
 
     ui = new UI(store, {
         getMode: () => settings().mode,
-        setMode: mode => { settings().mode = mode; saveSettings(); },
+        setMode: mode => { settings().mode = mode; saveSettings(); ui?.renderPostbox(); },
         getSettings: settings,
         saveSettings,
         getViewer,
@@ -906,6 +1195,9 @@ jQuery(async () => {
         generateRaw: (prompt, system) => ai(system, prompt, { kind: 'raw' }),
         switchToRecipient,
         switchToVia,
+        getSealed: sealedInChat,
+        unseal,
+        markSealReceived,
         getInbox: () => (hasChat() ? activeInbox().filter(i => !i.answeredAt) : []),
         letViaRead,
         forwardLetter,
@@ -926,6 +1218,7 @@ jQuery(async () => {
 
     store.onChange(refreshStatus);
     await store.load();
+    if (store.mode !== 'unloaded' && ensureCodes(store.archive)) store.save();
     refreshChatFields();
     refreshStatus();
     ui.renderPostbox();
@@ -935,9 +1228,38 @@ jQuery(async () => {
         refreshChatFields();
         ui.refresh();
         ui.renderPostbox();
+        setTimeout(reapplySeals, 300);
     });
-    if (eventTypes.MESSAGE_RECEIVED) eventSource.on(eventTypes.MESSAGE_RECEIVED, () => setTimeout(() => checkMail({ fromCharacter: true }), 300));
-    if (eventTypes.MESSAGE_SENT) eventSource.on(eventTypes.MESSAGE_SENT, () => setTimeout(() => checkMail(), 300));
+    if (eventTypes.MESSAGE_RECEIVED) eventSource.on(eventTypes.MESSAGE_RECEIVED, mesId => {
+        setTimeout(async () => {
+            const id = Number.isInteger(mesId) ? mesId : (ctx().chat || []).length - 1;
+            await sealIncoming(id);
+            // 这条（包括 AI 的思考）里写到你收到了之前那封信 / 刚写的这封
+            const m = ctx().chat?.[id];
+            if (m && !m.is_user) await detectMyReceipt(`${m.mes || ''}\n${m.extra?.reasoning || ''}`);
+            checkMail({ fromCharacter: true });
+        }, 300);
+    });
+    if (eventTypes.CHARACTER_MESSAGE_RENDERED) eventSource.on(eventTypes.CHARACTER_MESSAGE_RENDERED, mesId => setTimeout(() => applySeal(mesId), 50));
+    if (eventTypes.MORE_MESSAGES_LOADED) eventSource.on(eventTypes.MORE_MESSAGES_LOADED, () => setTimeout(reapplySeals, 100));
+    if (eventTypes.STREAM_TOKEN_RECEIVED) eventSource.on(eventTypes.STREAM_TOKEN_RECEIVED, onStreamToken);
+    if (eventTypes.GENERATION_ENDED) eventSource.on(eventTypes.GENERATION_ENDED, () => setTimeout(() => {
+        // 生成结束了却没认出信：取消模糊
+        const last = document.querySelector(".last_mes");
+        if (last && !last.classList.contains('epi-sealed-mes')) setTimeout(() => last.classList.remove('epi-sealing'), 1500);
+    }, 100));
+    if (eventTypes.MESSAGE_SWIPED) eventSource.on(eventTypes.MESSAGE_SWIPED, mesId => {
+        // 换了一个回复：旧的封条作废，重新看这一条
+        const m = ctx().chat?.[mesId];
+        if (m?.extra?.epistolarySeal && !m.extra.epistolarySeal.opened) delete m.extra.epistolarySeal;
+        removeSeal(mesId);
+    });
+    if (eventTypes.MESSAGE_SENT) eventSource.on(eventTypes.MESSAGE_SENT, mesId => setTimeout(async () => {
+        const id = Number.isInteger(mesId) ? mesId : (ctx().chat || []).length - 1;
+        const m = ctx().chat?.[id];
+        if (m?.is_user && !m.extra?.epistolary) await detectMyReceipt(m.mes || '', { fromUser: true });
+        checkMail();
+    }, 300));
 
     // 调试入口：控制台里输入 epistolary.last() 查看上一次注入的内容
     globalThis.epistolary = { ...(globalThis.epistolary || {}), store, ui, last: () => lastInjection, envelope: { playSeal, playOpen }, checkMail, inferStoryDate };
