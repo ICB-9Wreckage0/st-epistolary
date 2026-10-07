@@ -113,6 +113,72 @@ function hasChat() {
     return !!(c.getCurrentChatId?.() && (c.characterId !== undefined || c.groupId));
 }
 
+// ---------- 角色卡：每封信属于一张角色卡（或一个群聊），只在那张卡里出现、生效 ----------
+function curScope() {
+    if (!hasChat()) return null;
+    const c = ctx();
+    if (c.groupId) {
+        const g = (c.groups || []).find(x => x.id === c.groupId);
+        return { key: `group:${c.groupId}`, name: g?.name || '群聊' };
+    }
+    const ch = c.characters?.[c.characterId];
+    if (!ch) return null;
+    return { key: `char:${ch.avatar || ch.name}`, name: ch.name || c.name2 || '' };
+}
+
+// 只含当前角色卡的信的“档案视图”（信对象还是同一份，改了照样存）；没打开聊天时就是整个档案
+function here() {
+    const sc = curScope();
+    if (!sc) return store.archive;
+    const letters = {};
+    for (const [id, l] of Object.entries(store.archive.letters)) if ((l.scope || '') === sc.key) letters[id] = l;
+    return { ...store.archive, letters };
+}
+
+// 以前的版本没记归属：这封信在当前聊天里出现过（导入、暗号、记忆、寄送、经过），就归给当前角色卡
+function adoptLetters() {
+    const sc = curScope();
+    if (!sc || store.mode === 'unloaded') return 0;
+    const cid = chatId();
+    let n = 0;
+    for (const l of Object.values(store.archive.letters)) {
+        if (l.scope) continue;
+        const seen = l.source?.chatId === cid || l.delivery?.chatId === cid
+            || (!ctx().groupId && [l.author, ...l.recipients].some(n => n && sameName(store.archive, n, sc.name)))
+            || (l.codeFloors || []).some(x => x.chatId === cid)
+            || (l.memories || []).some(m => m.chatId === cid)
+            || (l.events || []).some(e => e.chatId === cid);
+        if (seen) { l.scope = sc.key; l.scopeName = sc.name; n++; }
+    }
+    if (n) {
+        store.save();
+        toastr.info(`${n} 封以前的信（在这个聊天里出现过，或者是写给 / 来自「${sc.name}」的）归给了这张角色卡。别的角色卡里不会再看到它们。`, '🎭 书信簿', { timeOut: 7000 });
+    }
+    return n;
+}
+
+// 新建的信都记上当前角色卡
+function scopeFields() {
+    const sc = curScope();
+    return sc ? { scope: sc.key, scopeName: sc.name } : {};
+}
+
+// 把信归到某张角色卡（key 为空 = 当前角色卡；'' 显式传入 = 取消归属）
+function assignScope(ids, key = null, name = '') {
+    const sc = curScope();
+    const k = key ?? sc?.key ?? '';
+    const nm = key == null ? (sc?.name || '') : name;
+    let n = 0;
+    for (const id of ids) {
+        const l = store.archive.letters[id];
+        if (!l) continue;
+        l.scope = k; l.scopeName = k ? nm : '';
+        n++;
+    }
+    if (n) store.save();
+    return n;
+}
+
 function chatId() {
     return hasChat() ? String(ctx().getCurrentChatId() || '') : '';
 }
@@ -259,7 +325,7 @@ function lastUserMessage() {
 function codeLetters() {
     const m = lastUserMessage();
     // 已经把全文放进消息里的，不用再注入一遍
-    return m ? lettersByCode(store.archive, m.mes).filter(l => !String(m.mes).includes(blockStart(l))) : [];
+    return m ? lettersByCode(here(), m.mes).filter(l => !String(m.mes).includes(blockStart(l))) : [];
 }
 
 // ---------- 暗号 → 把信的全文放进你的消息里（折叠显示） ----------
@@ -281,7 +347,7 @@ function withLetterBlocks(text) {
     const t = String(text || '');
     const s = settings();
     if (!s.enabled || s.codeMode === 'inject' || store.mode === 'unloaded' || !t) return { text: t, letters: [] };
-    const letters = lettersByCode(store.archive, t).filter(l => !t.includes(blockStart(l)));
+    const letters = lettersByCode(here(), t).filter(l => !t.includes(blockStart(l)));
     const ready = letters.filter(l => !l.shell && String(l.body || '').trim());
     for (const l of letters.filter(x => !ready.includes(x))) toastr.warning(`${l.code} 那封信还没写正文`, '书信簿');
     if (!ready.length) return { text: t, letters: [] };
@@ -395,18 +461,18 @@ let lastCodeToast = '';
 function codeFeedback(type) {
     const m = lastUserMessage();
     if (!m) return;
-    const hit = lettersByCode(store.archive, m.mes);
-    const miss = unknownCodes(store.archive, m.mes);
+    const hit = lettersByCode(here(), m.mes);
+    const miss = unknownCodes(here(), m.mes);
     const key = `${ctx().chat.length}|${type}|${hit.map(l => l.id).join(',')}|${miss.join(',')}`;
     if (key === lastCodeToast) return;
     lastCodeToast = key;
     if (hit.length && settings().codeMode === 'inject') toastr.success(hit.map(l => `${l.code} ${l.author} → ${l.recipients.join('、')}`).join('<br>'), '✉ 这一轮把信交给了 AI', { timeOut: 4000, escapeHtml: false });
     if (!hit.length && !miss.length) {
         // 写了“信1”却没带括号
-        const bare = Object.values(store.archive.letters).find(l => l.code && new RegExp(`(^|[^【\\[])${l.code.replace(/^【|】$/g, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\d】\\]])`).test(m.mes || ''));
+        const bare = Object.values(here().letters).find(l => l.code && new RegExp(`(^|[^【\\[])${l.code.replace(/^【|】$/g, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\d】\\]])`).test(m.mes || ''));
         if (bare && /^【信\d+】$/.test(bare.code)) toastr.info(`如果你是想用 ${bare.code} 那封信，暗号要连括号一起写：${bare.code}`, '书信簿', { timeOut: 6000 });
     }
-    if (miss.length) toastr.warning(`档案里没有 ${miss.join('、')} 这个暗号。打开书信簿看看那封信的暗号是什么（信件列表里每封信前面那个）。`, '书信簿', { timeOut: 8000 });
+    if (miss.length) toastr.warning(`${curScope() ? `「${curScope().name}」这张角色卡里` : '档案里'}没有 ${miss.join('、')} 这个暗号。打开书信簿看看那封信的暗号是什么（信件列表里每封信前面那个）；别的角色卡的信在这里不生效。`, '书信簿', { timeOut: 8000 });
 }
 
 function codeInjection() {
@@ -422,7 +488,7 @@ function runRetrieval() {
     const msgs = recentMessages(ctx().chat, s.scanDepth);
     const texts = msgs.map(m => m.mes).reverse();
     const exclude = new Set([...msgs.map(m => m.extra?.epistolary?.letterId), ...activeInbox().map(i => i.letterId), ...codeLetters().map(l => l.id)].filter(Boolean));
-    const result = retrieve(store.archive, { texts, viewer, storyDate, settings: s, exclude });
+    const result = retrieve(here(), { texts, viewer, storyDate, settings: s, exclude });
     return { viewer, storyDate, texts, result, enabled: s.enabled, reaction: reactionGuidance() };
 }
 
@@ -477,7 +543,7 @@ let memoryQueue = Promise.resolve();
 function embeddedLetters(text) {
     const out = [];
     for (const m of String(text || '').matchAll(/【信件 (.+?)｜/g)) {
-        const l = Object.values(store.archive.letters).find(x => x.code && x.code === m[1]);
+        const l = Object.values(here().letters).find(x => x.code && x.code === m[1]);
         if (l && !out.includes(l)) out.push(l);
     }
     return out;
@@ -1003,7 +1069,7 @@ async function memoriesFromFloors(letterId, ranges, { onProgress, quiet = false 
 function codeReadsInChat() {
     if (!hasChat()) return [];
     const out = [];
-    for (const l of Object.values(store.archive.letters)) {
+    for (const l of Object.values(here().letters)) {
         if (!l.code || (l.memories || []).some(isMine) || l.shell) continue;
         const scenes = findPastScenes(l.id).filter(s => s.reasons.includes('code') || s.reasons.includes('source'));
         if (scenes.length) out.push({ letterId: l.id, scenes });
@@ -1165,7 +1231,7 @@ const STATUS_ZH = { draft: '草稿', sealed: '封好了没寄', unsent: '写了�
 // 和这个聊天有关的信：名字、暗号出现在这段剧情里，或者还在路上
 function lettersForStatus(text) {
     const out = [];
-    for (const l of Object.values(store.archive.letters)) {
+    for (const l of Object.values(here().letters)) {
         if (l.status === 'draft' && !isSimple()) continue;
         const dv = l.delivery;
         const pending = dv && ['transit', 'atVia', 'held', 'arrived'].includes(dv.status);
@@ -1244,13 +1310,13 @@ function scanCodeFloors() {
     chat.forEach((m, i) => {
         // 只看你写的消息（角色的回复里不会写暗号）
         if (!m || !m.is_user || m.is_system || typeof m.mes !== 'string' || !m.mes.includes('【') && !/[\[〖〔［（(「『《<]/.test(m.mes)) return;
-        for (const l of lettersByCode(store.archive, m.mes)) {
+        for (const l of lettersByCode(here(), m.mes)) {
             if (!map.has(l.id)) map.set(l.id, []);
             map.get(l.id).push(i);
         }
     });
     let changed = false;
-    for (const l of Object.values(store.archive.letters)) {
+    for (const l of Object.values(here().letters)) {
         const found = map.get(l.id) || [];
         const others = (l.codeFloors || []).filter(x => x.chatId !== cid);
         const mine = found.map(mes => ({ chatId: cid, mes }));
@@ -1266,7 +1332,7 @@ function recordCodeFloor(mesId) {
     if (!m || !m.is_user || typeof m.mes !== 'string') return;
     const cid = chatId();
     let changed = false;
-    for (const l of lettersByCode(store.archive, m.mes)) {
+    for (const l of lettersByCode(here(), m.mes)) {
         l.codeFloors = l.codeFloors || [];
         if (!l.codeFloors.some(x => x.chatId === cid && x.mes === mesId)) { l.codeFloors.push({ chatId: cid, mes: mesId }); changed = true; }
     }
@@ -1281,7 +1347,7 @@ function codeFloorsHere(letter) {
 // 这封信要看的楼层：暗号出现的那几层；没写过暗号的，用剧情里引用原句 / 原文所在的那几层
 // 一次更新（或对话框开着的这段时间）里只扫一遍聊天
 let floorCache = { key: '', floors: new Map() };
-function floorKey() { return `${chatId()}|${(ctx().chat || []).length}|${Object.keys(store.archive.letters).length}`; }
+function floorKey() { return `${chatId()}|${(ctx().chat || []).length}|${Object.keys(here().letters).length}`; }
 function freshFloors() {
     const key = floorKey();
     if (floorCache.key !== key) { scanCodeFloors(); floorCache = { key, floors: new Map() }; }
@@ -1337,7 +1403,7 @@ function planStatus({ letterIds = null, scope = {} } = {}) {
     freshFloors();
     let letters, ranges = [];
     if (sc.mode === 'code') {
-        letters = (letterIds ? letterIds.map(id => store.archive.letters[id]) : Object.values(store.archive.letters)).filter(l => l && (letterIds ? letterFloors(l) : codeFloorsHere(l)).length);
+        letters = (letterIds ? letterIds.map(id => store.archive.letters[id]) : Object.values(here().letters)).filter(l => l && (letterIds ? letterFloors(l) : codeFloorsHere(l)).length);
         for (const l of letters) for (const f of letterFloors(l)) ranges.push({ from: f, to: Math.min(end, f + after) });
     } else {
         let from, to = end;
@@ -1729,7 +1795,7 @@ function namesOf(name) {
 
 function mailInChat() {
     const cid = chatId();
-    return Object.values(store.archive.letters).filter(l => l.status === 'sent' && l.delivery && (!l.delivery.chatId || l.delivery.chatId === cid));
+    return Object.values(here().letters).filter(l => l.status === 'sent' && l.delivery && (!l.delivery.chatId || l.delivery.chatId === cid));
 }
 
 // 转交人在动这封信的说法（比单个“信”字严格，免得“相信”“信任”也算）
@@ -2056,7 +2122,7 @@ async function sealIncoming(mesId) {
     if (!found.length) { removeSeal(mesId); return false; }
     const ids = [];
     for (const f of found) {
-        const dup = findDuplicate(store.archive, f.text);
+        const dup = findDuplicate(here(), f.text);
         if (dup) {
             if (!store.archive.letters[dup]?.openedAt) ids.push(dup);
             continue;
@@ -2070,6 +2136,7 @@ async function sealIncoming(mesId) {
             appearance: { font: findPerson(store.archive, m.name)?.hand || 'personal' },
             enclosures: extractEnclosures(f.text),
             source: { chatId: chatId(), mes: mesId },
+            ...scopeFields(),
         });
         letter.events.push({ id: nextEventId(letter.events), type: 'written', who: letter.author, date: getStoryDate(), segments: null, to: letter.recipients.join('、'), note: '角色在回复里写的', place: '', mes: mesId, auto: false });
         letter.events.push(...deliveryEvents(letter, '', letter.events, { sentOnly: true }));
@@ -2311,6 +2378,9 @@ jQuery(async () => {
 
     ui = new UI(store, {
         getMode: () => settings().mode,
+        getScope: curScope,
+        scopeFields,
+        assignScope,
         aiOn,
         injectOn,
         setMode: mode => { settings().mode = mode; saveSettings(); ui?.renderPostbox(); },
@@ -2387,7 +2457,7 @@ jQuery(async () => {
     store.onChange(refreshStatus);
     await store.load();
     if (store.mode !== 'unloaded' && ensureCodes(store.archive)) store.save();
-    if (store.mode !== 'unloaded' && hasChat()) setTimeout(() => { try { scanCodeFloors(); } catch { /* */ } }, 1500);
+    if (store.mode !== 'unloaded' && hasChat()) setTimeout(() => { try { adoptLetters(); scanCodeFloors(); } catch { /* */ } }, 1500);
     // 每天第一次打开：自动备份一份档案
     store.autoBackup(Number(settings().backup.keep) || 0)
         .then(made => { if (made) console.info(`[书信簿] 已自动备份档案：${made}`); ui?.refresh?.(); })
@@ -2398,6 +2468,7 @@ jQuery(async () => {
 
     const { eventSource, eventTypes } = ctx();
     eventSource.on(eventTypes.CHAT_CHANGED, () => {
+        if (ui) ui.scopeSel = null; // 换了聊天：回到“当前角色卡”
         refreshChatFields();
         ui.refresh();
         ui.renderPostbox();
@@ -2405,6 +2476,8 @@ jQuery(async () => {
         setTimeout(foldAll, 300);
         // 删掉的信、换了位置的信：世界书里对应的条目对齐一下
         setTimeout(() => { if (store.mode !== 'unloaded' && hasChat() && ctx().chatMetadata?.world_info) syncWorldBook(); }, 1200);
+        // 以前没记角色卡的信：在这个聊天里出现过的，归给这张卡
+        setTimeout(() => { if (store.mode !== 'unloaded' && hasChat() && adoptLetters()) { ui.refresh(); } }, 1000);
         // 暗号在这个聊天的哪几层出现过
         setTimeout(() => { if (store.mode !== 'unloaded' && hasChat()) try { scanCodeFloors(); } catch (e) { console.warn('[书信簿] 扫描暗号楼层失败', e); } }, 1500);
     });

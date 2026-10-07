@@ -75,6 +75,7 @@ export function lookWarnings(letter) {
     const year = parseInt(String(letter.writtenAt || '').slice(0, 4), 10) || 0;
     const out = [];
     for (const field of ['wax', 'ink', 'envelope', 'paper', 'font']) {
+        if (a.mode?.[field]) continue; // 跟随文中 / 自定义：不按预设的含义提醒
         const m = meaningOf(field, a[field], year);
         if (m?.warn) out.push(m.text);
     }

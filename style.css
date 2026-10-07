@@ -1504,3 +1504,14 @@ details.epi-sec-card.epi-sec-off > :not(summary):not(.epi-off-note) { opacity: .
 .epi-danger { border-color: #b5523b !important; color: #e88 !important; }
 .epi-sort { width: auto !important; max-width: 8.5em; font-size: .88em; margin: 0; }
 .epi-sort-dir { width: auto; margin: 0; padding: 2px 8px; font-size: .88em; }
+.epi-scopebar { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin: 2px 0 6px; font-size: .92em; }
+.epi-scopebar > label { display: flex !important; flex-direction: row !important; align-items: center; gap: 6px; margin: 0; }
+.epi-scopebar select { width: auto !important; max-width: 22em; margin: 0; }
+.epi-scope-tools { display: flex; gap: 6px; flex-wrap: wrap; }
+.epi-scope-tools .menu_button { width: auto; margin: 0; padding: 2px 10px; }
+.epi-badge { display: inline-block; min-width: 1.3em; padding: 0 5px; border-radius: 9px; background: var(--epi-accent, #d9a441); color: #222; font-size: .8em; font-weight: bold; text-align: center; }
+.epi-ap-custom { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+.epi-ap-custom > input.text_pole { flex: 1 1 14em; margin: 0; }
+.epi-ap-color { display: flex !important; flex-direction: row !important; align-items: center; gap: 4px; font-size: .88em; margin: 0 !important; }
+.epi-ap-color input[type="color"] { width: 2.4em; height: 1.8em; padding: 0; border: 0; background: transparent; }
+.epi-ap-follow { margin-top: 3px; font-size: .86em; }

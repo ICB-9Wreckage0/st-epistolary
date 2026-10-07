@@ -2,7 +2,7 @@
 // 一个款式包就是一组外观参数：纸、墨、字迹、版式、信封、封缄、磨损、笔迹抖动、花体。
 // 动画和排版都不用改，换一组参数就是另一种信。用户也可以把当前的样子存成自己的款式包。
 
-export const STYLE_KEYS = ['paper', 'ink', 'font', 'orientation', 'envelope', 'wax', 'wear', 'wobble', 'flourish'];
+export const STYLE_KEYS = ['paper', 'ink', 'font', 'orientation', 'envelope', 'wax', 'wear', 'wobble', 'flourish', 'inkColor', 'mode', 'custom', 'customColor'];
 
 export const STYLE_PACKS = [
     {
@@ -56,7 +56,14 @@ export function pickStyle(appearance) {
 
 // 套用：只改外观，不碰正文。书信语言只在原来没填时才补上
 export function applyStyle(letter, pack) {
-    letter.appearance = { ...letter.appearance, ...pickStyle(pack.appearance || {}) };
+    const pick = pickStyle(pack.appearance || {});
+    const a = { ...letter.appearance, ...pick };
+    // 款式包里定好的项目：去掉之前的“跟随文中 / 自定义”（款式包自己带的除外）
+    if (!pick.mode) {
+        a.mode = { ...(letter.appearance?.mode || {}) };
+        for (const k of Object.keys(pick)) delete a.mode[k];
+    }
+    letter.appearance = a;
     if (pack.language && !String(letter.language || '').trim()) letter.language = pack.language;
     return letter;
 }

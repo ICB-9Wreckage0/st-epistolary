@@ -36,7 +36,7 @@ const ctx = {
     extensionPrompts: {},
     eventSource,
     eventTypes: { CHAT_CHANGED: 'chat_changed', MESSAGE_RECEIVED: 'message_received', MESSAGE_SENT: 'message_sent', USER_MESSAGE_RENDERED: 'user_message_rendered', MESSAGE_UPDATED: 'message_updated', MESSAGE_SWIPED: 'message_swiped', MESSAGE_DELETED: 'message_deleted' },
-    get characters() { return [{ name: ctx.name2, description: `${ctx.name2}（演示用的角色卡）`, personality: '', scenario: '' }]; },
+    get characters() { return [{ name: ctx.name2, avatar: 'demo.png', description: `${ctx.name2}（演示用的角色卡）`, personality: '', scenario: '' }]; },
     getCurrentChatId: () => 'demo-chat',
     getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
     saveSettingsDebounced: () => saveState(),

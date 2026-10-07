@@ -67,6 +67,7 @@ export const INKS = {
 export const PAPER_BASE = { plain: '#fdfdfb', cream: '#f7f0de', aged: '#e6d2a4', lined: '#fbf9f3', redline: '#fbf6ea', blue: '#e7eef6' };
 
 export function inkColor(appearance = {}) {
+    if (appearance.mode?.ink === 'custom' && /^#[0-9a-f]{6}$/i.test(appearance.customColor?.ink || '')) return appearance.customColor.ink;
     if (appearance.ink === 'custom' && /^#[0-9a-f]{6}$/i.test(appearance.inkColor || '')) return appearance.inkColor;
     return (INKS[appearance.ink] || INKS.blueblack).color || INKS.blueblack.color;
 }
@@ -94,6 +95,8 @@ export function paperStyle(letter) {
     const a = letter.appearance || {};
     const out = [];
     if (a.ink === 'custom' && /^#[0-9a-f]{6}$/i.test(a.inkColor || '')) out.push(`--ink:${a.inkColor}`);
+    if (a.mode?.ink === 'custom' && a.customColor?.ink) out.push(`--ink:${a.customColor.ink}`);
+    if (a.mode?.paper === 'custom' && a.customColor?.paper) out.push(`--paper:${a.customColor.paper}`);
     const sc = SIZES[a.size]?.scale;
     if (sc && sc !== 1) out.push(`--fs:${sc}`);
     const cj = CJK_SIZES[a.cjkSize]?.scale;

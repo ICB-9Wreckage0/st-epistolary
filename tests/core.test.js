@@ -168,3 +168,19 @@ test('文件夹：新建、移动、重命名、删除（信不删）', async ()
     assert.equal(a.letters[l.id].folder, '');
     assert.deepEqual(folderList(a), []);
 });
+
+test('角色卡：暗号按角色卡各自编号', async () => {
+    const { createArchive, createLetter, nextCode, ensureCodes } = await import('../src/model.js');
+    const a = createArchive();
+    createLetter(a, { scope: 'char:a.png', body: 'x' });
+    createLetter(a, { scope: 'char:a.png', body: 'y' });
+    const b1 = createLetter(a, { scope: 'char:b.png', body: 'z' });
+    assert.equal(b1.code, '【信1】');
+    assert.equal(nextCode(a, 'char:a.png'), '【信3】');
+    assert.equal(nextCode(a, 'char:b.png'), '【信2】');
+    const old = createLetter(a, { body: 'w' });
+    assert.equal(old.scope, '');
+    old.code = '';
+    ensureCodes(a);
+    assert.equal(old.code, '【信1】');
+});

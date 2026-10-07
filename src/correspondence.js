@@ -581,27 +581,43 @@ const LOOK_ENVELOPE = { ivory: '象牙白的信封', kraft: '牛皮纸信封', b
 const LOOK_WAX = { crimson: '朱红色火漆', navy: '藏青色火漆', forest: '墨绿色火漆', black: '黑色火漆', gold: '金色火漆', chop: '朱红的“缄”字印' };
 
 // 信封（转交人和收信人拆信前都看得到）
+// 每一项：空着（跟随文中）就不说；自定义就用自己写的；否则用选好的样式
+function lookPart(a, key, normal) {
+    const m = a.mode?.[key];
+    if (m === 'follow') return '';
+    if (m === 'custom') return String(a.custom?.[key] || '').trim();
+    return normal;
+}
+
 export function describeEnvelope(letter) {
     const a = letter.appearance || {};
-    const env = LOOK_ENVELOPE[a.envelope] || '信封';
-    const seal = a.wax === 'none' ? '用胶水封着口' : `封口压着${LOOK_WAX[a.wax] || '火漆'}`;
+    const env = lookPart(a, 'envelope', LOOK_ENVELOPE[a.envelope] || '信封');
+    const sealText = a.wax === 'none' ? '用胶水封着口' : `封口压着${LOOK_WAX[a.wax] || '火漆'}`;
+    const wax = a.mode?.wax === 'custom' ? (a.custom?.wax ? `封口：${a.custom.wax}` : '') : lookPart(a, 'wax', sealText);
     const feel = enclosureFeel(letter);
-    const thick = feel ? `，${feel}` : (letter.body || '').length > 1500 ? '，摸上去很厚' : '';
-    return `${env}，${seal}${thick}`;
+    const thick = feel ? feel : (letter.body || '').length > 1500 ? '摸上去很厚' : '';
+    return [env, wax, thick].filter(Boolean).join('，') || '一封信';
 }
 
 // 信纸、墨水、字迹（拆开以后才看得到）
 export function describeAppearance(letter, person) {
     const a = letter.appearance || {};
     const parts = [];
-    const fold = a.orientation === 'landscape' ? '平放在信封里' : '对折了一次';
-    parts.push(`${LOOK_PAPER[a.paper] || '信纸'}，${fold}${LOOK_WEAR[a.wear] ? `，${LOOK_WEAR[a.wear]}` : ''}`);
+    const fold = lookPart(a, 'orientation', a.orientation === 'landscape' ? '平放在信封里' : '对折了一次');
+    const paper = lookPart(a, 'paper', LOOK_PAPER[a.paper] || '信纸');
+    const wear = lookPart(a, 'wear', LOOK_WEAR[a.wear] || '');
+    const p1 = [paper, fold, wear].filter(Boolean).join('，');
+    if (p1) parts.push(p1);
     const hand = normalizeHand(a.font);
-    const ink = a.ink === 'custom' ? '' : a.ink === 'faded' ? '墨色已经褪成了褐色' : INKS[a.ink] ? `用${INKS[a.ink].label}墨水写的` : '';
-    const wobble = hand === 'typewriter' ? '' : (LOOK_WOBBLE[effectiveWobble(letter, person)] || '');
-    parts.push([hand === 'typewriter' ? '' : ink, LOOK_HAND[hand] + wobble].filter(Boolean).join('，'));
-    if (LOOK_SIZE[a.size] && hand !== 'typewriter') parts.push(LOOK_SIZE[a.size]);
-    if (a.flourish && hand !== 'typewriter') parts.push('称呼和署名写成了花体');
+    const typewriter = hand === 'typewriter' && !a.mode?.font;
+    const ink = lookPart(a, 'ink', a.ink === 'custom' ? '' : a.ink === 'faded' ? '墨色已经褪成了褐色' : INKS[a.ink] ? `用${INKS[a.ink].label}墨水写的` : '');
+    const wobble = typewriter || a.mode?.font ? '' : (LOOK_WOBBLE[effectiveWobble(letter, person)] || '');
+    const handText = lookPart(a, 'font', LOOK_HAND[hand] + wobble);
+    const p2 = [typewriter ? '' : ink, handText].filter(Boolean).join('，');
+    if (p2) parts.push(p2);
+    const size = lookPart(a, 'size', LOOK_SIZE[a.size] || '');
+    if (size && !typewriter) parts.push(size);
+    if (a.flourish && !typewriter) parts.push('称呼和署名写成了花体');
     return parts.join('；');
 }
 

@@ -212,7 +212,24 @@ function normalizeAppearance(a = {}) {
         inkColor: /^#[0-9a-f]{6}$/i.test(a.inkColor || '') ? a.inkColor : '', // 墨水选“自定义颜色”时用
         size: ['sm', 'md', 'lg', 'xl'].includes(a.size) ? a.size : 'md',      // 字号：sm 小 | md 标准 | lg 大 | xl 特大
         cjkSize: ['xs', 'sm', 'md', 'lg'].includes(a.cjkSize) ? a.cjkSize : 'md', // 外文信里夹着的中文的字号
+        // 每一项可以是：选好的样式 | follow 空着（跟随文中，不告诉 AI，由剧情决定）| custom 自定义（自己写描述，纸 / 信封 / 火漆 / 墨水还能选颜色）
+        mode: cleanMap(a.mode, v => (v === 'follow' || v === 'custom' ? v : null)),
+        custom: cleanMap(a.custom, v => String(v || '').trim().slice(0, 200) || null),
+        customColor: cleanMap(a.customColor, v => (/^#[0-9a-f]{6}$/i.test(v || '') ? v : null)),
     };
+}
+
+export const APPEARANCE_FIELDS = ['orientation', 'paper', 'wear', 'font', 'size', 'ink', 'envelope', 'wax'];
+
+function cleanMap(m, f) {
+    const out = {};
+    if (m && typeof m === 'object') for (const k of APPEARANCE_FIELDS) { const v = f(m[k]); if (v != null) out[k] = v; }
+    return out;
+}
+
+// 这一项是“空着跟随文中”/“自定义”/普通
+export function lookMode(a, key) {
+    return a?.mode?.[key] || '';
 }
 
 export function normalizeLetter(l, id) {
@@ -232,6 +249,8 @@ export function normalizeLetter(l, id) {
         language: l.language || '',
         tags: parseTags(l.tags),
         folder: cleanFolderName(l.folder),   // 放在哪个文件夹（空 = 未分类）
+        scope: String(l.scope || ''),        // 属于哪张角色卡（char:头像文件名 / group:群聊编号；空 = 还没归属）
+        scopeName: String(l.scopeName || ''), // 那张角色卡的名字（显示用）
         body: typeof l.body === 'string' ? l.body : '',
         shell: !!l.shell && !String(l.body || '').trim(),          // 空壳信：剧情里已经有了，正文还没写
         code: normalizeCode(l.code),                              // 暗号：用户消息里出现它，这一轮就把信交给 AI
@@ -313,8 +332,9 @@ export function normalizeCode(code) {
 }
 
 // 下一个没被用过的暗号：【信1】【信2】……
-export function nextCode(archive) {
-    const used = new Set(Object.values(archive.letters).map(l => l.code));
+// scope：只看同一张角色卡的信（不同角色卡可以各自从【信1】编起）
+export function nextCode(archive, scope = null) {
+    const used = new Set(Object.values(archive.letters).filter(l => scope == null || (l.scope || '') === scope).map(l => l.code));
     for (let n = 1; ; n++) if (!used.has(`【信${n}】`)) return `【信${n}】`;
 }
 
@@ -346,14 +366,14 @@ export function unknownCodes(archive, text) {
 export function ensureCodes(archive) {
     let changed = false;
     for (const l of Object.values(archive.letters).sort((a, b) => a.id.localeCompare(b.id))) {
-        if (!l.code) { l.code = nextCode(archive); changed = true; }
+        if (!l.code) { l.code = nextCode(archive, l.scope || ''); changed = true; }
     }
     return changed;
 }
 
 export function createLetter(archive, partial = {}) {
     const id = nextId(archive, 'letter');
-    const letter = normalizeLetter({ ...partial, id, code: partial.code || nextCode(archive) }, id);
+    const letter = normalizeLetter({ ...partial, id, code: partial.code || nextCode(archive, partial.scope ?? null) }, id);
     resegment(letter);
     archive.letters[id] = letter;
     return letter;

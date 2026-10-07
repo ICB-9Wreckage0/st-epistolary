@@ -36,6 +36,13 @@ function sealKind(letter) {
 }
 export const ENVELOPE_LABELS = { ivory: '象牙白信封', kraft: '牛皮纸信封', blue: '淡蓝信封', white: '白信封', airmail: '航空信封' };
 
+// 把颜色调暗一点（amount 0~1）
+function shade(hex, amount) {
+    const n = parseInt(String(hex).replace('#', ''), 16);
+    const f = c => Math.max(0, Math.round(c * (1 - amount))).toString(16).padStart(2, '0');
+    return `#${f((n >> 16) & 255)}${f((n >> 8) & 255)}${f(n & 255)}`;
+}
+
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -66,8 +73,11 @@ class Stage {
         this.letter = letter;
         this.skip = false;
         const a = letter.appearance || {};
-        const env = ENVELOPES[a.envelope] || ENVELOPES.ivory;
-        const wax = WAX[a.wax] || WAX.crimson;
+        let env = ENVELOPES[a.envelope] || ENVELOPES.ivory;
+        let wax = WAX[a.wax] || WAX.crimson;
+        // 自定义颜色
+        if (a.mode?.envelope === 'custom' && a.customColor?.envelope) env = { ...env, paper: a.customColor.envelope, edge: shade(a.customColor.envelope, 0.12) };
+        if (a.mode?.wax === 'custom' && a.customColor?.wax) wax = [a.customColor.wax, shade(a.customColor.wax, 0.3), shade(a.customColor.wax, 0.6)];
         const portrait = a.orientation !== 'landscape';
         const body = renderBody(letter.body || '', renderOpts || renderOptions(letter, null));
         const layer = paperLayer(letter, hashSeed((letter.id || '') + (letter.author || '')));

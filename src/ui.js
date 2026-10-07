@@ -179,14 +179,18 @@ export class UI {
     // ================= 通信时间线 =================
 
     renderTimeline() {
-        const pairs = correspondentPairs(this.archive);
-        if (!pairs.length) return '<div class="epi-empty">还没有寄出的信。写几封信、或者从聊天记录里找信以后，这里会按日期排出谁和谁的通信。</div>';
+        const pairs = correspondentPairs(this.scopedArchive());
+        if (!pairs.length) {
+            const none = Object.values(this.archive.letters).filter(l => !l.scope).length;
+            const sc = this.hooks.getScope?.();
+            return `<div class="epi-empty">${sc ? `「${esc(sc.name)}」这张角色卡还没有信。` : '还没有寄出的信。'}写几封信、或者从聊天记录里找信以后，这里会按日期排出谁和谁的通信。${sc && none ? `<br><br>还有 ${none} 封以前的信没分给角色卡：到「信件」里选“还没归属的旧信”，可以归给这张卡，或者删掉。` : ''}</div>`;
+        }
         if (this.tlPair && !pairs.some(p => p.key === this.tlPair) && this.tlPair !== '*') this.tlPair = '';
         const key = this.tlPair || pairs[0].key;
         const [a, b] = key === '*' ? ['', ''] : key.split('\u0001');
         const tf = this.tlFolder;
-        const items = buildTimeline(this.archive, { a, b }).filter(i => tf == null || (tf === '' ? !i.letter.folder : i.letter.folder === tf));
-        const sum = a ? pairSummary(this.archive, a, b) : null;
+        const items = buildTimeline(this.scopedArchive(), { a, b }).filter(i => tf == null || (tf === '' ? !i.letter.folder : i.letter.folder === tf)).filter(i => !this.onlyPending || this.isPending(i.letter));
+        const sum = a ? pairSummary(this.scopedArchive(), a, b) : null;
         const side = i => (!a ? 'full' : this.isSamePerson(i.from, a) ? 'left' : 'right');
         const fmtMonth = m => (m ? m.replace(/^(\d{4})-0?(\d+)$/, '$1 年 $2 月') : '日期不详');
         let lastMonth = null;
@@ -237,6 +241,7 @@ export class UI {
                     ${folderList(this.archive).map(f => `<option value="${esc(f)}" ${tf === f ? 'selected' : ''}>📁 ${esc(f)}</option>`).join('')}
                     <option value="" ${tf === '' ? 'selected' : ''}>未分类</option>
                 </select></label>` : ''}
+                <button class="menu_button ${this.onlyPending ? 'epi-primary' : ''}" data-act="only-pending" title="只看还没送到的信">📮 还没送到</button>
                 <div class="epi-tl-update">
                     <button class="menu_button epi-primary" data-act="tl-update" ${this.hooks.hasChat() ? '' : 'disabled title="先打开一个聊天"'} title="马上看一遍最近的剧情：信收到了没有、谁读了、信现在在哪；高级模式还会推算剧情日期、把到日子的信送到">🔄 更新状态</button>
                     <span class="epi-muted">${this.hooks.hasChat() ? (this.hooks.getLastStatusFloor?.() != null ? `上次更新到第 ${this.hooks.getLastStatusFloor()} 层` : '这个聊天还没更新过') : ''}</span>
@@ -302,8 +307,68 @@ export class UI {
 
     personGroups(gb) {
         const m = new Map();
-        for (const l of Object.values(this.archive.letters)) for (const g of new Set(this.groupsOf(l, gb))) m.set(g, (m.get(g) || 0) + 1);
+        for (const l of this.viewLetters()) for (const g of new Set(this.groupsOf(l, gb))) m.set(g, (m.get(g) || 0) + 1);
         return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'));
+    }
+
+    // ---------- 角色卡 ----------
+    // 看哪张角色卡的信：here 当前角色卡 | all 所有 | none 没归属的 | 其他卡的 key
+    scopeView() {
+        const sc = this.hooks.getScope?.();
+        if (!sc) return 'all';
+        return this.scopeSel || 'here';
+    }
+
+    inView(l) {
+        const sc = this.hooks.getScope?.();
+        const v = this.scopeView();
+        if (v === 'all') return true;
+        if (v === 'none') return !l.scope;
+        if (v === 'here') return !!sc && l.scope === sc.key;
+        return l.scope === v;
+    }
+
+    // 还没送到：写好没寄、在路上、在转交人那里（草稿不算）
+    isPending(l) { return ['unsent', 'transit', 'atVia'].includes(deliveryState(l)); }
+
+    viewLetters() { return Object.values(this.archive.letters).filter(l => this.inView(l)); }
+    scopedArchive() { return { ...this.archive, letters: Object.fromEntries(this.viewLetters().map(l => [l.id, l])) }; }
+
+    // 档案里有哪些角色卡（按信的数量）
+    scopeList() {
+        const m = new Map();
+        for (const l of Object.values(this.archive.letters)) {
+            const k = l.scope || '';
+            const cur = m.get(k) || { key: k, name: l.scopeName || '', n: 0 };
+            cur.n++;
+            if (!cur.name && l.scopeName) cur.name = l.scopeName;
+            m.set(k, cur);
+        }
+        return [...m.values()].sort((a, b) => b.n - a.n);
+    }
+
+    scopeBar() {
+        const sc = this.hooks.getScope?.();
+        if (!sc) return '';
+        const v = this.scopeView();
+        const list = this.scopeList();
+        const hereN = list.find(x => x.key === sc.key)?.n || 0;
+        const none = list.find(x => x.key === '')?.n || 0;
+        const others = list.filter(x => x.key && x.key !== sc.key);
+        const opt = (val, text) => `<option value="${esc(val)}" ${v === val ? 'selected' : ''}>${esc(text)}</option>`;
+        return `<div class="epi-scopebar">
+            <label>🎭 角色卡<select class="text_pole" data-act="scope-pick">
+                ${opt('here', `当前：${sc.name}（${hereN} 封）`)}
+                ${others.map(x => opt(x.key, `${x.name || x.key}（${x.n} 封）`)).join('')}
+                ${none ? opt('none', `还没归属的旧信（${none} 封）`) : ''}
+                ${opt('all', `所有角色卡（${Object.keys(this.archive.letters).length} 封）`)}
+            </select></label>
+            ${v !== 'here' && v !== 'all' ? `<span class="epi-scope-tools">
+                <button class="menu_button" data-act="scope-adopt-all" title="这些信都归给当前角色卡，在这里生效">全部归给「${esc(sc.name)}」</button>
+                <button class="menu_button epi-danger" data-act="scope-delete-all" title="删掉这些信（会先自动备份）">全部删除</button>
+            </span>` : ''}
+            ${v === 'here' && none ? `<span class="epi-muted">还有 ${none} 封以前的信没分给角色卡，不在这里显示、也不会生效。<a href="#" data-act="scope-show-none">看看</a></span>` : ''}
+        </div>`;
     }
 
     // 信件列表的排序（记在设置里，下次打开还是这样）
@@ -354,7 +419,7 @@ export class UI {
         const chip = (n, on, act) => `<button class="epi-pick ${on ? 'active' : ''}" data-act="${act}" data-name="${esc(n)}">${esc(n)}${n === me ? ' <span class="epi-muted">（你）</span>' : ''}</button>`;
         // 最近的通信组合：点一下直接开写
         const seen = new Map();
-        for (const l of Object.values(this.archive.letters).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))) {
+        for (const l of this.viewLetters().sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))) {
             const k = `${l.author}\u0001${l.recipients.join('、')}`;
             if (l.author && l.recipients.length && !seen.has(k)) seen.set(k, { a: l.author, r: l.recipients });
             if (seen.size >= 6) break;
@@ -394,7 +459,7 @@ export class UI {
     nameOptions() {
         const count = new Map();
         const add = (n, w = 1) => { const k = String(n || '').trim(); if (k) count.set(k, (count.get(k) || 0) + w); };
-        for (const l of Object.values(this.archive.letters)) {
+        for (const l of this.viewLetters()) {
             add(l.author, 2);
             for (const r of l.recipients || []) add(r, 2);
             if (l.delivery?.via) add(l.delivery.via);
@@ -444,12 +509,16 @@ export class UI {
 
     renderList() {
         const q = this.search.trim().toLowerCase();
-        const folders = folderList(this.archive);
+        const allFolders = folderList(this.archive);
+        const inView = new Set(this.viewLetters().map(l => l.folder).filter(Boolean));
+        const used = new Set(Object.values(this.archive.letters).map(l => l.folder).filter(Boolean));
+        const folders = allFolders.filter(f => inView.has(f) || !used.has(f));
         if (this.folder && !folders.includes(this.folder)) this.folder = null;
         const gb = this.groupBy || 'folder';
         const fsel = gb === 'folder' ? this.folder : null;
         const gsel = gb !== 'folder' ? this.groupSel ?? null : null;
-        const letters = Object.values(this.archive.letters)
+        const letters = this.viewLetters()
+            .filter(l => !this.onlyPending || this.isPending(l))
             .filter(l => fsel == null || (fsel === '' ? !l.folder : l.folder === fsel))
             .filter(l => gsel == null || this.groupsOf(l, gb).includes(gsel))
             .filter(l => !q || [l.id, l.title, l.author, ...l.recipients, ...l.tags, l.body].join(' ').toLowerCase().includes(q))
@@ -465,7 +534,6 @@ export class UI {
                         <b>${esc(l.author || '？')} → ${esc(l.recipients.join('、') || '？')}</b>
                         <span class="epi-muted">${esc(l.writtenAt || ((l.events || []).map(e => e.date).filter(Boolean).sort()[0] ? `剧情里 ${(l.events || []).map(e => e.date).filter(Boolean).sort()[0]}` : ''))}</span>
                         <span class="epi-chip epi-dv-chip" title="寄送到哪一步">${esc(deliveryText(l))}</span>
-                        ${l.status !== 'sent' ? `<span class="epi-chip epi-status-${esc(l.status)}">${esc(STATUSES[l.status])}</span>` : ''}
                         ${ex && l.delivery?.status === 'transit' ? `<span class="epi-chip epi-transit">📮 在途 · ${esc(this.etaText(l))}</span>` : ''}
                         ${ex && l.delivery?.status === 'arrived' ? `<span class="epi-chip epi-transit">📬 刚送到</span>` : ''}
                         ${ex ? this.viaChip(l) : ''}
@@ -489,17 +557,17 @@ export class UI {
                     <button class="menu_button" data-act="delete" data-id="${esc(l.id)}">删除</button>
                 </div>
             </div>`).join('');
-        const count = f => lettersInFolder(this.archive, f).length;
+        const count = f => lettersInFolder(this.scopedArchive(), f).length;
         this.visibleIds = letters.map(l => l.id);
         const gtabs = `<div class="epi-groupby"><span class="epi-muted">分类：</span>${[['folder', '📁 文件夹'], ['author', '✍ 写信人'], ['recipient', '📬 收信人'], ['pair', '⇄ 通信双方']].map(([k, v]) => `<button class="epi-gb ${gb === k ? 'active' : ''}" data-act="group-by" data-g="${k}">${v}</button>`).join('')}</div>`;
         const pgroups = gb === 'folder' ? null : this.personGroups(gb);
         const fbar = gtabs + (pgroups ? `
             <div class="epi-folders">
-                <button class="epi-folder ${gsel == null ? 'active' : ''}" data-act="group-pick" data-gv="*">全部 <span>${Object.keys(this.archive.letters).length}</span></button>
+                <button class="epi-folder ${gsel == null ? 'active' : ''}" data-act="group-pick" data-gv="*">全部 <span>${this.viewLetters().length}</span></button>
                 ${pgroups.map(([g, n]) => `<button class="epi-folder ${gsel === g ? 'active' : ''}" data-act="group-pick" data-gv="${esc(g)}">${esc(g)} <span>${n}</span></button>`).join('')}
             </div>` : `
             <div class="epi-folders">
-                <button class="epi-folder ${fsel == null ? 'active' : ''}" data-act="folder-pick" data-folder="*">全部 <span>${Object.keys(this.archive.letters).length}</span></button>
+                <button class="epi-folder ${fsel == null ? 'active' : ''}" data-act="folder-pick" data-folder="*">全部 <span>${this.viewLetters().length}</span></button>
                 ${folders.map(f => `<button class="epi-folder ${fsel === f ? 'active' : ''}" data-act="folder-pick" data-folder="${esc(f)}">📁 ${esc(f)} <span>${count(f)}</span></button>`).join('')}
                 <button class="epi-folder ${fsel === '' ? 'active' : ''}" data-act="folder-pick" data-folder="">未分类 <span>${count('')}</span></button>
                 <button class="epi-folder epi-folder-new" data-act="folder-new">＋ 新建文件夹</button>
@@ -523,13 +591,17 @@ export class UI {
                     ${[['code', '按暗号'], ['date', '按日期'], ['updated', '按最近修改'], ['author', '按写信人']].map(([k, v]) => `<option value="${k}" ${this.sortKey() === k ? 'selected' : ''}>${v}</option>`).join('')}
                 </select>
                 <button class="menu_button epi-sort-dir" data-act="list-sort-dir" title="${this.sortDesc() ? '现在是倒序，点一下改成正序' : '现在是正序，点一下改成倒序'}">${this.sortDesc() ? '↓ 倒序' : '↑ 正序'}</button>
+                <button class="menu_button ${this.onlyPending ? 'epi-primary' : ''}" data-act="only-pending" title="只看还没送到的信：写好没寄、已寄出在路上、在转交人那里还没转交">📮 还没送到${(() => { const n = this.viewLetters().filter(l => this.isPending(l)).length; return n ? ` <span class="epi-badge">${n}</span>` : ''; })()}</button>
                 <button class="menu_button ${this.selectMode ? 'epi-primary' : ''}" data-act="select-mode" title="勾选好几封信，一起移到文件夹">${this.selectMode ? '✓ 完成选择' : '☑ 批量选择'}</button>
             </div>
             ${this.selectMode ? `<div class="epi-bulkbar">
                 <span>已选 <b>${this.selected?.size || 0}</b> 封</span>
                 <a href="#" data-act="select-all">全选这一页</a> · <a href="#" data-act="select-none">全不选</a>
+                ${this.hooks.getScope?.() ? `<button class="menu_button" data-act="scope-adopt-sel" title="勾选的信归给当前角色卡">归给「${esc(this.hooks.getScope().name)}」</button>` : ''}
+                <button class="menu_button epi-danger" data-act="delete-sel">删除勾选的</button>
                 <select class="text_pole epi-move-bulk" data-act="move-bulk" title="把勾选的信一起移到文件夹"><option value="__none__">移到文件夹…</option>${this.folderOptions(null).replace(' selected', '')}</select>
             </div>` : ''}
+            ${this.scopeBar()}
             ${fbar}
             ${rows || '<div class="epi-empty">还没有信件。点「写新信」开始，或者把聊天里的信粘贴进来。</div>'}
             <div class="epi-muted epi-foot">${esc(this.store.statusText())}</div>`;
@@ -548,8 +620,9 @@ export class UI {
                 author: opts.author ?? (this.hooks.getUserName() || ''),
                 recipients: opts.recipients ?? [this.hooks.getCharName()].filter(Boolean),
                 writtenAt: this.expert ? (this.hooks.getStoryDate() || '') : '',
-                code: nextCode(this.archive),
+                code: nextCode(this.archive, this.hooks.getScope?.()?.key ?? null),
                 folder: opts.folder ?? (this.folder || ''),
+                ...(this.hooks.scopeFields?.() || {}),
             }, '');
             // 沿用两人之前通信的地点和语言
             const g = guessHeadFromThread(this.archive, this.draft.author, this.draft.recipients[0]);
@@ -956,13 +1029,14 @@ export class UI {
     saveDraft({ silent = false } = {}) {
         const d = this.draft;
         this.commitRaw(d);
+        if (this.draftIsNew && !d.scope) Object.assign(d, this.hooks.scopeFields?.() || {}); // 新信记上当前角色卡
         resegment(d);
         d.links.works = parseTags(d.links.works);
         for (const e of d.events) if (e.type === 'forwarded' && !e.to) e.to = e.note;
         d.code = normalizeCode(d.code);
         // 简单模式没有“寄出”按钮：写好的信算“写好了，没寄”，等剧情里寄出 / 收到再由经过来改
         if (!this.expert && d.status === 'draft' && !d.aiDraft && String(d.body || '').trim()) d.status = 'unsent';
-        const clash = d.code && Object.values(this.archive.letters).find(l => l.id !== d.id && l.code === d.code);
+        const clash = d.code && Object.values(this.archive.letters).find(l => l.id !== d.id && l.code === d.code && (l.scope || '') === (d.scope || ''));
         if (clash) {
             toastr?.warning(`暗号 ${d.code} 已经给了 ${clash.author} → ${clash.recipients.join('、')} 那封信，这封换成了新的暗号`);
             d.code = '';
@@ -971,7 +1045,7 @@ export class UI {
         if (this.draftIsNew) {
             letter = createLetter(this.archive, { ...d, id: undefined });
         } else {
-            if (!d.code) d.code = nextCode(this.archive);
+            if (!d.code) d.code = nextCode(this.archive, d.scope || '');
             letter = normalizeLetter(d, d.id);
             letter.updatedAt = new Date().toISOString();
             this.archive.letters[d.id] = letter;
@@ -990,7 +1064,7 @@ export class UI {
     renderEnclosures(d) {
         const list = d.enclosures || [];
         const kindOpts = Object.fromEntries(Object.entries(ENCLOSURE_KINDS).map(([k, v]) => [k, `${v.icon} ${v.label}`]));
-        const others = Object.values(this.archive.letters).filter(l => l.id !== d.id);
+        const others = this.viewLetters().filter(l => l.id !== d.id);
         const mentions = !list.length && extractEnclosures(d.body).length;
         const rows = list.map((e, i) => `
             <div class="epi-enc-row">
@@ -1876,6 +1950,7 @@ ${list}`;
             const target = normalizeDate(val(i, 'target')) ? val(i, 'target') : '';
             const leg = Math.max(0, parseInt(val(i, 'leg'), 10) || 0);
             const letter = createLetter(this.archive, {
+                ...(this.hooks.scopeFields?.() || {}),
                 author,
                 recipients: parseNames(val(i, 'recipient')),
                 writtenAt: date,
@@ -1935,6 +2010,7 @@ ${list}`;
             const f = this.importFound[i];
             const date = val(i, 'date');
             const letter = createLetter(this.archive, {
+                ...(this.hooks.scopeFields?.() || {}),
                 author: val(i, 'author'),
                 recipients: parseNames(val(i, 'recipient')),
                 writtenAt: date,
@@ -1972,8 +2048,11 @@ ${list}`;
 
     lookSummary(a) {
         const hand = HANDS[a.font]?.label || '';
-        return [ORIENTATIONS[a.orientation]?.replace(/（.*）/, ''), PAPERS[a.paper], a.ink === 'custom' ? '自定义墨色' : INKS[a.ink]?.label, hand && `字迹${hand}`, a.size && a.size !== 'md' ? `字号${SIZE_LABELS[a.size].replace(/（.*）/, '')}` : '', ENVELOPE_LABELS[a.envelope], WAX_LABELS[a.wax]]
-            .filter(Boolean).join(' · ') + (lookWarnings({ appearance: a }).length ? '  ⚠ 有容易被误读的选项' : '');
+        const m = a.mode || {};
+        const v = (key, normal) => (m[key] === 'follow' ? '' : m[key] === 'custom' ? (a.custom?.[key] ? `“${String(a.custom[key]).slice(0, 10)}”` : '自定义') : normal);
+        const follow = Object.keys(m).filter(k => m[k] === 'follow').length;
+        return [v('orientation', ORIENTATIONS[a.orientation]?.replace(/（.*）/, '')), v('paper', PAPERS[a.paper]), v('ink', a.ink === 'custom' ? '自定义墨色' : INKS[a.ink]?.label), v('font', hand && `字迹${hand}`), v('size', a.size && a.size !== 'md' ? `字号${SIZE_LABELS[a.size].replace(/（.*）/, '')}` : ''), v('envelope', ENVELOPE_LABELS[a.envelope]), v('wax', WAX_LABELS[a.wax])]
+            .filter(Boolean).join(' · ') + (follow ? `  · ${follow} 项跟随文中` : '') + (lookWarnings({ appearance: a }).length ? '  ⚠ 有容易被误读的选项' : '');
     }
 
     openStyleDialog() {
@@ -1986,11 +2065,23 @@ ${list}`;
                 <span class="epi-ap-label">${label}</span>
                 <div class="epi-ap-control">${control}${hint ? `<small class="epi-muted">${hint}</small>` : ''}</div>
             </div>`;
-        const sel = (key, map, value, extra = '') => `<select class="text_pole" data-f="appearance.${key}" ${extra}>${options(map, String(value))}</select>`;
+        // 每一项都多两个选择：空着（跟随文中）、自定义
+        const COLORABLE = { paper: '纸的颜色', envelope: '信封颜色', wax: '火漆颜色', ink: '墨水颜色' };
+        const sel = (key, map, value, extra = '') => {
+            const m = (a.mode || {})[key] || '';
+            return `<select class="text_pole" data-f="appearance.${key}" ${extra}>
+                <option value="__follow" ${m === 'follow' ? 'selected' : ''}>空（跟随文中）</option>
+                ${options(map, m ? '\u0000' : String(value))}
+                <option value="__custom" ${m === 'custom' ? 'selected' : ''}>自定义…</option>
+            </select>${m === 'custom' ? `<div class="epi-ap-custom">
+                <input class="text_pole" data-f="appearance.custom.${key}" value="${esc((a.custom || {})[key] || '')}" placeholder="自己写：${{ paper: '比如：淡紫色压花信纸，边上有烫金', envelope: '比如：深红色厚卡纸信封', wax: '比如：墨绿火漆，压着橡树叶纹章', ink: '比如：紫罗兰色墨水', font: '比如：字很小、往右斜', size: '比如：越写越小，挤在纸边', wear: '比如：被雨淋过，字有点晕开', orientation: '比如：折成三折' }[key] || '怎么样'}">
+                ${COLORABLE[key] ? `<label class="epi-ap-color">${COLORABLE[key]}<input type="color" data-f="appearance.customColor.${key}" value="${esc((a.customColor || {})[key] || '#c8b89a')}"></label>` : ''}
+            </div>` : m === 'follow' ? '<div class="epi-muted epi-ap-follow">这一项不告诉 AI，由剧情里怎么写就是怎么样；书信簿里按默认样子显示。</div>' : ''}`;
+        };
         // 当前选项的含义（⚠ = 收信人可能会误读）
         const year = parseInt(String(d.writtenAt || '').slice(0, 4), 10) || 0;
         const mean = (field, base = '') => {
-            const m = meaningOf(field, a[field], year);
+            const m = (a.mode || {})[field] ? null : meaningOf(field, a[field], year);
             const txt = m ? `<span class="${m.warn ? 'epi-meaning epi-meaning-warn' : 'epi-meaning'}">${m.warn ? '⚠ ' : '含义：'}${esc(m.text)}</span>` : '';
             return [base, txt].filter(Boolean).join('<br>');
         };
@@ -2010,8 +2101,8 @@ ${list}`;
             ${row('字迹', sel('font', Object.fromEntries(Object.entries(HANDS).map(([k, v]) => [k, `${v.label}：${v.desc}`])), a.font), mean('font', '这个人的字写成什么样。英文、法文和中文会自动用各自的字体。'))}
             ${row('字号', sel('size', SIZE_LABELS, a.size), '纸上的字写多大。写信和阅读时都按这个显示；也会告诉 AI（字小而密、字写得很大，读信的人能看出来）。')}
             ${scriptLang(d.language) === 'lat' ? row('中文字号', sel('cjkSize', CJK_SIZE_LABELS, a.cjkSize), '外文信里夹着的中文（比如括号里的翻译）单独的大小。外文手写体为了看得清会放大，中文不跟着放大；觉得中文还是太大，就选“小”或“很小”。只影响阅读和信封动画，写信页是普通文字。') : ''}
-            ${row('墨水', `${sel('ink', labelWithWarn('ink', Object.fromEntries(Object.entries(INKS).map(([k, v]) => [k, v.label]))), a.ink)}
-                <input type="color" class="epi-ink-picker" data-f="appearance.inkColor" value="${esc(a.inkColor || inkColor(a))}" title="自定义墨水颜色" ${a.ink === 'custom' ? '' : 'hidden'}>
+            ${row('墨水', `${sel('ink', labelWithWarn('ink', Object.fromEntries(Object.entries(INKS).filter(([k]) => k !== 'custom' || a.ink === 'custom').map(([k, v]) => [k, v.label]))), a.ink)}
+                <input type="color" class="epi-ink-picker" data-f="appearance.inkColor" value="${esc(a.inkColor || inkColor(a))}" title="自定义墨水颜色" ${a.ink === 'custom' && !(a.mode || {}).ink ? '' : 'hidden'}>
                 <span class="epi-ink-swatch" style="background:${esc(inkColor(a))}"></span>`, mean('ink', `和纸的对比度 ${inkContrast(a).toFixed(1)}${inkContrast(a) < 4.5 ? '，偏浅，建议换深一点的墨水' : '，清楚'}。`))}
             ${row('笔迹抖动', `<select class="text_pole" data-f="appearance.wobble"><option value="">跟随写信人档案</option>${options(WOBBLE_LABELS, String(a.wobble))}</select>`, '每个字轻微的歪斜、高低和墨色深浅，让字看起来是手写的。只在阅读时显示，写信时是普通文字。')}
             ${row('花体', `<label class="checkbox_label"><input type="checkbox" data-act="toggle-flourish-cb" ${a.flourish ? 'checked' : ''}> 称呼和署名用花体</label>`, '阅读时，开头的称呼和结尾的署名换成花体字，正文不变。')}
@@ -2076,7 +2167,8 @@ ${list}`;
     // 这个聊天里相关的信：没有绑定聊天的，或者就是在这个聊天里寄出的
     chatLetters() {
         const chatId = this.hooks.getChatId();
-        return Object.values(this.archive.letters).filter(l => l.delivery && (!l.delivery.chatId || l.delivery.chatId === chatId));
+        const sc = this.hooks.getScope?.();
+        return Object.values(this.archive.letters).filter(l => (!sc || l.scope === sc.key) && l.delivery && (!l.delivery.chatId || l.delivery.chatId === chatId));
     }
 
     renderPostbox() {
@@ -3080,6 +3172,35 @@ ${list}`;
                 break;
             case 'tl-collapse-all': this.tlExpanded = new Set(); this.rerenderKeepScroll(); break;
             case 'tl-result-close': this.tlResult = ''; this.show('timeline'); break;
+            case 'scope-show-none': this.scopeSel = 'none'; this.folder = null; this.groupSel = null; this.show('list'); break;
+            case 'scope-adopt-all':
+            case 'scope-adopt-sel': {
+                const ids = act === 'scope-adopt-all' ? this.viewLetters().map(l => l.id) : [...(this.selected || [])];
+                if (!ids.length) { toastr?.info('先勾选要归过来的信'); break; }
+                const n = this.hooks.assignScope(ids);
+                toastr?.success(`${n} 封信归给了「${this.hooks.getScope()?.name || ''}」`);
+                this.selected = new Set();
+                if (act === 'scope-adopt-all') this.scopeSel = 'here';
+                this.show('list');
+                break;
+            }
+            case 'scope-delete-all':
+            case 'delete-sel': {
+                const ids = act === 'scope-delete-all' ? this.viewLetters().map(l => l.id) : [...(this.selected || [])];
+                if (!ids.length) { toastr?.info('先勾选要删除的信'); break; }
+                if (!confirm(`删除这 ${ids.length} 封信？删除前会自动备份一份档案，「设置 → 档案与备份」里能恢复。`)) break;
+                try { await this.hooks.backupNow(); } catch (err) { if (!confirm(`备份失败（${err?.message || err}），还要继续删除吗？`)) break; }
+                for (const id of ids) delete this.archive.letters[id];
+                if (this.draft && ids.includes(this.draft.id)) this.draft = null;
+                this.store.save();
+                this.hooks.syncWorldBook?.();
+                this.selected = new Set();
+                if (act === 'scope-delete-all') this.scopeSel = 'here';
+                toastr?.success(`删除了 ${ids.length} 封信`);
+                this.show('list');
+                break;
+            }
+            case 'only-pending': this.onlyPending = !this.onlyPending; this.rerenderKeepScroll(); break;
             case 'list-sort-dir':
                 // 先算好再写：getSettings() 每次都会换一个新对象
                 { const v = !this.sortDesc(); this.hooks.getSettings().listSortDesc = v; }
@@ -3533,7 +3654,8 @@ ${list}`;
             this.estTimer = setTimeout(() => this.updateStatusEstimate(), 200);
             return;
         }
-                if (act === 'list-sort') { if (e.type === 'change') { this.hooks.getSettings().listSort = t.value; this.hooks.saveSettings(); this.rerenderKeepScroll(); } return; }
+                if (act === 'scope-pick') { if (e.type === 'change') { this.scopeSel = t.value; this.folder = null; this.groupSel = null; this.selected = new Set(); this.rerenderKeepScroll(); } return; }
+        if (act === 'list-sort') { if (e.type === 'change') { this.hooks.getSettings().listSort = t.value; this.hooks.saveSettings(); this.rerenderKeepScroll(); } return; }
         if (act === 'tl-folder') { if (e.type === 'change') { this.tlFolder = t.value === '*' ? null : t.value; this.show('timeline'); } return; }
         if (act === 'tl-pair') { if (e.type === 'change') { this.tlPair = t.value; this.show('timeline'); } return; }
         if (t.dataset.s) {
@@ -3605,14 +3727,28 @@ ${list}`;
                 t.classList.remove('epi-lh-ai');
             }
             const path = t.dataset.f.split('.');
-            if (path.length === 2) d[path[0]][path[1]] = t.value; else d[path[0]] = t.value;
+            if (path[0] === 'appearance' && path.length === 2 && (t.value === '__follow' || t.value === '__custom')) {
+                // 空着（跟随文中）/ 自定义：只记模式，原来选的样子留着当显示用的底
+                d.appearance.mode = { ...(d.appearance.mode || {}), [path[1]]: t.value === '__follow' ? 'follow' : 'custom' };
+            } else if (path.length === 3) {
+                d[path[0]][path[1]] = { ...(d[path[0]][path[1]] || {}), [path[2]]: t.value };
+            } else if (path.length === 2) {
+                d[path[0]][path[1]] = t.value;
+                if (path[0] === 'appearance' && d.appearance.mode?.[path[1]]) { const m = { ...d.appearance.mode }; delete m[path[1]]; d.appearance.mode = m; }
+            } else d[path[0]] = t.value;
             if (path[0] === 'appearance') {
                 if (t.dataset.f === 'appearance.inkColor') d.appearance.ink = 'custom';
                 this.refreshPaper();
                 if (t.dataset.f === 'appearance.font') this.fontTouched = true;
                 if (t.dataset.f === 'appearance.orientation') this.fitPage();
                 // 外观对话框里改了选项：重绘对话框，让说明和对比度跟着变
-                if (e.type === 'change' && t.closest('.epi-dialog')) this.reopenStyleDialog();
+                if (e.type === 'change' && t.closest('.epi-dialog') && t.tagName === 'SELECT') this.reopenStyleDialog();
+                else if (t.closest('.epi-dialog')) {
+                    const look = this.root.querySelector('[data-role="look"]');
+                    if (look) look.textContent = this.lookSummary(d.appearance);
+                    const sw = this.root.querySelector('.epi-dialog .epi-ink-swatch');
+                    if (sw) sw.style.background = inkColor(d.appearance);
+                }
             }
             if (t.dataset.f === 'body') { this.fitPage(); this.updateCount(); }
             if (t.dataset.f === 'author' && e.type === 'change' && !this.fontTouched) {
