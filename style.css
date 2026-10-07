@@ -1515,3 +1515,12 @@ details.epi-sec-card.epi-sec-off > :not(summary):not(.epi-off-note) { opacity: .
 .epi-ap-color { display: flex !important; flex-direction: row !important; align-items: center; gap: 4px; font-size: .88em; margin: 0 !important; }
 .epi-ap-color input[type="color"] { width: 2.4em; height: 1.8em; padding: 0; border: 0; background: transparent; }
 .epi-ap-follow { margin-top: 3px; font-size: .86em; }
+
+/* ---------- 信里的格式：加粗 / 划掉 / 放大 / 下划线 ---------- */
+.epi-m.m-bold { font-weight: 700; text-shadow: 0 0 .45px currentColor; }
+.epi-m.m-strike, .epi-m.m-strike * { text-decoration: line-through; text-decoration-thickness: .09em; text-decoration-color: var(--ink, currentColor); }
+.epi-m.m-big { font-size: 1.4em; line-height: 1.1; }
+.epi-m.m-under, .epi-m.m-under * { text-decoration: underline; text-decoration-thickness: .07em; text-underline-offset: .18em; }
+.epi-m.m-strike.m-under, .epi-m.m-strike.m-under * { text-decoration-line: line-through underline; }
+.epi-rgroup-fmt { display: inline-flex; align-items: center; gap: 3px; }
+.epi-rbtn.epi-fmt { min-width: 2em; padding-left: 6px; padding-right: 6px; }

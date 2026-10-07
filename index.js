@@ -5,7 +5,7 @@
 import { Store } from './src/store.js';
 import { UI } from './src/ui.js';
 import { retrieve, DEFAULT_RETRIEVAL } from './src/retrieval.js';
-import { sameName, normalizeDate, findPerson, lettersByCode, unknownCodes, ensureCodes, createLetter } from './src/model.js';
+import { sameName, normalizeDate, findPerson, lettersByCode, unknownCodes, ensureCodes, createLetter, aiText } from './src/model.js';
 import {
     buildReactionGuidance, replyChatMessage, sceneSwitchMessage, sceneReturnMessage,
     deliveryEvents, buildDatePrompt, parseStoryDate, addDays,
@@ -338,8 +338,8 @@ function letterBlock(l) {
     const head = [`${l.author || '？'} 写给 ${l.recipients.join('、') || '？'}`, l.writtenAt].filter(Boolean).join('｜');
     const enc = l.enclosures?.length ? `\n\n（随信附上：${l.enclosures.map(e => e.name + (e.value && !e.name.includes(e.value) ? `，${e.value}` : '')).join('；')}）` : '';
     // 和“剧情推进”一样：直接写进用户这一楼，并且明确告诉 AI 这是既定内容
-    const rule = '（以下是这封信的原文，已经写好。剧情里有人读它时，读到的就是这些字句：可以引用，不要另编一封，不要改写或增删。）';
-    return `${blockStart(l)}${head}】\n\n${rule}\n\n${String(l.body || '').trim()}${enc}\n\n${BLOCK_END}`;
+    const rule = `（以下是这封信的原文，已经写好。剧情里有人读它时，读到的就是这些字句：可以引用，不要另编一封，不要改写或增删。${/〔(加粗|划掉|写得很大|画了线)：/.test(aiText(l.body)) ? '〔划掉：……〕是写信人写了又划掉的字（读的人看得见被划掉的内容），〔写得很大：……〕〔加粗：……〕〔画了线：……〕是写信人特意强调的地方。' : ''}）`;
+    return `${blockStart(l)}${head}】\n\n${rule}\n\n${aiText(l.body || '').trim()}${enc}\n\n${BLOCK_END}`;
 }
 
 // 一段文字里有暗号：把对应的信接在后面。返回 { text, letters }（没有要加的就原样返回）

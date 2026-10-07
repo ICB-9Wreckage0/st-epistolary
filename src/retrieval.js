@@ -2,7 +2,7 @@
 // 流程：聊天文字 → 找候选段落 → 检查信是否已写成 → 检查视角角色的知情程度 → 按预算挑选 → 拼成注入文本
 // 纯函数，可在 Node 里测试。
 
-import { knowledgeOf, nameSet, segmentPosition, isOnOrBefore, LEVEL_LABELS } from './model.js';
+import { knowledgeOf, nameSet, segmentPosition, isOnOrBefore, LEVEL_LABELS, aiText } from './model.js';
 
 export const DEFAULT_RETRIEVAL = {
     maxSegments: 4,     // 最多注入几段原文/大意
@@ -122,7 +122,7 @@ export function retrieve(archive, { texts, viewer, storyDate, settings, exclude 
     for (const c of candidates) {
         const letter = archive.letters[c.letterId];
         const seg = letter.segments.find(s => s.id === c.segId);
-        const content = c.level === 'full' ? seg.text : seg.summary;
+        const content = c.level === 'full' ? aiText(seg.text) : seg.summary;
         if (selected.length >= cfg.maxSegments) { c.dropped = '超过段数上限'; continue; }
         if ((perLetter[c.letterId] || 0) >= cfg.maxPerLetter) { c.dropped = '超过每封信段数上限'; continue; }
         let text = content;
@@ -187,7 +187,7 @@ export function formatInjection(archive, selected, existsList, viewer) {
         if (s.level === 'summary') {
             lines.push(`（大意）${s.text}`);
         } else {
-            lines.push(s.text + (s.truncated ? '……（后略）' : ''));
+            lines.push(aiText(s.text) + (s.truncated ? '……（后略）' : ''));
         }
     }
 

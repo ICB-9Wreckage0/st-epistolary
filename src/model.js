@@ -67,6 +67,34 @@ export function maxLevel(a, b) {
     return levelRank(a) >= levelRank(b) ? a : b;
 }
 
+// ---------- 正文里的格式：**加粗** ~~划掉~~ ++放大++ __下划线__ ----------
+export const MARKS = { '**': 'bold', '~~': 'strike', '++': 'big', '__': 'under' };
+export const MARK_LABELS = { bold: '加粗', strike: '划掉', big: '写得很大', under: '画了线' };
+// 成对出现、里面不以空格开头结尾的才算（免得把 C++、__init__ 之类误认）
+export const MARK_RE = /(\*\*|~~|\+\+|__)(?=\S)([^\n]*?\S)\1/;
+
+// 去掉格式标记，只留字
+export function stripMarks(text) {
+    let t = String(text ?? '');
+    for (let i = 0; i < 6; i++) {
+        const next = t.replace(new RegExp(MARK_RE.source, 'g'), '$2');
+        if (next === t) break;
+        t = next;
+    }
+    return t;
+}
+
+// 交给 AI 的写法：〔划掉：……〕〔写得很大：……〕
+export function aiText(text) {
+    let t = String(text ?? '');
+    for (let i = 0; i < 6; i++) {
+        const next = t.replace(new RegExp(MARK_RE.source, 'g'), (all, m, inner) => `〔${MARK_LABELS[MARKS[m]]}：${inner}〕`);
+        if (next === t) break;
+        t = next;
+    }
+    return t;
+}
+
 export function parseTags(input) {
     if (Array.isArray(input)) return input.map(s => String(s).trim()).filter(Boolean);
     return String(input || '')

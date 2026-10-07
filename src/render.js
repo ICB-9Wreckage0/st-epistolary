@@ -2,7 +2,7 @@
 // 把正文渲染成有段落的 HTML：识别日期行（右对齐）、称呼、结尾署名（右对齐），
 // 可选把称呼和署名换成花体。阅读视图和信封动画共用。
 
-import { splitBody } from './model.js';
+import { splitBody, MARKS, MARK_RE, stripMarks } from './model.js';
 
 // 字迹：用户选的是“这个人的字是什么样”，后台按文字自动选字体。
 // 每种字迹的 CSS 字体栈里，拉丁字体排在前面、中文字体排在后面：
@@ -190,7 +190,8 @@ const PS_START = /^(P\.?\s*-?\s*S\.?|PS|又及|附言|再启|再者)/i;
 // 分析段落结构。返回 [{ lines: [{text, role}] , role }]
 // role: dateline 日期行 | salutation 称呼 | signoff 结尾署名 | ps 附言 | body 正文
 export function analyze(body) {
-    const paras = splitBody(body).map(p => ({ role: 'body', lines: p.split('\n').map(text => ({ text, role: 'body' })) }));
+    // text：去掉格式标记后的字（判断称呼、署名用）；raw：原样（显示时按标记加格式）
+    const paras = splitBody(body).map(p => ({ role: 'body', lines: p.split('\n').map(raw => ({ text: stripMarks(raw), raw, role: 'body' })) }));
     if (!paras.length) return paras;
 
     // 日期行：第一段的第一行，短，而且含年份
@@ -319,6 +320,19 @@ function wobbleLine(text, rand, level, hand, state) {
 
 // 把连续的中日韩文字（连同中文标点）包进 <span class="zh">：外文信里夹着中文时，中文单独定字号
 const CJK_RUN = /[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af\u3000-\u303f\uff00-\uffef“”‘’]+/g;
+// 一行字按格式标记切成几段：[{ text, flags: ['bold', 'strike'] }]，可以套着用
+function inlineSegments(text, flags = []) {
+    const t = String(text ?? '');
+    const m = MARK_RE.exec(t);
+    if (!m) return t ? [{ text: t, flags }] : [];
+    const kind = MARKS[m[1]];
+    return [
+        ...(m.index ? [{ text: t.slice(0, m.index), flags }] : []),
+        ...inlineSegments(m[2], flags.includes(kind) ? flags : [...flags, kind]),
+        ...inlineSegments(t.slice(m.index + m[0].length), flags),
+    ];
+}
+
 function markCjk(text) {
     let out = '';
     let last = 0;
@@ -342,7 +356,11 @@ export function renderBody(body, opts = {}) {
     return analyze(body).map(p => {
         const lines = p.lines.map(l => {
             const cls = l.role !== 'body' ? ` class="epi-l-${l.role}"` : '';
-            const inner = level ? wobbleLine(l.text, rand, level, opts.hand, state) : markCjk(l.text);
+            const draw = t => (level ? wobbleLine(t, rand, level, opts.hand, state) : markCjk(t));
+            const inner = inlineSegments(l.raw ?? l.text).map(seg => {
+                const h = draw(seg.text);
+                return seg.flags.length ? `<span class="epi-m ${seg.flags.map(f => `m-${f}`).join(' ')}">${h}</span>` : h;
+            }).join('');
             return `<div${cls}>${inner || '&nbsp;'}</div>`;
         }).join('');
         return `<div class="epi-p epi-p-${p.role}">${lines}</div>`;

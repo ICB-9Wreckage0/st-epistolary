@@ -7,7 +7,7 @@ import {
     KINDS, STATUSES, AUTHENTICITY, EVENT_TYPES, LEVEL_LABELS,
     createLetter, normalizeLetter, normalizePerson, resegment, segmentPosition, knowledgeTable, normalizeCode, nextCode,
     parseTags, parseNames, splitSamples, findPerson, clone, normalizeDate,
-    folderList, lettersInFolder, addFolder, renameFolder, removeFolder, cleanFolderName,
+    folderList, lettersInFolder, addFolder, renameFolder, removeFolder, cleanFolderName, MARKS, stripMarks,
 } from './model.js';
 import { allPresets, POSITIONS, LANGS } from './presets.js';
 import {
@@ -42,11 +42,11 @@ function options(map, current) {
     return Object.entries(map).map(([k, v]) => `<option value="${esc(k)}" ${k === current ? 'selected' : ''}>${esc(v)}</option>`).join('');
 }
 function preview(text, n = 60) {
-    const t = String(text || '').replace(/\s+/g, ' ').trim();
+    const t = stripMarks(String(text || '')).replace(/\s+/g, ' ').trim();
     return t.length > n ? t.slice(0, n) + '…' : t;
 }
 function charCount(text) {
-    return String(text || '').replace(/\s/g, '').length;
+    return stripMarks(String(text || '')).replace(/\s/g, '').length;
 }
 function daysBetween(a, b) {
     const pa = Date.parse(a), pb = Date.parse(b);
@@ -110,6 +110,12 @@ export class UI {
                 e.preventDefault();
                 this.saveDraft();
                 this.rerenderKeepScroll();
+                return;
+            }
+            // 信纸上的格式快捷键
+            if ((e.ctrlKey || e.metaKey) && !e.altKey && e.target.classList?.contains('epi-page')) {
+                const mark = { b: '**', d: '~~', u: '__', arrowup: '++' }[e.key.toLowerCase()];
+                if (mark) { e.preventDefault(); this.wrapMark(mark); }
             }
         });
     }
@@ -521,7 +527,7 @@ export class UI {
             .filter(l => !this.onlyPending || this.isPending(l))
             .filter(l => fsel == null || (fsel === '' ? !l.folder : l.folder === fsel))
             .filter(l => gsel == null || this.groupsOf(l, gb).includes(gsel))
-            .filter(l => !q || [l.id, l.title, l.author, ...l.recipients, ...l.tags, l.body].join(' ').toLowerCase().includes(q))
+            .filter(l => !q || [l.id, l.title, l.author, ...l.recipients, ...l.tags, stripMarks(l.body)].join(' ').toLowerCase().includes(q))
             .sort(this.letterSorter());
         const ex = this.expert;
 
@@ -856,6 +862,13 @@ export class UI {
                     <button class="epi-rbtn" data-act="ins-ps" title="在光标处插入“又及 / P.S.”">附言</button>
                     <label class="epi-rinline" title="上面几个下拉菜单里列出哪种语言的套语">套语语言 <select class="epi-rsel" data-act="preset-lang">${options(LANGS, this.currentLang())}</select></label>
                 </div>
+                <div class="epi-rgroup epi-rgroup-fmt" title="先在信纸上选中几个字，再点按钮；再点一次就去掉。也可以直接打记号：**加粗**、~~划掉~~、++放大++、__下划线__">
+                    <span class="epi-rlabel">格式</span>
+                    <button class="epi-rbtn epi-fmt" data-act="fmt" data-mark="**" title="加粗（Ctrl+B）：**这样**"><b>粗</b></button>
+                    <button class="epi-rbtn epi-fmt" data-act="fmt" data-mark="~~" title="划掉（Ctrl+D）：~~这样~~ —— 写错了划掉，但还看得见"><s>划</s></button>
+                    <button class="epi-rbtn epi-fmt" data-act="fmt" data-mark="++" title="写得很大（Ctrl+↑）：++这样++"><span style="font-size:1.25em;line-height:1">大</span></button>
+                    <button class="epi-rbtn epi-fmt" data-act="fmt" data-mark="__" title="在字下面画线（Ctrl+U）：__这样__"><u>线</u></button>
+                </div>
                 <div class="epi-rgroup epi-rgroup-zoom" title="写信时信纸上的字看起来多大。只影响你写信时看的效果，不改这封信的字号（信的字号在「外观与款式」里）">
                     <span class="epi-rlabel">编辑字号</span>
                     <button class="epi-rbtn" data-act="edit-zoom" data-step="-1" title="小一点">A−</button>
@@ -906,7 +919,7 @@ export class UI {
             ${contrast < 4.5 ? `<div class="epi-banner epi-banner-soft">这支墨水在这种纸上颜色偏浅（对比度 ${contrast.toFixed(1)}），读起来会吃力。可以在「✦ 外观与款式」里换一支深一点的墨水。</div>` : ''}
             <div class="epi-desk">
                 <div class="${esc(paperClasses(d))} epi-paper-edit" style="${esc(paperStyle(d))}">${paperLayer(d, hashSeed(d.id + d.author))}
-                    <textarea class="epi-page" data-f="body" spellcheck="false" placeholder="在这里写信……&#10;&#10;空一行就是新的一段。上面的「插入」可以加称呼、结尾语和日期行。">${esc(d.body)}</textarea>
+                    <textarea class="epi-page" data-f="body" spellcheck="false" placeholder="在这里写信……&#10;&#10;空一行就是新的一段。上面的「插入」可以加称呼、结尾语和日期行；「格式」可以加粗、划掉、放大、画线。">${esc(d.body)}</textarea>
                 </div>
             </div>
             ${this.renderEnclosures(d)}
@@ -1212,6 +1225,38 @@ ${list}`;
         ta.value = ta.value.slice(0, start) + t + ta.value.slice(end);
         ta.selectionStart = ta.selectionEnd = start + t.length;
         ta.focus();
+        this.draft.body = ta.value;
+        this.fitPage();
+        this.updateCount();
+        this.setDirty();
+    }
+
+    // 给选中的字加 / 去掉格式记号（**加粗**、~~划掉~~、++放大++、__下划线__）
+    wrapMark(mark) {
+        const ta = this.body.querySelector('.epi-page');
+        if (!ta || !this.draft || !MARKS[mark]) return;
+        const v = ta.value;
+        let s = ta.selectionStart ?? v.length, e = ta.selectionEnd ?? s;
+        // 选区两头的空白不算
+        while (s < e && /\s/.test(v[s])) s++;
+        while (e > s && /\s/.test(v[e - 1])) e--;
+        const n = mark.length;
+        const sel = v.slice(s, e);
+        let out, ns, ne;
+        if (sel.length >= 2 * n && sel.startsWith(mark) && sel.endsWith(mark)) {
+            // 选中的已经带记号：去掉
+            const inner = sel.slice(n, -n);
+            out = v.slice(0, s) + inner + v.slice(e); ns = s; ne = s + inner.length;
+        } else if (s >= n && v.slice(s - n, s) === mark && v.slice(e, e + n) === mark) {
+            // 记号在选区外面一圈：去掉
+            out = v.slice(0, s - n) + sel + v.slice(e + n); ns = s - n; ne = e - n;
+        } else {
+            const inner = sel.replace(/\n/g, ' ') || '这里的字';
+            out = v.slice(0, s) + mark + inner + mark + v.slice(e); ns = s + n; ne = ns + inner.length;
+        }
+        ta.value = out;
+        ta.focus();
+        ta.selectionStart = ns; ta.selectionEnd = ne;
         this.draft.body = ta.value;
         this.fitPage();
         this.updateCount();
@@ -3526,6 +3571,7 @@ ${list}`;
                 toastr?.info(this.draft.appearance.flourish ? '阅读时，称呼和署名会显示为花体' : '已关闭花体称呼署名');
                 break;
             case 'ins-ps': this.insertAtCursor(PS_TEXT[this.currentLang()] || PS_TEXT.zh); break;
+            case 'fmt': this.wrapMark(el.dataset.mark); break;
             case 'resplit': this.resplitDraft(); this.openSections.add('segs'); this.rerenderKeepScroll(); this.setDirty(); break;
             case 'ai-analyze': this.aiAnalyzeDraft(); break;
             case 'ev-add': this.commitRaw(this.draft); this.addEvent({}); this.rerenderKeepScroll(); break;

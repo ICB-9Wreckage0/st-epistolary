@@ -1,7 +1,7 @@
 // 书信簿 · 往来书信：收信反应、回信
 // 纯函数，拼提示词、算日期。实际调用 AI 的部分在 index.js。
 
-import { findPerson, sameName, segmentPosition, normalizeDate } from './model.js';
+import { findPerson, sameName, segmentPosition, normalizeDate, aiText, stripMarks, MARK_RE } from './model.js';
 import { effectiveWobble, normalizeHand, INKS } from './render.js';
 import { enclosuresForAI, enclosureFeel, ENCLOSURE_KINDS } from './enclosures.js';
 
@@ -163,7 +163,7 @@ function letterForPrompt(archive, l, { numbered = false, maxChars = 0 } = {}) {
     if (numbered && l.segments.length) {
         body = l.segments.map(s => `§${segmentPosition(l, s.id)} ${s.text}`).join('\n\n');
     } else {
-        body = l.body;
+        body = aiText(l.body);
     }
     if (maxChars && body.length > maxChars) body = body.slice(0, maxChars) + '……（后略）';
     return `${head}\n${body}`;
@@ -288,7 +288,7 @@ export function sceneSwitchMessage(letter, reader, arrival, { body = true } = {}
     const when = arrival ? `${arrival}。` : '';
     const via = letter.delivery?.via ? `经 ${letter.delivery.via} 转交，` : '';
     const line = `*（镜头切到${where}${when}${via}${reader || '收信人'}收到了${letter.author ? ` ${letter.author} 的` : '一封'}来信。）*`;
-    return body ? `${line}\n\n${letter.body}` : line;
+    return body ? `${line}\n\n${aiText(letter.body)}` : line;
 }
 
 // ---------- 托人转交 ----------
@@ -302,7 +302,7 @@ export function viaSceneMessage(letter, via, arrival) {
 
 // 正文：转交人拆开以后，信的全文
 export function viaPeekMessage(letter, via) {
-    return `*（${via}拆开了信封。）*\n\n${letter.body}`;
+    return `*（${via}拆开了信封。）*\n\n${aiText(letter.body)}`;
 }
 
 export function buildViaGuidance(archive, letter, via, arrival, { look = false } = {}) {
@@ -402,11 +402,11 @@ export function sceneReturnMessage(letter) {
 
 export function letterChatMessage(letter, reader, arrival) {
     const head = `（${arrival ? `${arrival}，` : ''}${reader || '收件人'}收到了${letter.author ? ` ${letter.author} 的` : '一封'}来信。）`;
-    return `${head}\n\n${letter.body}`;
+    return `${head}\n\n${aiText(letter.body)}`;
 }
 
 export function replyChatMessage(letter) {
-    return `（${letter.author} 的回信${letter.writtenAt ? `，写于 ${letter.writtenAt}` : ''}）\n\n${letter.body}`;
+    return `（${letter.author} 的回信${letter.writtenAt ? `，写于 ${letter.writtenAt}` : ''}）\n\n${aiText(letter.body)}`;
 }
 
 // ---------- 示例文风档案 ----------
@@ -460,7 +460,7 @@ export function buildTranslatePrompt(letter, target, style = 'period') {
 - 保持原来的分段：原文空一行的地方，译文也空一行；段落数量一致。
 - 人名、地名按${target}的习惯写法。原文里的日期行、称呼、署名、附言都要翻译并放在对应位置。
 - 写信人：${letter.author || '未知'}；收信人：${(Array.isArray(letter.recipients) ? letter.recipients.join('、') : String(letter.recipients || '')) || '未知'}${letter.writtenAt ? `；写信日期：${letter.writtenAt}` : ''}。
-- 只输出译文，不要任何说明、标题、引号或代码块。
+${MARK_RE.test(letter.body || '') ? '- 原文用 **…**（加粗）、~~…~~（划掉）、++…++（写得很大）、__…__（下划线）标出了格式，译文里在对应的词上原样保留这些记号。\n' : ''}- 只输出译文，不要任何说明、标题、引号或代码块。
 
 【原文】
 ${letter.body}`;
@@ -698,7 +698,7 @@ export function buildPendingHints({ arrived = [], atVia = [], storyDate = '' }) 
 // 收信人在剧情里收到信时，直接把原文放进上下文
 export function inlineLetterBlock(letter, reader, arrival, { peek = false } = {}) {
     const head = peek ? `【${reader} 拆开的这封信（本来要转交给 ${(letter.recipients || []).join('、')}），原文如下】` : `【${reader} 收到的信${arrival ? `（${arrival}）` : ''}，原文如下】`;
-    return `${head}\n${letter.body}\n【原文完】\n这封信的原文没有出现在聊天记录里，是直接给你的。描写读信时可以引用其中的句子，但不要整封复述。`;
+    return `${head}\n${aiText(letter.body)}\n【原文完】\n这封信的原文没有出现在聊天记录里，是直接给你的。描写读信时可以引用其中的句子，但不要整封复述。`;
 }
 
 // 收信 / 拆信引导里，“信的全文就是上一条消息”改成“原文见上”
@@ -727,7 +727,7 @@ export function buildCodeBlock(archive, letter, { look = false } = {}) {
     if (letter.shell || !String(letter.body || '').trim()) {
         lines.push('这封信的正文还没写好。剧情里如果有人读它，只写到拆开为止，不要编造内容。');
     } else {
-        lines.push('原文：', letter.body, '【原文完】');
+        lines.push('原文：', aiText(letter.body), '【原文完】');
     }
     if (letter.enclosures?.length) lines.push(enclosuresForAI(letter, archive));
     lines.push(`用户在消息里写了 ${letter.code}，指的就是上面这封信，这一轮剧情要用到它（比如有人拆开读它、提起它、拿着它）。`);
@@ -758,7 +758,7 @@ storyDate：这段剧情发生在哪天（YYYY-MM-DD），看不出来就写空�
 最后看这段剧情结束时，**这封信本身**在哪里：在谁手里（holder）、放在什么地方（place，比如“书桌左边的抽屉”）、状态（state）：kept 收着 | carried 随身带着 | given 交给了别人 | burned 烧了或毁了 | lost 丢了。剧情里没写到信最后放哪，letter 就写 null，不要猜。
 ${prev}
 【信】${letter.author || '？'} 写给 ${(letter.recipients || []).join('、') || '？'}${letter.writtenAt ? `，${letter.writtenAt}` : ''}${letter.code ? `，暗号 ${letter.code}` : ''}
-${String(letter.body || '').slice(0, 12000)}
+${aiText(letter.body || '').slice(0, 12000)}
 
 【读信的那段剧情】
 ${String(scene || '').slice(0, 12000)}
@@ -814,7 +814,7 @@ export function parseMemories(text) {
 // 记忆里「」括起来的原话，有没有真的出现在信里（不在的标出来，免得 AI 把编的当原文）
 export function checkQuotes(memory, body) {
     const flat = s => String(s || '').replace(/[\s「」“”"'‘’（）()]/g, '');
-    const src = flat(body);
+    const src = flat(stripMarks(body));
     return String(memory || '').replace(/「([^」]{2,200})」/g, (all, q) => (src.includes(flat(q)) ? all : `“${q}”（大意）`));
 }
 
@@ -884,14 +884,14 @@ export function rereadKey(letter, names = []) {
 }
 
 export function rereadEntryContent(letter, holder, place = '') {
-    return `【信件原文｜${letterLabel(letter)}｜现在在 ${holder} 手里${place ? `（${place}）` : ''}】\n${String(letter.body || '').trim()}\n【信件完】\n（${holder} 把这封信拿出来重读时，读到的就是上面的原文。没有这封信的人读不到。）`;
+    return `【信件原文｜${letterLabel(letter)}｜现在在 ${holder} 手里${place ? `（${place}）` : ''}】\n${aiText(letter.body || '').trim()}\n【信件完】\n（${holder} 把这封信拿出来重读时，读到的就是上面的原文。没有这封信的人读不到。）`;
 }
 
 // ---------- 时间线「更新」：一次看完最近的剧情，各封信的状态有没有变 ----------
 
 export function buildStatusPrompt(items, story, { storyDate = '', userName = '' } = {}) {
     const system = '你是剧情记录员，负责根据剧情更新信件的状态。只写剧情里确实发生了的事，不猜。只输出 JSON。';
-    const list = items.map(({ n, letter, now }) => `#${n}：${letter.author || '？'} 写给 ${(letter.recipients || []).join('、') || '？'}${letter.writtenAt ? `，${letter.writtenAt} 写的` : ''}${letter.code ? `，暗号 ${letter.code}` : ''}${letter.title ? `，信封上写着「${letter.title}」` : ''}。开头：${String(letter.body || '').replace(/\s+/g, ' ').slice(0, 40) || '（正文还没写）'}。目前记录：${now}`).join('\n');
+    const list = items.map(({ n, letter, now }) => `#${n}：${letter.author || '？'} 写给 ${(letter.recipients || []).join('、') || '？'}${letter.writtenAt ? `，${letter.writtenAt} 写的` : ''}${letter.code ? `，暗号 ${letter.code}` : ''}${letter.title ? `，信封上写着「${letter.title}」` : ''}。开头：${stripMarks(letter.body || '').replace(/\s+/g, ' ').slice(0, 40) || '（正文还没写）'}。目前记录：${now}`).join('\n');
     const prompt = `下面是一些信，以及最近的一段剧情（每段前标着楼层号）。请看剧情里这些信**有没有发生新的事**：
 
 - received：收信人是不是在这段剧情里收到了这封信（true / false；没写到就 null）；receivedBy 谁收到的；receivedDate 哪天收到（YYYY-MM-DD，剧情里看得出来才写）；receivedPlace 在哪收到（城市、住处，看得出来才写）
