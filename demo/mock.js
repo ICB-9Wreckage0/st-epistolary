@@ -176,6 +176,12 @@ const MOCK_REPLY = {
 
 globalThis.__epistolaryDemoMock = async ({ prompt, kind, target }) => {
     await new Promise(r => setTimeout(r, 500));
+    if (kind === 'blurb') {
+        const head = prompt.split('【信】')[1] || '';
+        const who = (head.match(/^(\S+?) 写给/) || [])[1] || '他';
+        const d = (head.match(/(\d{4})-(\d{1,2})-(\d{1,2})/) || []);
+        return `「${who}${d[2] ? `${+d[2]}月${+d[3]}日` : ''}写来、说想离开圣雷米的信。」`;
+    }
     if (kind === 'translate') {
         const body = (prompt.split('【原文】\n')[1] || '').trim();
         const paras = body.split(/\n\s*\n/);

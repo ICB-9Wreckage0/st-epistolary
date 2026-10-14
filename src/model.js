@@ -74,6 +74,9 @@ export const MARK_LABELS = { bold: '加粗', strike: '划掉', big: '写得很�
 export const MARK_RE = /(\*\*|~~|\+\+|__)(?=\S)([^\n]*?\S)\1/;
 
 // 去掉格式标记，只留字
+// 正文的指纹：AI 写的简介跟不跟得上正文
+export function bodyHash(l) { let h = 0; for (const ch of String(l?.body || '')) h = (h * 31 + ch.codePointAt(0)) | 0; return String(h); }
+
 export function stripMarks(text) {
     let t = String(text ?? '');
     for (let i = 0; i < 6; i++) {
@@ -199,7 +202,7 @@ export function migrateArchive(raw) {
     out.letters = a.letters && typeof a.letters === 'object' ? a.letters : {};
     out.attachments = a.attachments && typeof a.attachments === 'object' ? a.attachments : {};
     out.presets = Array.isArray(a.presets) ? a.presets : [];
-    out.styles = Array.isArray(a.styles) ? a.styles : [];
+    out.styles = (Array.isArray(a.styles) ? a.styles : []).filter(x => x && typeof x === 'object').map((x, i) => (x.id ? x : { ...x, id: `mine-old-${i}` }));
     out.folders = Array.isArray(a.folders) ? a.folders.map(cleanFolderName).filter(Boolean) : [];
     for (const id of Object.keys(out.letters)) {
         out.letters[id] = normalizeLetter(out.letters[id], id);
@@ -289,6 +292,11 @@ export function normalizeLetter(l, id) {
         appearance: normalizeAppearance(l.appearance),
         links: { works: [], ...(l.links || {}) },
         inReplyTo: l.inReplyTo || '',   // 回复的是哪封信
+        envNote: String(l.envNote || '').replace(/\s*\n\s*/g, ' ').trim().slice(0, 120), // 信封上写的一句话（拆信之前就看得到），如“请在确认四下无人时打开”
+        blurb: String(l.blurb || '').replace(/\s+/g, ' ').trim().slice(0, 80), // 一句话简介：剧情里怎么称呼这封信（如“3月17日说想离开圣雷米的那封信”）
+        blurbAuto: !!l.blurbAuto,       // 简介是 AI 写的（你改过就变成 false）
+        blurbHash: String(l.blurbHash || ''), // AI 写简介时正文的样子（正文改了就重写）
+        replied: ['yes', 'no', 'none'].includes(l.replied) ? l.replied : '', // 有没有收到回信：你自己定的（空 = 按信件推算）
         aiDraft: !!l.aiDraft,           // 是否是 AI 代写的回信（用户确认前）
         openedAt: l.openedAt || '',     // 收信人第一次拆开的时间（用于只播放一次拆信动画）
         delivery: l.delivery && typeof l.delivery === 'object' ? l.delivery : null, // 在途信件的送达信息
@@ -484,6 +492,7 @@ export function normalizePerson(p = {}) {
         language: p.language || '',
         hand: normalizeHandKey(p.hand),     // 此人的字迹，新信件默认用它
         wobble: normalizeLevel(p.wobble, true), // 此人笔迹的抖动程度 0-3；'' = 按字迹默认
+        style: typeof p.style === 'string' ? p.style.trim().slice(0, 80) : '', // 绑定的款式（款式包 id）：此人写的新信默认用这一整套外观
     };
 }
 

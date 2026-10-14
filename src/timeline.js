@@ -67,6 +67,36 @@ function involves(archive, l, a, b) {
 
 const READ_TYPES = new Set(['read', 'heard', 'told', 'copied']);
 
+// ---------- 有没有收到回信 ----------
+// 你自己定的优先；没定就按档案里的信推算（有标了“回复”的信，或者之后收信人写回来过）
+export const REPLY_STATES = {
+    yes: { icon: '↩', label: '已收到回信' },
+    no: { icon: '⏳', label: '还没收到回信' },
+    none: { icon: '—', label: '不用回信' },
+};
+
+function repliesTo(archive, l) {
+    return Object.values(archive.letters || {}).filter(x => x.inReplyTo === l.id);
+}
+
+function autoAnswered(archive, l, replies = repliesTo(archive, l)) {
+    const d = dateOf(l);
+    return replies.length > 0 || Object.values(archive.letters || {}).some(x =>
+        x.id !== l.id && x.status !== 'draft' && (l.recipients || []).some(r => sameName(archive, r, x.author)) && (x.recipients || []).some(r => sameName(archive, r, l.author))
+        // 两封都有日期就比日期；没有就看哪封先记进书信簿
+        && (dateOf(x) && d ? dateOf(x) > d : String(x.createdAt || '') > String(l.createdAt || '')));
+}
+
+// { state: 'yes'|'no'|'none', auto: 是不是推算的, replies: [回信], text }
+export function replyInfo(archive, l) {
+    const replies = repliesTo(archive, l);
+    const auto = !l.replied;
+    const state = l.replied || (autoAnswered(archive, l, replies) ? 'yes' : 'no');
+    const s = REPLY_STATES[state];
+    const by = state === 'yes' && replies.length ? `（${replies.map(r => r.code || r.writtenAt || r.author).filter(Boolean).slice(0, 3).join('、') || '有回信'}）` : '';
+    return { state, auto, replies, text: `${s.icon} ${s.label}${by}` };
+}
+
 // 时间线条目（从早到晚）
 export function buildTimeline(archive, { a = '', b = '' } = {}) {
     const letters = Object.values(archive.letters || {})
@@ -85,10 +115,10 @@ export function buildTimeline(archive, { a = '', b = '' } = {}) {
         for (const m of l.memories || []) if (!readers.some(r => sameName(archive, r.who, m.person))) readers.push({ who: m.person, date: '', type: 'memory' });
         const forwarded = (l.events || []).find(e => e.type === 'forwarded');
         const arrivedAt = dv?.arrivedAt || (l.events || []).find(e => e.type === 'received' && (l.recipients || []).some(r => sameName(archive, r, e.who)))?.date || '';
-        const replies = Object.values(archive.letters || {}).filter(x => x.inReplyTo === l.id);
-        // 寄出以后，收信人有没有回过信（不一定标了“回复”）
-        const answered = replies.length > 0 || Object.values(archive.letters || {}).some(x =>
-            x.id !== l.id && (l.recipients || []).some(r => sameName(archive, r, x.author)) && (x.recipients || []).some(r => sameName(archive, r, l.author)) && dateOf(x) && d && dateOf(x) > d);
+        // 有没有收到回信：你定的优先，没定就推算（“不用回信”也算不欠）
+        const reply = replyInfo(archive, l);
+        const replies = reply.replies;
+        const answered = reply.state !== 'no';
         items.push({
             letter: l,
             date: d,
@@ -109,6 +139,7 @@ export function buildTimeline(archive, { a = '', b = '' } = {}) {
             inReplyTo: l.inReplyTo && archive.letters[l.inReplyTo] ? archive.letters[l.inReplyTo] : null,
             replies,
             answered,
+            reply,
         });
         if (d) prevDate = d;
     }

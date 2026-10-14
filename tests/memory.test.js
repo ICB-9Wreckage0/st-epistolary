@@ -22,7 +22,7 @@ test('世界书条目的内容和关键词', () => {
     const a = createArchive();
     const l = createLetter(a, { author: '勒鲁', recipients: ['文森特'], writtenAt: '1890-06-27', body, status: 'sent', recallKeys: '七月的信，那笔钱' });
     const c = memoryEntryContent(l, { person: '提奥', text: '提奥记得……' });
-    assert.match(c, /^【提奥的记忆｜勒鲁 写给 文森特 的信（1890-06-27）】/);
+    assert.match(c, /^【提奥的记忆｜勒鲁6月27日写给文森特的信（1890-06-27）】/);
     assert.match(c, new RegExp(l.code.replace(/[【】]/g, '.')));
     const keys = memoryKeys(l, ['Leroux']);
     const re = keys[0].match(/^\/(.*)\/i$/)[1];
@@ -92,4 +92,13 @@ test('读信那一轮的经过：寄出 / 收到 / 读 / 剧情日期', async ()
     assert.equal(r.events[1].place, '奥维尔');
     assert.equal(r.events[1].mes, null);
     assert.equal(r.storyDate, '1890-07-02');
+});
+
+test('信的称呼：有简介用简介，没有就按日期和人；规则里说别用暗号', async () => {
+    const { letterCallName, callNameRule, cleanBlurb } = await import('../src/correspondence.js');
+    const l = { author: '文森特', recipients: ['提奥'], writtenAt: '1890-03-17', code: '【信18】', body: '…' };
+    assert.equal(letterCallName(l), '文森特3月17日写给提奥的信');
+    assert.equal(letterCallName({ ...l, blurb: '说想离开圣雷米的那封信' }), '说想离开圣雷米的那封信');
+    assert.match(callNameRule(l), /不要叫它“【信18】”或“信18”/);
+    assert.equal(cleanBlurb('「文森特3月17日写来、说想回北方的信。」\n多余'), '文森特3月17日写来、说想回北方的信');
 });

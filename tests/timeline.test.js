@@ -64,3 +64,22 @@ test('寄送和在谁手里分开：位置只记用户填的，AI 只给建议',
     assert.equal(old.current, null);
     assert.equal(old.suggest.holder, 'X');
 });
+
+test('回信状态：自己定的优先，没定就推算', async () => {
+    const { replyInfo, pairSummary } = await import('../src/timeline.js');
+    const L = (id, author, to, date, extra = {}) => ({ id, author, recipients: [to], writtenAt: date, status: 'sent', events: [], memories: [], createdAt: date, ...extra });
+    const archive = { people: [], letters: {
+        a: L('a', '甲', '乙', '1890-01-01'),
+        b: L('b', '乙', '甲', '1890-01-05'),
+        c: L('c', '甲', '乙', '1890-01-09'),
+    } };
+    assert.equal(replyInfo(archive, archive.letters.a).state, 'yes');
+    assert.equal(replyInfo(archive, archive.letters.a).auto, true);
+    assert.equal(replyInfo(archive, archive.letters.c).state, 'no');
+    assert.equal(pairSummary(archive, '甲', '乙').owes, '乙');
+    archive.letters.c.replied = 'none';
+    assert.equal(replyInfo(archive, archive.letters.c).auto, false);
+    assert.equal(pairSummary(archive, '甲', '乙').owes, '');
+    archive.letters.a.replied = 'no';
+    assert.equal(replyInfo(archive, archive.letters.a).state, 'no');
+});

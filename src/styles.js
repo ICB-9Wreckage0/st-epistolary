@@ -1,6 +1,9 @@
 // 书信簿 · 款式包
 // 一个款式包就是一组外观参数：纸、墨、字迹、版式、信封、封缄、磨损、笔迹抖动、花体。
 // 动画和排版都不用改，换一组参数就是另一种信。用户也可以把当前的样子存成自己的款式包。
+// 款式可以绑定给人：这个人写的新信默认用这一套。
+
+import { findPerson } from './model.js';
 
 export const STYLE_KEYS = ['paper', 'ink', 'font', 'orientation', 'envelope', 'wax', 'wear', 'wobble', 'flourish', 'inkColor', 'mode', 'custom', 'customColor'];
 
@@ -66,4 +69,34 @@ export function applyStyle(letter, pack) {
     letter.appearance = a;
     if (pack.language && !String(letter.language || '').trim()) letter.language = pack.language;
     return letter;
+}
+
+
+// 按 id 找款式（内置的 + 你存的）
+export function findStyle(archive, id) {
+    if (!id) return null;
+    return STYLE_PACKS.find(p => p.id === id) || (archive?.styles || []).find(p => p.id === id) || null;
+}
+
+// 这个人绑定的款式（没绑 / 款式被删了就是 null）
+export function personStyle(archive, name) {
+    const p = findPerson(archive, name);
+    return p?.style ? findStyle(archive, p.style) : null;
+}
+
+// 谁绑定了这套款式
+export function boundPeople(archive, id) {
+    return (archive?.people || []).filter(p => p.style && p.style === id).map(p => p.name);
+}
+
+// 某人写的新信：先用 TA 的字迹，再套上 TA 绑定的款式（款式里定了字迹就用款式的）
+// 返回 { appearance, language }；language 只有款式带了、原来又没填时才给
+export function lookFor(archive, name, appearance = {}, language = '') {
+    const p = findPerson(archive, name);
+    const out = { appearance: { ...appearance }, language };
+    if (p?.hand) out.appearance.font = p.hand;
+    const pack = p?.style ? findStyle(archive, p.style) : null;
+    if (pack) applyStyle(out, pack);
+    if (!out.appearance.font) out.appearance.font = 'personal';
+    return out;
 }

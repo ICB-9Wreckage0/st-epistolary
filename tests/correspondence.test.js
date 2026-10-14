@@ -204,3 +204,12 @@ test('随信附上：从正文识别、告诉 AI、隔着信封摸得出来', ()
     assert.match(de(l), /硬币/);
     assert.equal(pf('{"enclosures":[{"kind":"gift","name":"围巾"},{"name":""}]}').enclosures.length, 1);
 });
+
+test('信封上的话：拆信前就交给 AI，转交人也看得到', async () => {
+    const c = await import('../src/correspondence.js');
+    const L = { author: '文森特', recipients: ['提奥'], body: '正文', envNote: '请在确认四下无人时再打开', appearance: {}, enclosures: [], events: [] };
+    const archive = { people: [], letters: {} };
+    assert.match(c.buildReactionGuidance(archive, L, '提奥', ''), /文森特亲笔写着：「请在确认四下无人时再打开」/);
+    assert.match(c.viaSceneMessage(L, '高更', ''), /下面还有一行字：“请在确认四下无人时再打开”/);
+    assert.equal(c.envNoteLine({ ...L, envNote: '' }), '');
+});

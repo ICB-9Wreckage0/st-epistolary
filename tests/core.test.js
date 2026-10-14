@@ -184,3 +184,16 @@ test('角色卡：暗号按角色卡各自编号', async () => {
     ensureCodes(a);
     assert.equal(old.code, '【信1】');
 });
+
+test('款式绑定给人：新信套上 TA 的款式；款式被删了就只用字迹', async () => {
+    const { lookFor, boundPeople } = await import('../src/styles.js');
+    const archive = { people: [{ name: '甲', aliases: ['阿甲'], hand: 'messy', style: 'mine-1' }, { name: '乙', aliases: [], hand: 'formal', style: '' }],
+        styles: [{ id: 'mine-1', name: '我的', appearance: { paper: 'blue', ink: 'violet' } }] };
+    const a = lookFor(archive, '阿甲', { paper: 'cream', font: 'personal' }).appearance;
+    assert.equal(a.paper, 'blue'); assert.equal(a.ink, 'violet'); assert.equal(a.font, 'messy');
+    assert.equal(lookFor(archive, '乙').appearance.font, 'formal');
+    assert.equal(lookFor(archive, '丙').appearance.font, 'personal');
+    assert.deepEqual(boundPeople(archive, 'mine-1'), ['甲']);
+    archive.styles = [];
+    assert.equal(lookFor(archive, '甲', { paper: 'cream' }).appearance.paper, 'cream');
+});

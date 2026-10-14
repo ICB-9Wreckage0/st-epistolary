@@ -5,7 +5,7 @@
 import { Store } from './src/store.js';
 import { UI } from './src/ui.js';
 import { retrieve, DEFAULT_RETRIEVAL } from './src/retrieval.js';
-import { sameName, normalizeDate, findPerson, lettersByCode, unknownCodes, ensureCodes, createLetter, aiText } from './src/model.js';
+import { sameName, normalizeDate, findPerson, lettersByCode, unknownCodes, ensureCodes, createLetter, aiText, bodyHash } from './src/model.js';
 import {
     buildReactionGuidance, replyChatMessage, sceneSwitchMessage, sceneReturnMessage,
     deliveryEvents, buildDatePrompt, parseStoryDate, addDays,
@@ -13,8 +13,9 @@ import {
     viaReceivedEvents, nextEventId, VIA_ACTIONS,
     mentionsReceipt, mentionsDate, mentionsName, buildPendingHints, inlineLetterBlock, inlineGuidance, buildCodeBlock,
     buildMemoryPrompt, parseMemoryResult, checkQuotes, memoryEntryContent, memoryKeys,
-    authorKey, summaryEntryContent, rereadKey, rereadEntryContent, buildStatusPrompt, parseStatusResponse,
+    authorKey, summaryEntryContent, rereadKey, rereadEntryContent, buildStatusPrompt, parseStatusResponse, callNameRule, buildBlurbPrompt, cleanBlurb, envNoteLine,
 } from './src/correspondence.js';
+import { lookFor } from './src/styles.js';
 import { whereNow, setWhere, suggestWhere, acceptSuggestion, dismissSuggestion, revokeWhere, whereText, whereForPerson, REREADABLE, deliveryText, deliveryState } from './src/whereabouts.js';
 import { playSeal, playOpen } from './src/envelope.js';
 import { detectInMessage, guessRecipient, guessAuthor, findDuplicate, isSalutation } from './src/importer.js';
@@ -294,7 +295,7 @@ function reactionGuidance() {
         if (!letter) continue;
         if (letter.shell) {
             // 空壳信：正文还没写，不能让 AI 自己编
-            parts.push(`【${i.reader} ${i.peek ? '拆开的' : '收到的'}这封信（${letter.author} 写的${letter.title ? `，信封上写着「${letter.title}」` : ''}），正文还没有定下来】\n描写 ${i.reader} 拆信、展开信纸为止，或者写 TA 拿着信的样子。**不要编造信里写了什么**，原文会之后给出。`);
+            parts.push(`【${i.reader} ${i.peek ? '拆开的' : '收到的'}这封信（${letter.author} 写的${letter.title ? `，信封上写着「${letter.title}」` : ''}${letter.envNote ? `，信封上还写着「${letter.envNote}」` : ''}），正文还没有定下来】\n描写 ${i.reader} 拆信、展开信纸为止，或者写 TA 拿着信的样子。**不要编造信里写了什么**，原文会之后给出。`);
             continue;
         }
         const g = buildReactionGuidance(store.archive, letter, i.reader, i.arrival, { peek: i.peek, look });
@@ -335,11 +336,12 @@ const blockStart = l => `【信件 ${l.code}｜`;
 const BLOCK_END = '【信件完】';
 
 function letterBlock(l) {
-    const head = [`${l.author || '？'} 写给 ${l.recipients.join('、') || '？'}`, l.writtenAt].filter(Boolean).join('｜');
+    const head = [`${l.author || '？'} 写给 ${l.recipients.join('、') || '？'}`, l.writtenAt, l.blurb].filter(Boolean).join('｜');
+    const note = envNoteLine(l) ? `${envNoteLine(l)}\n\n` : '';
     const enc = l.enclosures?.length ? `\n\n（随信附上：${l.enclosures.map(e => e.name + (e.value && !e.name.includes(e.value) ? `，${e.value}` : '')).join('；')}）` : '';
     // 和“剧情推进”一样：直接写进用户这一楼，并且明确告诉 AI 这是既定内容
-    const rule = `（以下是这封信的原文，已经写好。剧情里有人读它时，读到的就是这些字句：可以引用，不要另编一封，不要改写或增删。${/〔(加粗|划掉|写得很大|画了线)：/.test(aiText(l.body)) ? '〔划掉：……〕是写信人写了又划掉的字（读的人看得见被划掉的内容），〔写得很大：……〕〔加粗：……〕〔画了线：……〕是写信人特意强调的地方。' : ''}）`;
-    return `${blockStart(l)}${head}】\n\n${rule}\n\n${aiText(l.body || '').trim()}${enc}\n\n${BLOCK_END}`;
+    const rule = `（以下是这封信的原文，已经写好。剧情里有人读它时，读到的就是这些字句：可以引用，不要另编一封，不要改写或增删。${callNameRule(l)}${/〔(加粗|划掉|写得很大|画了线)：/.test(aiText(l.body)) ? '〔划掉：……〕是写信人写了又划掉的字（读的人看得见被划掉的内容），〔写得很大：……〕〔加粗：……〕〔画了线：……〕是写信人特意强调的地方。' : ''}）`;
+    return `${blockStart(l)}${head}】\n\n${rule}\n\n${note}${aiText(l.body || '').trim()}${enc}\n\n${BLOCK_END}`;
 }
 
 // 一段文字里有暗号：把对应的信接在后面。返回 { text, letters }（没有要加的就原样返回）
@@ -502,6 +504,29 @@ function ai(system, prompt, meta) {
         return Promise.reject(e);
     }
     return callAI(settings().api, system, prompt, meta);
+}
+
+// ---------- 一句话简介：剧情里怎么称呼这封信 ----------
+// 没写简介的信，让 AI 概括一句；AI 写的简介在正文改了以后会重写，你自己写的不动
+const blurbBusy = new Set();
+async function autoBlurb(letterId, { force = false } = {}) {
+    const l = store.archive.letters[letterId];
+    if (!l || l.shell || !String(l.body || '').trim() || !aiOn() || blurbBusy.has(letterId)) return '';
+    if (!force && l.blurb && (!l.blurbAuto || l.blurbHash === bodyHash(l))) return '';
+    blurbBusy.add(letterId);
+    try {
+        const { system, prompt } = buildBlurbPrompt(l);
+        const out = cleanBlurb(await ai(system, prompt, { kind: 'blurb' }));
+        const now = store.archive.letters[letterId];
+        if (!out || !now || (now.blurb && !now.blurbAuto && !force)) return '';
+        Object.assign(now, { blurb: out, blurbAuto: true, blurbHash: bodyHash(now) });
+        store.save();
+        ui.refresh();
+        return out;
+    } catch (e) {
+        if (!e.aiOff) console.warn('[书信簿] 写一句话简介失败', e);
+        return '';
+    } finally { blurbBusy.delete(letterId); }
 }
 
 // 回信人就是当前聊天的角色时，把角色卡和最近的剧情一起交给 AI
@@ -1204,6 +1229,16 @@ async function whereSuggestion(letterId, accept) {
     return true;
 }
 
+// 有没有收到回信：你自己定（'' = 交回给书信簿推算）
+function saveReplied(letterId, v) {
+    const l = store.archive.letters[letterId];
+    if (!l) return false;
+    l.replied = ['yes', 'no', 'none'].includes(v) ? v : '';
+    l.updatedAt = new Date().toISOString();
+    store.save();
+    return true;
+}
+
 // 手动改信的位置
 async function saveWhereabouts(letterId, w) {
     const letter = store.archive.letters[letterId];
@@ -1628,7 +1663,7 @@ async function judgeVia(letters, text = '') {
     const froms = letters.map(l => l.delivery.decisionFrom).filter(n => Number.isFinite(n));
     text = text || storyWindow(froms.length ? Math.min(...froms) : undefined);
     if (!text) return new Map();
-    const list = letters.map((l, i) => ({ n: i + 1, recipient: l.recipients.join('、'), label: l.title || '', target: l.delivery.target || '', opened: !!l.delivery.opened, held: l.delivery.status === 'held' }));
+    const list = letters.map((l, i) => ({ n: i + 1, recipient: l.recipients.join('、'), label: [l.title, l.envNote].filter(Boolean).join('」「'), target: l.delivery.target || '', opened: !!l.delivery.opened, held: l.delivery.status === 'held' }));
     const { system, prompt } = buildViaDecisionPrompt(via, list, text);
     try {
         const out = parseViaDecisions(await ai(system, prompt, { kind: 'via', via, letters: list }));
@@ -2127,13 +2162,14 @@ async function sealIncoming(mesId) {
             if (!store.archive.letters[dup]?.openedAt) ids.push(dup);
             continue;
         }
+        const author = guessAuthor(f.signoff) || m.name;
         const letter = createLetter(store.archive, {
-            author: guessAuthor(f.signoff) || m.name,
+            author,
             recipients: [c.name1],
             writtenAt: isSimple() ? '' : getStoryDate(),
             body: f.text,
             status: 'sent',
-            appearance: { font: findPerson(store.archive, m.name)?.hand || 'personal' },
+            appearance: lookFor(store.archive, author).appearance,
             enclosures: extractEnclosures(f.text),
             source: { chatId: chatId(), mes: mesId },
             ...scopeFields(),
@@ -2144,6 +2180,7 @@ async function sealIncoming(mesId) {
     }
     if (!ids.length) { removeSeal(mesId); return false; }
     store.save();
+    for (const id of ids) autoBlurb(id); // 后台写一句话简介，不等
     m.extra = { ...(m.extra || {}), epistolarySeal: { letterIds: ids, received: false, opened: false } };
     await c.saveChat();
     applySeal(mesId);
@@ -2398,6 +2435,8 @@ jQuery(async () => {
         getUserName: () => ctx().name1 || '',
         getCharName: () => (hasChat() && !ctx().groupId ? ctx().name2 : '') || '',
         callAI: ai,
+        autoBlurb,
+        blurbFor: (system, prompt) => ai(system, prompt, { kind: 'blurb' }),
         generateRaw: (prompt, system) => ai(system, prompt, { kind: 'raw' }),
         switchToRecipient,
         switchToVia,
@@ -2419,6 +2458,7 @@ jQuery(async () => {
         saveRecallKeys,
         clearMemories,
         saveWhereabouts,
+        saveReplied,
         saveDelivery,
         addEvent,
         deleteEvent,

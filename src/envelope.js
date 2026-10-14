@@ -10,6 +10,7 @@
 // 翻盖立到正好侧对镜头（90°，看不见）时切换它在信纸前/后，信封翻面到 90° 时切换正反面。
 
 import { paperClasses, renderBody, renderOptions, paperLayer, ensureWearFilters, hashSeed, handClasses, paperStyle } from './render.js';
+import { stripMarks } from './model.js';
 
 const WAX = {
     crimson: ['#b3332c', '#8e1b1b', '#5a0e0e'],
@@ -136,6 +137,7 @@ class Stage {
                             <div class="epi-env-to">${esc(to)}</div>
                             ${letter.placeTo ? `<div class="epi-env-place">${esc(letter.placeTo)}</div>` : ''}
                         </div>
+                        ${letter.envNote ? `<div class="epi-env-note ${esc(handClasses(letter))}" style="${inkStyle}">${esc(stripMarks(letter.envNote))}</div>` : ''}
                         <div class="epi-env-postage"><div class="epi-env-postage-inner"><span class="epi-env-postage-glyph">✦</span><span class="epi-env-postage-value">10</span></div></div>
                         <div class="epi-env-postmark">
                             <div class="epi-env-postmark-ring"><span>${esc((letter.placeFrom || '').toUpperCase().slice(0, 14))}</span><b>${esc(postmarkDate(letter.writtenAt))}</b></div>
