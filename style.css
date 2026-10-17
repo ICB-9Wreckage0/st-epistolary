@@ -1571,3 +1571,79 @@ details.epi-sec-card.epi-sec-off > :not(summary):not(.epi-off-note) { opacity: .
 }
 .epi-card-envnote { font-size: 0.85em; opacity: .85; margin: 2px 0; }
 .epi-pb-envnote { font-size: 0.9em; opacity: .85; margin-top: 2px; }
+
+/* ---------- 读信记忆：分量、新知道的事 ---------- */
+.epi-mem-meta { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.epi-mem-w-sel { display: inline-flex !important; flex-direction: row !important; align-items: center; gap: 6px; font-size: 0.85em; opacity: .9; }
+.epi-mem-w-sel select { width: auto !important; padding: 1px 4px; }
+.epi-mem-w { font-size: 0.8em; opacity: .75; }
+.epi-mem-w.w3 { color: rgb(214, 120, 90); opacity: 1; }
+.epi-mem-learned { border-left: 2px solid rgba(214, 170, 90, .6); padding: 2px 0 2px 8px; }
+.epi-mem-learned-h { font-size: 0.82em; opacity: .7; margin-bottom: 2px; }
+.epi-mem-fact { font-size: 0.9em; line-height: 1.5; }
+.epi-mem-fact .epi-chip { font-size: 0.75em; margin-right: 4px; }
+.epi-mem-fact-x { margin-left: 6px; opacity: .5; text-decoration: none; }
+.epi-mem-fact-x:hover { opacity: 1; }
+.epi-lh-imp select { cursor: pointer; }
+
+/* ---------- 便条 / 纸条 ---------- */
+.epi-lh-kind { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+#epi-root .epi-lh-kind .epi-note-style { width: auto !important; flex: 1 1 240px; }
+.epi-note-chip { border-color: rgba(214, 170, 90, .6); }
+
+.epi-paper.kind-note { padding: 26px 30px 30px; line-height: 1.7; }
+.epi-paper-read.kind-note, .epi-paper-read.kind-note.orient-portrait, .epi-paper-read.kind-note.orient-landscape { aspect-ratio: auto; min-height: 0; margin: 10px auto; }
+.epi-paper-edit.kind-note, .epi-paper-edit.kind-note.orient-portrait, .epi-paper-edit.kind-note.orient-landscape { max-width: 460px; margin-left: auto; margin-right: auto; }
+.epi-paper-read.kind-note { width: min(460px, 100%) !important; }
+.epi-paper.kind-note .epi-paper-place { margin-bottom: .8em; }
+.epi-paper.kind-note .epi-paper-sign { margin-top: 1em; }
+
+/* 纸条：撕下来的一条，上下边是毛的 */
+.epi-paper.note-scrap {
+    clip-path: polygon(0% 3%, 4% 0%, 9% 2.5%, 15% .5%, 22% 3%, 30% 1%, 37% 2.8%, 45% .4%, 53% 2.6%, 61% .8%, 69% 3%, 77% 1%, 85% 2.7%, 92% .6%, 100% 2.4%,
+        100% 97%, 95% 100%, 88% 97.5%, 80% 99.6%, 72% 97.2%, 64% 99.4%, 56% 97%, 48% 99.7%, 40% 97.4%, 32% 99.5%, 24% 97.1%, 16% 99.6%, 8% 97.5%, 0% 99.8%);
+    box-shadow: none; filter: drop-shadow(0 4px 10px rgba(0,0,0,.4));
+}
+/* 便签：方方正正的淡黄色小纸 */
+.epi-paper.note-sticky {
+    --paper: #fbf0a8 !important;
+    background: linear-gradient(180deg, #f6e68e 0, #fbf0a8 14%, #fdf5bf 100%) !important;
+    border-radius: 1px; box-shadow: 0 10px 18px -8px rgba(0,0,0,.55), 0 2px 3px rgba(0,0,0,.2);
+}
+.epi-paper-read.note-sticky { transform: rotate(-1.2deg); width: min(380px, 100%) !important; min-height: 300px; }
+.epi-paper-edit.note-sticky { max-width: 400px; }
+/* 小卡片：硬一点、圆角 */
+.epi-paper.note-card { border-radius: 8px; box-shadow: 0 3px 12px rgba(0,0,0,.4), inset 0 0 0 1px rgba(0,0,0,.08); }
+.epi-paper-read.note-card { width: min(420px, 100%) !important; }
+/* 折起来的纸：看得见两道折痕 */
+.epi-paper.note-folded {
+    background-image: linear-gradient(90deg, transparent 49.6%, rgba(0,0,0,.07) 50%, rgba(255,255,255,.25) 50.4%, transparent 51%),
+        linear-gradient(180deg, transparent 49.6%, rgba(0,0,0,.07) 50%, rgba(255,255,255,.25) 50.4%, transparent 51%) !important;
+    background-color: var(--paper) !important;
+}
+.epi-paper-read.kind-note::after { display: none !important; }
+#epi-root .kind-note .epi-page { min-height: 110px; }
+
+/* 信 / 纸条 分开看 */
+.epi-kind-tabs { display: flex; gap: 4px; margin: 0 0 8px; border-bottom: 1px solid var(--epi-border, rgba(128,128,128,.3)); flex-wrap: wrap; }
+.epi-kind-tab { font: inherit; background: transparent; color: inherit; border: 0; border-bottom: 2px solid transparent; padding: 5px 12px; cursor: pointer; opacity: .7; }
+.epi-kind-tab:hover { opacity: 1; }
+.epi-kind-tab.active { opacity: 1; border-bottom-color: rgb(214, 170, 90); font-weight: 600; }
+.epi-kind-tab span { font-size: .8em; opacity: .6; margin-left: 2px; }
+/* 自定义纸条 */
+.epi-note-custom { display: inline-flex; gap: 6px; flex: 1 1 100%; flex-wrap: wrap; }
+#epi-root .epi-note-custom .epi-note-desc { flex: 3 1 260px; width: auto !important; }
+#epi-root .epi-note-custom .epi-note-word { flex: 0 1 110px; width: auto !important; }
+.epi-dialog .epi-note-custom { margin-top: 6px; }
+.epi-note-look { text-align: center; font-size: .9em; opacity: .75; margin: 6px 0 -2px; }
+.epi-paper.note-custom { border-radius: 4px; box-shadow: 0 3px 12px rgba(0,0,0,.4), inset 0 0 0 1px rgba(0,0,0,.06); }
+.epi-paper-read.note-custom { width: min(420px, 100%) !important; }
+.epi-note-custom { align-items: center; }
+
+/* ---------- 谁知道什么 ---------- */
+.epi-know-people { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.epi-know h4 { margin-top: 18px; }
+.epi-know-group { margin: 6px 0 10px; border-left: 2px solid rgba(214, 170, 90, .6); padding-left: 10px; }
+.epi-know-about { font-size: .9em; opacity: .85; margin-bottom: 3px; }
+.epi-know-fact, .epi-know-row { line-height: 1.7; }
+.epi-know-fact .epi-chip { font-size: .75em; margin-right: 4px; }

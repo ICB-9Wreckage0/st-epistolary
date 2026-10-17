@@ -3,6 +3,7 @@
 // 这里只在本地找候选楼层，不调用 AI。
 
 import { memoryKeys } from './correspondence.js';
+import { stripMarks } from './model.js';
 
 export const SCENE_REASONS = {
     code: { label: '用暗号把信交给了 AI', strong: true },
@@ -16,7 +17,7 @@ const PUNCT = /[，。！？；：、,.!?;:]+/;
 
 // 信里有辨识度的句子片段：按分句切开，取够长的分句的前一截（去掉称呼、日期、落款）
 export function quoteSamples(body, { len = 9, max = 60 } = {}) {
-    const paras = String(body || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean)
+    const paras = stripMarks(String(body || '')).split(/\n\s*\n/).map(p => p.trim()).filter(Boolean)
         .filter(p => !/^(亲爱的|敬爱的|尊敬的|dear|my dear|cher|chère|mon cher|ma chère|lieber|liebe)\b/i.test(p) || p.length > 30)
         .filter(p => !/^[^\n]{0,40}\d{3,4}\s*$/.test(p));
     const out = [];

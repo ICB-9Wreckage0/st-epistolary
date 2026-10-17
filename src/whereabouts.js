@@ -127,6 +127,13 @@ export function deliveryState(letter) {
 
 // 一句话：寄送到哪一步了
 export function deliveryText(letter) {
+    const t = deliveryText0(letter);
+    if (letter?.kind !== 'note') return t;
+    // 纸条不“寄”：写好了、托人带去、到了谁手里
+    return t.replace(/✉ (写好了|封好了)，没寄/, '🗒 写好了，还没给出去').replace('📮 已寄出，在路上', '🚶 托人送去，还在路上').replace('📬 已寄出（没记送到）', '🗒 留下了（没记谁拿到）').replace(/📬 已送到 (\S+)/, '🗒 到了 $1 手里');
+}
+
+function deliveryText0(letter) {
     const st = deliveryState(letter);
     const d = letter.delivery || {};
     const to = d.reader || letter.recipients?.[0] || '收信人';

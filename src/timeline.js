@@ -2,7 +2,7 @@
 // 按日期排出两个人（或一个人和所有人）之间的信：谁写给谁、哪封回了哪封、哪封还在路上、谁读过、信现在在哪。
 
 import { findPerson, sameName, normalizeDate } from './model.js';
-import { whereNow } from './whereabouts.js';
+import { whereNow, deliveryState } from './whereabouts.js';
 
 const canon = (archive, name) => findPerson(archive, name)?.name || String(name || '').trim();
 
@@ -75,16 +75,19 @@ export const REPLY_STATES = {
     none: { icon: '—', label: '不用回信' },
 };
 
+// 真的寄到了的回信才算（草稿、AI 还没确认的回信、写了没寄的、寄丢的都不算）
+const counts = x => !x.aiDraft && deliveryState(x) === 'delivered';
+
 function repliesTo(archive, l) {
-    return Object.values(archive.letters || {}).filter(x => x.inReplyTo === l.id);
+    return Object.values(archive.letters || {}).filter(x => x.inReplyTo === l.id && counts(x));
 }
 
 function autoAnswered(archive, l, replies = repliesTo(archive, l)) {
     const d = dateOf(l);
     return replies.length > 0 || Object.values(archive.letters || {}).some(x =>
-        x.id !== l.id && x.status !== 'draft' && (l.recipients || []).some(r => sameName(archive, r, x.author)) && (x.recipients || []).some(r => sameName(archive, r, l.author))
-        // 两封都有日期就比日期；没有就看哪封先记进书信簿
-        && (dateOf(x) && d ? dateOf(x) > d : String(x.createdAt || '') > String(l.createdAt || '')));
+        x.id !== l.id && counts(x) && (l.recipients || []).some(r => sameName(archive, r, x.author)) && (x.recipients || []).some(r => sameName(archive, r, l.author))
+        // 两封都有日期就比日期（同一天再看哪封先记进书信簿）；没有日期就看哪封先记进书信簿
+        && (dateOf(x) && d && dateOf(x) !== d ? dateOf(x) > d : String(x.createdAt || '') > String(l.createdAt || '')));
 }
 
 // { state: 'yes'|'no'|'none', auto: 是不是推算的, replies: [回信], text }

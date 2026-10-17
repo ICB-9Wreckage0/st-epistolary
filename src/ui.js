@@ -7,7 +7,7 @@ import {
     KINDS, STATUSES, AUTHENTICITY, EVENT_TYPES, LEVEL_LABELS,
     createLetter, normalizeLetter, normalizePerson, resegment, segmentPosition, knowledgeTable, normalizeCode, nextCode,
     parseTags, parseNames, splitSamples, findPerson, clone, normalizeDate,
-    folderList, lettersInFolder, addFolder, renameFolder, removeFolder, cleanFolderName, MARKS, stripMarks, bodyHash,
+    folderList, lettersInFolder, addFolder, renameFolder, removeFolder, cleanFolderName, MARKS, stripMarks, bodyHash, IMPORTANCE, WEIGHT_LABELS, NOTE_STYLES, isNote, noteWord, noteLook,
 } from './model.js';
 import { allPresets, POSITIONS, LANGS } from './presets.js';
 import {
@@ -20,11 +20,12 @@ import {
 import { detectInChat, chunkChat, buildImportPrompt, parseImportResponse, sliceVerbatim, dropParagraphs, findDuplicate, buildShellPrompt, parseShellResponse, findShellDuplicate, SHELL_STATES } from './importer.js';
 import { API_MODES, listProfiles, testConnection, fetchModels } from './api.js';
 import { playSeal, playOpen, WAX_LABELS, ENVELOPE_LABELS } from './envelope.js';
-import { STYLE_PACKS, applyStyle, pickStyle, findStyle, personStyle, boundPeople, lookFor } from './styles.js';
+import { STYLE_PACKS, STYLE_KEYS, applyStyle, pickStyle, findStyle, personStyle, boundPeople, lookFor } from './styles.js';
 import { meaningOf, labelWithWarn, lookWarnings } from './meanings.js';
 import { ENCLOSURE_KINDS, normalizeEnclosure, extractEnclosures, enclosureText } from './enclosures.js';
 import { WHERE_STATES, whereNow, whereText, DELIVERY_STATES, deliveryState, deliveryText } from './whereabouts.js';
 import { correspondentPairs, buildTimeline, pairSummary, replyInfo, REPLY_STATES } from './timeline.js';
+import { knowledgePeople, knowledgeOf, letterLabel as knowLabel } from './knowledge.js';
 import { HANDS, ORIENTATIONS, handClasses, paperClasses, renderBody, analyze, scriptLang, renderOptions, WOBBLE_LABELS, WEAR_LABELS, paperLayer, ensureWearFilters, hashSeed, INKS, inkColor, inkContrast, paperStyle, SIZE_LABELS, CJK_SIZE_LABELS } from './render.js';
 
 const PAPERS = { plain: '素白', cream: '奶油棉纸', aged: '泛黄旧纸', lined: '横格信笺', redline: '红线信笺', blue: '淡蓝航空信纸' };
@@ -143,8 +144,8 @@ export class UI {
 
     tabs() {
         return this.expert
-            ? [['edit', '✎ 写信'], ['list', '信件'], ['timeline', '时间线'], ['people', '人物'], ['presets', '套语'], ['preview', '注入预览'], ['settings', '⚙ 设置']]
-            : [['edit', '✎ 写信'], ['list', '信件'], ['timeline', '时间线'], ['settings', '⚙ 设置']];
+            ? [['edit', '✎ 写信'], ['list', '信件'], ['timeline', '时间线'], ['know', '谁知道什么'], ['people', '人物'], ['presets', '套语'], ['preview', '注入预览'], ['settings', '⚙ 设置']]
+            : [['edit', '✎ 写信'], ['list', '信件'], ['timeline', '时间线'], ['know', '谁知道什么'], ['settings', '⚙ 设置']];
     }
 
     open(tab) {
@@ -166,6 +167,7 @@ export class UI {
         const r = {
             list: () => this.renderList(),
             timeline: () => this.renderTimeline(),
+            know: () => this.renderKnow(),
             edit: () => this.renderComposer(),
             people: () => this.renderPeople(),
             presets: () => this.renderPresets(),
@@ -196,11 +198,79 @@ export class UI {
         if (this.root.classList.contains('epi-hidden') || this.tab === 'edit') return;
         // 你正在填的小表单、正在打字的格子：后台更新先不重画，免得打的字没了
         const active = document.activeElement;
-        if (this.inlineEdit || this.nowEditing || this.memClearOpen || (active && this.body.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName))) { this.refreshPending = true; return; }
+        if (this.inlineEdit || this.nowEditing || this.memClearOpen || this.fillOpen || (active && this.body.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName))) { this.refreshPending = true; return; }
         this.refreshPending = false;
         const y = this.body.scrollTop;
         this.show(this.tab);
         this.body.scrollTop = y;
+    }
+
+    // 一键补全旧信（设置 → 读信的记忆）
+    fillPanelHtml() {
+        const c = this.hooks.fillCounts?.() || { blurbs: 0, memories: 0, memLetters: 0, notes: 0 };
+        const ai = this.hooks.aiOn();
+        const busy = this.fillBusy;
+        return `<div class="epi-inline epi-fill">
+            <p>这张角色卡的信里，还缺这些（每一项都可以不选）：</p>
+            <label class="checkbox_label"><input type="checkbox" id="epi-fill-blurb" ${c.blurbs && ai ? 'checked' : ''} ${c.blurbs && ai ? '' : 'disabled'}> 💬 没有一句话简介的：让 AI 写一句（${c.blurbs} 封，每封一次调用）</label>
+            <label class="checkbox_label"><input type="checkbox" id="epi-fill-mem" ${c.memories && ai ? 'checked' : ''} ${c.memories && ai ? '' : 'disabled'}> 🧠 旧的读后记忆：补上分量和“新知道的事”（${c.memories} 段，在 ${c.memLetters} 封信里，每封一次调用；不改记忆原文）</label>
+            <label class="checkbox_label"><input type="checkbox" id="epi-fill-notes" ${c.notes ? '' : 'disabled'}> 🗒 旧纸条的暗号【信N】改成【条N】（${c.notes} 张，不用 AI）<span class="epi-muted">——改完以后，聊天里以前写的旧暗号就对不上了，只在新消息里用新暗号</span></label>
+            ${ai ? '' : '<p class="epi-muted">AI 接口在「总开关」里关着：只能改纸条暗号。</p>'}
+            <div class="epi-inline-actions"><span class="epi-muted" data-role="fill-progress">${busy ? esc(busy) : ''}</span><button class="menu_button" data-act="fill-open">${busy ? '收起' : '取消'}</button><button class="menu_button epi-primary" data-act="fill-run" ${busy || !(c.blurbs || c.memories || c.notes) ? 'disabled' : ''}>开始补全</button></div>
+        </div>`;
+    }
+
+    async runFill() {
+        const q = id => this.root.querySelector(id)?.checked;
+        const opts = { blurbs: !!q('#epi-fill-blurb'), memories: !!q('#epi-fill-mem'), renumber: !!q('#epi-fill-notes') };
+        if (!opts.blurbs && !opts.memories && !opts.renumber) { toastr?.info('没有勾选'); return; }
+        this.fillBusy = '开始……';
+        this.rerenderKeepScroll();
+        try {
+            const r = await this.hooks.fillOld(opts, (i, n, what) => {
+                this.fillBusy = `${i}/${n} ${what}`;
+                const el = this.root.querySelector('[data-role="fill-progress"]');
+                if (el) el.textContent = this.fillBusy;
+            });
+            const parts = [r.blurbs && `写了 ${r.blurbs} 句简介`, r.memories && `补了 ${r.memories} 段记忆`, r.notes && `改了 ${r.notes} 张纸条的暗号（${r.renamed.join('、')}）`, r.failed && `${r.failed} 处没成功，可以再点一次`].filter(Boolean);
+            toastr?.success(parts.join('；') || '没有要补的', '🧩 一键补全');
+        } catch (e) {
+            toastr?.error('补全失败：' + (e.message || e));
+        } finally {
+            this.fillBusy = '';
+            this.rerenderKeepScroll();
+        }
+    }
+
+    // ================= 谁知道什么 =================
+
+    renderKnow() {
+        const A = this.scopedArchive();
+        const people = knowledgePeople(A);
+        if (!people.length) return `<div class="epi-empty">还没有人读过信。角色在剧情里读了信以后，书信簿会整理“TA 记得什么、从信里新知道了什么”，这里就会按人列出来。</div>`;
+        const char = this.hooks.getCharName?.() || '';
+        if (!this.knowPerson || !people.some(p => this.isSamePerson(p.name, this.knowPerson))) this.knowPerson = (people.find(p => this.isSamePerson(p.name, char)) || people[0]).name;
+        const k = knowledgeOf(A, this.knowPerson);
+        const P = esc(this.knowPerson);
+        const dots = w => (w ? `<span class="epi-mem-w w${w}" title="${esc(WEIGHT_LABELS[w])}">${'●'.repeat(w)}${'○'.repeat(3 - w)}</span>` : '');
+        const link = l => `<a href="#" data-act="read" data-id="${esc(l.id)}">${isNote(l) ? '🗒 ' : ''}${esc(knowLabel(l))}</a>`;
+        const factRow = (f, del) => `<div class="epi-know-fact"><span class="epi-chip">${esc(f.kind || '其他')}</span>${esc(f.fact)} <span class="epi-muted">— ${link(f.letter)}</span>${del ? `<a href="#" class="epi-mem-fact-x" data-act="mem-fact-del" data-id="${esc(f.letter.id)}" data-mi="${f.mi}" data-i="${f.i}" title="删掉这一条">✕</a>` : ''}</div>`;
+        return `<div class="epi-know">
+            <div class="epi-know-people">${people.map(p => `<button class="epi-pick ${this.isSamePerson(p.name, this.knowPerson) ? 'active' : ''}" data-act="know-person" data-name="${esc(p.name)}">${esc(p.name)} <span class="epi-muted">${p.read ? `读 ${p.read}` : ''}${p.read && p.wrote ? ' · ' : ''}${p.wrote ? `写 ${p.wrote}` : ''}</span></button>`).join('')}</div>
+            <p class="epi-muted">来自每封信的“读后记忆”。想补全旧信，到设置 →「读信的记忆」里点「一键补全」。</p>
+
+            <h4>🔍 ${P} 从信里知道的事</h4>
+            ${k.learnedBy.length ? k.learnedBy.map(g => `<div class="epi-know-group"><div class="epi-know-about">关于 <b>${esc(g.about)}</b></div>${g.facts.map(f => factRow(f, f.person)).join('')}</div>`).join('') : `<p class="epi-muted">还没有记下。${P} 读信以后，AI 会把 TA 从信里新知道的事（家庭、过去、身体、处境、秘密、打算……）记在这里。</p>`}
+
+            <h4>👁 别人从信里知道的、关于 ${P} 的事</h4>
+            ${k.aboutMe.length ? k.aboutMe.map(f => `<div class="epi-know-fact"><b>${esc(f.who)}</b> 知道了 <span class="epi-chip">${esc(f.kind || '其他')}</span>${esc(f.fact)} <span class="epi-muted">— ${link(f.letter)}</span></div>`).join('') : '<p class="epi-muted">还没有。</p>'}
+
+            <h4>📖 ${P} 读过的（${k.read.length}）</h4>
+            ${k.read.length ? k.read.map(({ letter: l, memory: m }) => `<div class="epi-know-row">${dots(m.weight)} ${link(l)}${m.gist ? ` <span class="epi-muted">“${esc(m.gist)}”</span>` : ''}</div>`).join('') : '<p class="epi-muted">还没有。</p>'}
+
+            <h4>✍ ${P} 写的（${k.wrote.length}）</h4>
+            ${k.wrote.length ? k.wrote.map(({ letter: l, readers }) => `<div class="epi-know-row">${link(l)} <span class="epi-muted">${readers.length ? `读过：${readers.map(r => `${esc(r.person)}${r.weight ? ` ${'●'.repeat(r.weight)}` : ''}`).join('、')}` : '还没人读过'}</span></div>`).join('') : '<p class="epi-muted">还没有。</p>'}
+        </div>`;
     }
 
     // ================= 通信时间线 =================
@@ -216,7 +286,7 @@ export class UI {
         const key = this.tlPair || pairs[0].key;
         const [a, b] = key === '*' ? ['', ''] : key.split('\u0001');
         const tf = this.tlFolder;
-        const items = buildTimeline(this.scopedArchive(), { a, b }).filter(i => tf == null || (tf === '' ? !i.letter.folder : i.letter.folder === tf)).filter(i => !this.onlyPending || this.isPending(i.letter)).filter(i => !this.onlyAwaiting || this.isAwaiting(i.letter));
+        const items = buildTimeline(this.scopedArchive(), { a, b }).filter(i => tf == null || (tf === '' ? !i.letter.folder : i.letter.folder === tf)).filter(i => this.kindOk(i.letter)).filter(i => !this.onlyPending || this.isPending(i.letter)).filter(i => !this.onlyAwaiting || this.isAwaiting(i.letter));
         const sum = a ? pairSummary(this.scopedArchive(), a, b) : null;
         const side = i => (!a ? 'full' : this.isSamePerson(i.from, a) ? 'left' : 'right');
         const fmtMonth = m => (m ? m.replace(/^(\d{4})-0?(\d+)$/, '$1 年 $2 月') : '日期不详');
@@ -239,14 +309,14 @@ export class UI {
                 const bits = [deliveryText(l), this.isAwaiting(l) ? '⏳ 等回信' : l.replied === 'none' ? '— 不用回' : (l.replied === 'yes' || (deliveryState(l) === 'delivered' && i.reply.state === 'yes') ? '↩ 已回' : ''), i.readers.length ? `👁 ${i.readers.map(r => r.who).join('、')}` : '', l.memories?.length ? '🧠' : '', l.whereabouts?.suggest ? '📍？' : ''].filter(Boolean);
                 return `${head}${gap}<div class="epi-tl-item epi-tl-${side(i)}">
                 <div class="epi-tl-card epi-tl-mini" data-act="tl-toggle" data-id="${esc(l.id)}" title="点开看详细">
-                    <div class="epi-tl-top"><span class="epi-tl-arrow">▸</span><b>${esc(l.author || '？')} → ${esc(i.to || '？')}</b> <span class="epi-muted">${esc(when)}</span>${l.code ? ` <span class="epi-muted">${esc(l.code)}</span>` : ''}</div>
+                    <div class="epi-tl-top"><span class="epi-tl-arrow">▸</span>${isNote(l) ? '🗒 ' : ''}<b>${esc(l.author || '？')} → ${esc(i.to || '？')}</b> <span class="epi-muted">${esc(when)}</span>${l.code ? ` <span class="epi-muted">${esc(l.code)}</span>` : ''}</div>
                     <div class="epi-tl-oneline">${esc(bits.join(' · '))}<span class="epi-muted"> — ${l.blurb ? esc(l.blurb) : l.title ? `「${esc(l.title)}」` : esc(preview(l.body, 28))}</span></div>
                 </div>
             </div>`;
             }
             return `${head}${gap}<div class="epi-tl-item epi-tl-${side(i)}">
                 <div class="epi-tl-card" data-act="noop" data-id="${esc(l.id)}">
-                    <div class="epi-tl-top"><a href="#" class="epi-tl-arrow" data-act="tl-toggle" data-id="${esc(l.id)}" title="收起">▾</a><b>${esc(l.author || '？')} → ${esc(i.to || '？')}</b> <span class="epi-muted">${esc(when)}${l.placeFrom ? ` · ${esc(l.placeFrom)}` : ''}</span><a href="#" class="epi-tl-open" data-act="read" data-id="${esc(l.id)}">📖 打开信</a></div>
+                    <div class="epi-tl-top"><a href="#" class="epi-tl-arrow" data-act="tl-toggle" data-id="${esc(l.id)}" title="收起">▾</a>${isNote(l) ? '🗒 ' : ''}<b>${esc(l.author || '？')} → ${esc(i.to || '？')}</b> <span class="epi-muted">${esc(when)}${l.placeFrom ? ` · ${esc(l.placeFrom)}` : ''}</span><a href="#" class="epi-tl-open" data-act="read" data-id="${esc(l.id)}">📖 打开信</a></div>
                     ${this.tlWhereHtml(l, i)}
                     ${this.tlStoryHtml(l, i)}
                     ${reply}
@@ -258,6 +328,7 @@ export class UI {
             </div>`;
         });
         return `<div class="epi-timeline">
+            ${this.kindTabs()}
             <div class="epi-tl-bar">
                 <label>看谁和谁的通信<select class="text_pole" data-act="tl-pair">
                     ${pairs.map(p => `<option value="${esc(p.key)}" ${p.key === key ? 'selected' : ''}>${esc(p.a)} ⇄ ${esc(p.b)}（${p.count} 封）</option>`).join('')}
@@ -359,6 +430,17 @@ export class UI {
     // 还没送到：写好没寄、在路上、在转交人那里（草稿不算）
     isPending(l) { return ['unsent', 'transit', 'atVia'].includes(deliveryState(l)); }
 
+    // 信件页 / 时间线：全部 · 只看信 · 只看纸条
+    kindView() { const k = this.hooks.getSettings().listKind; return k === 'letter' || k === 'note' ? k : ''; }
+    kindOk(l) { const k = this.kindView(); return !k || (k === 'note' ? isNote(l) : !isNote(l)); }
+    kindTabs() {
+        const all = this.viewLetters();
+        const n = all.filter(isNote).length;
+        const k = this.kindView();
+        const tab = (v, label, c) => `<button class="epi-kind-tab ${k === v ? 'active' : ''}" data-act="kind-view" data-kind="${v}">${label} <span>${c}</span></button>`;
+        return `<div class="epi-kind-tabs">${tab('', '全部', all.length)}${tab('letter', '✉ 信', all.length - n)}${tab('note', '🗒 便条 / 纸条', n)}</div>`;
+    }
+
     viewLetters() { return Object.values(this.archive.letters).filter(l => this.inView(l)); }
     scopedArchive() { return { ...this.archive, letters: Object.fromEntries(this.viewLetters().map(l => [l.id, l])) }; }
 
@@ -413,8 +495,8 @@ export class UI {
         const by = {
             // 【信2】排在【信10】前面；自己起的暗号（如【星夜】）排在编号暗号后面
             code: (a, b) => last(a.code, b.code, (x, y) => {
-                const nx = /^【信(\d+)】$/.exec(x), ny = /^【信(\d+)】$/.exec(y);
-                if (nx && ny) return Number(nx[1]) - Number(ny[1]);
+                const nx = /^【([信条])(\d+)】$/.exec(x), ny = /^【([信条])(\d+)】$/.exec(y);
+                if (nx && ny) return nx[1] !== ny[1] ? (nx[1] === '信' ? -1 : 1) : Number(nx[2]) - Number(ny[2]);
                 if (nx || ny) return nx ? -1 : 1;
                 return nat(x, y);
             }),
@@ -452,8 +534,14 @@ export class UI {
             if (l.author && l.recipients.length && !seen.has(k)) seen.set(k, { a: l.author, r: l.recipients });
             if (seen.size >= 6) break;
         }
+        const nk = nl.kind === 'note' ? 'note' : 'letter';
         return `<div class="epi-newletter">
-            <h3>✎ 写一封新信</h3>
+            <h3>✎ 写一封新信 / 一张纸条</h3>
+            <div class="epi-nl-row"><span class="epi-nl-k">写什么</span>
+                <div class="epi-nl-chips">
+                    <button class="epi-pick ${nk === 'letter' ? 'active' : ''}" data-act="nl-kind" data-kind="letter" title="装进信封、封口、寄出去的信">✉ 信</button>
+                    <button class="epi-pick ${nk === 'note' ? 'active' : ''}" data-act="nl-kind" data-kind="note" title="没有信封、火漆和邮票：当面递过去、夹在门缝里、压在杯子底下">🗒 便条 / 纸条</button>
+                </div></div>
             ${seen.size ? `<div class="epi-nl-row"><span class="epi-nl-k">接着写</span><div class="epi-nl-chips">${[...seen.values()].map(x => `<button class="epi-pick epi-pick-pair" data-act="nl-pair" data-a="${esc(x.a)}" data-r="${esc(x.r.join('、'))}">${esc(x.a)} → ${esc(x.r.join('、'))}</button>`).join('')}</div></div>` : ''}
             <div class="epi-nl-row"><span class="epi-nl-k">以谁的身份写</span>
                 <div class="epi-nl-chips">${names.map(n => chip(n, nl.author === n, 'nl-author')).join('')}
@@ -463,7 +551,7 @@ export class UI {
                     <input class="text_pole epi-nl-input" id="epi-nl-rcpt" value="${esc(nl.recipients.filter(r => !names.includes(r)).join('、'))}" placeholder="其他人…"></div></div>
             <div class="epi-nl-row"><span class="epi-nl-k">放进文件夹</span><select class="text_pole epi-nl-folder" id="epi-nl-folder">${this.folderOptions(nl.folder || '')}</select></div>
             <div class="epi-nl-go">
-                <button class="menu_button epi-primary" data-act="nl-go">开始写：${esc(nl.author || '？')} → ${esc(nl.recipients.join('、') || '？')}</button>
+                <button class="menu_button epi-primary" data-act="nl-go">${nk === 'note' ? '🗒 ' : ''}开始写：${esc(nl.author || '？')} → ${esc(nl.recipients.join('、') || '？')}</button>
                 <a href="#" data-act="nl-skip">先空着，直接写</a>
             </div>
         </div>`;
@@ -512,7 +600,7 @@ export class UI {
     // 有没有收到回信：一行，直接点选（不弹窗）
     replyRow(l) {
         if (l.status === 'draft') return '';
-        const r = replyInfo(this.archive, l);
+        const r = replyInfo(this.scopedArchive(), l);
         const opt = (v, label, title) => `<button class="epi-rp-opt ${l.replied === v ? 'on' : ''}" data-act="replied-set" data-id="${esc(l.id)}" data-v="${v}" title="${esc(title)}">${label}</button>`;
         return `<div class="epi-st-row epi-rp-row"><span class="epi-st-k">↩ 回信</span><span class="epi-st-v">${esc(r.text.replace(/^\S+\s/, ''))}${r.auto ? ' <span class="epi-muted">（按信件推算，可以自己改）</span>' : ''}</span>
             <span class="epi-rp-opts">${opt('yes', '已收到', '对方已经回信了（不管档案里有没有那封回信）')}${opt('no', '没收到', '还在等回信')}${opt('none', '不用回', '这封信不需要回（通知、便条、最后一封……）')}${l.replied ? `<button class="epi-rp-opt" data-act="replied-set" data-id="${esc(l.id)}" data-v="" title="不自己定了，交给书信簿按信件推算">↺ 自动</button>` : ''}</span></div>`;
@@ -520,7 +608,9 @@ export class UI {
 
     // 在等对方回信：已经送到（或寄出了没记送到），还没收到回信
     isAwaiting(l) {
-        return l.status !== 'draft' && deliveryState(l) === 'delivered' && replyInfo(this.archive, l).state === 'no';
+        // 纸条一般不等回信：只有你标了“没收到”才算
+        if (isNote(l) && l.replied !== 'no') return false;
+        return l.status !== 'draft' && deliveryState(l) === 'delivered' && replyInfo(this.scopedArchive(), l).state === 'no';
     }
 
     // 时间线里每封信下面：读过的人有什么反应（读信的记忆）
@@ -536,6 +626,7 @@ export class UI {
             ${mems.map(m => `<div class="epi-tl-mem-one">
                 <div><b>${esc(m.person)}</b>${m.gist ? `：${esc(m.gist)}` : ''}</div>
                 <div class="epi-tl-mem-text">${esc(m.text)}</div>
+                ${this.memMetaHtml(l, m, { compact: true })}
             </div>`).join('')}
             <a href="#" class="epi-tl-mem-edit" data-act="tl-mem" data-id="${esc(l.id)}">改 / 补充</a>
         </details>`;
@@ -560,6 +651,7 @@ export class UI {
         const fsel = gb === 'folder' ? this.folder : null;
         const gsel = gb !== 'folder' ? this.groupSel ?? null : null;
         const letters = this.viewLetters()
+            .filter(l => this.kindOk(l))
             .filter(l => !this.onlyPending || this.isPending(l))
             .filter(l => !this.onlyAwaiting || this.isAwaiting(l))
             .filter(l => fsel == null || (fsel === '' ? !l.folder : l.folder === fsel))
@@ -574,6 +666,7 @@ export class UI {
                 <div class="epi-card-main" data-act="read" data-id="${esc(l.id)}">
                     <div class="epi-card-top">
                         ${l.code ? `<button class="epi-chip epi-code" data-act="copy-code" data-code="${esc(l.code)}" title="点一下复制暗号">${esc(l.code)}</button>` : ''}
+                        ${isNote(l) ? `<span class="epi-chip epi-note-chip" title="便条 / 纸条：没有信封">🗒 ${esc(noteWord(l))}</span>` : ''}
                         <b>${esc(l.author || '？')} → ${esc(l.recipients.join('、') || '？')}</b>
                         <span class="epi-muted">${esc(l.writtenAt || ((l.events || []).map(e => e.date).filter(Boolean).sort()[0] ? `剧情里 ${(l.events || []).map(e => e.date).filter(Boolean).sort()[0]}` : ''))}</span>
                         <span class="epi-chip epi-dv-chip" title="寄送到哪一步">${esc(deliveryText(l))}</span>
@@ -590,7 +683,7 @@ export class UI {
                         ${ex ? `<span class="epi-muted">${esc(l.id)}</span>` : ''}
                         ${ex && l.authenticity !== 'original' ? `<span class="epi-chip">${esc(AUTHENTICITY[l.authenticity])}</span>` : ''}
                     </div>
-                    ${l.envNote ? `<div class="epi-card-envnote" title="信封上写的话">✉ 「${esc(l.envNote)}」</div>` : ''}
+                    ${l.envNote && !isNote(l) ? `<div class="epi-card-envnote" title="信封上写的话">✉ 「${esc(l.envNote)}」</div>` : ''}
                     ${l.blurb ? `<div class="epi-card-blurb" title="一句话简介：剧情里这样称呼这封信">💬 ${esc(l.blurb)}</div>` : ''}
                     <div class="epi-muted">${l.title ? `「${esc(l.title)}」 ` : ''}${l.shell ? '（正文还没写）' : esc(preview(l.body, 90))}</div>
                     ${ex && l.tags.length ? `<div class="epi-tags">${l.tags.map(t => `<span>#${esc(t)}</span>`).join('')}</div>` : ''}
@@ -628,11 +721,12 @@ export class UI {
             ${this.listResult ? `<div class="epi-tl-result"><button class="epi-tl-result-x" data-act="list-result-close" title="收起">✕</button>${this.listResult}</div>` : ''}`;
 
         return `
+            ${this.kindTabs()}
             <div class="epi-toolbar">
-                <button class="menu_button" data-act="new">✎ 写新信</button>
+                <button class="menu_button" data-act="new">${this.kindView() === 'note' ? '🗒 写新纸条' : '✎ 写新信'}</button>
                 <button class="menu_button" data-act="import-open" title="把聊天里已经写出来的信，逐字存进档案">📥 从聊天记录找信</button>
                 <input class="text_pole epi-search" data-act="search" placeholder="搜索人名、关键词、正文…" value="${esc(this.search)}">
-                <span class="epi-muted">${letters.length} 封</span>
+                <span class="epi-muted">${letters.length} ${this.kindView() === 'note' ? '张' : '封'}</span>
                 <select class="text_pole epi-sort" data-act="list-sort" title="排序">
                     ${[['code', '按暗号'], ['date', '按日期'], ['updated', '按最近修改'], ['author', '按写信人']].map(([k, v]) => `<option value="${k}" ${this.sortKey() === k ? 'selected' : ''}>${v}</option>`).join('')}
                 </select>
@@ -668,8 +762,9 @@ export class UI {
                 author: opts.author ?? (this.hooks.getUserName() || ''),
                 recipients: opts.recipients ?? [this.hooks.getCharName()].filter(Boolean),
                 writtenAt: this.expert ? (this.hooks.getStoryDate() || '') : '',
-                code: nextCode(this.archive, this.hooks.getScope?.()?.key ?? null),
+                code: nextCode(this.archive, this.hooks.getScope?.()?.key ?? null, opts.kind),
                 folder: opts.folder ?? (this.folder || ''),
+                kind: opts.kind === 'note' ? 'note' : 'letter',
                 ...(this.hooks.scopeFields?.() || {}),
             }, '');
             // 沿用两人之前通信的地点和语言
@@ -778,7 +873,8 @@ export class UI {
     // 换了写信人、新的人没绑款式：上一个人的款式撤掉，回到默认样子
     applyAuthorHand(d) {
         const pack = personStyle(this.archive, d.author);
-        if (!pack && this.boundLook) d.appearance = normalizeLetter({}, '').appearance;
+        // 只撤掉款式包管的那几项；纸条的样子、字号这些不动
+        if (!pack && this.boundLook) { const def = normalizeLetter({}, '').appearance; d.appearance = { ...d.appearance, ...Object.fromEntries(STYLE_KEYS.map(k => [k, def[k]])) }; }
         const r = lookFor(this.archive, d.author, d.appearance, d.language);
         d.appearance = r.appearance;
         if (!String(d.language || '').trim() && r.language) d.language = r.language;
@@ -899,6 +995,7 @@ export class UI {
                     ${d.aiDraft || !ex ? '' : `<button class="epi-rbtn" data-act="send-open" title="把信寄出去：选择路上走多久，到了以后再切过去看收信反应">✉ 寄出</button>`}
                     ${canAskReply ? `<button class="epi-rbtn" data-act="reply-open" title="让收信人用自己的口吻写回信">↩ 让对方回信</button>` : ''}
                     <button class="epi-rbtn" data-act="preview" title="不用保存，先看看写好以后在信纸上的样子，还能回放封缄、拆信动画">👁 预览</button>
+                    <button class="epi-rbtn" data-act="copy-text" title="把正文复制下来（不带格式记号）">📋 复制全文</button>
                     <button class="epi-rbtn" data-act="translate-open" title="把这封信翻译成另一种语言，比如中文草稿译成法语">🌐 翻译</button>
                 </div>
                 <div class="epi-rgroup">
@@ -940,6 +1037,13 @@ export class UI {
             </label>`;
         const letterhead = `
             <div class="epi-letterhead">
+                <div class="epi-lh-kind">
+                    <span class="epi-lh-label">写的是</span>
+                    <button class="epi-pick ${isNote(d) ? '' : 'active'}" data-act="kind-set" data-kind="letter">✉ 信</button>
+                    <button class="epi-pick ${isNote(d) ? 'active' : ''}" data-act="kind-set" data-kind="note" title="没有信封、火漆、邮票">🗒 便条 / 纸条</button>
+                    ${isNote(d) ? `<select class="epi-lh-input epi-note-style" data-f="appearance.noteStyle" title="纸条长什么样">${Object.entries(NOTE_STYLES).map(([k, v]) => `<option value="${k}" ${k === d.appearance.noteStyle ? 'selected' : ''}>${esc(v.label)}${v.desc ? `：${esc(v.desc)}` : '（自己写写在什么上）'}</option>`).join('')}</select>` : ''}
+                    ${isNote(d) && d.appearance.noteStyle === 'custom' ? this.noteCustomHtml(d, 'epi-lh-input') : ''}
+                </div>
                 ${field('author', '写信人', d.author, '谁写的', '写这封信的人。这个名字决定谁“知道”信的内容，也用来匹配人物档案里的字迹和文风。')}
                 ${field('recipients', '收信人', asText(d.recipients), '多人用顿号分隔', '寄给谁。多人用顿号分隔。')}
                 ${ex ? field('writtenAt', '写信日期', d.writtenAt, '如 1889-06-10', '故事里写这封信的日期。用来推算什么时候送到、谁在什么时候知道了内容。') : ''}
@@ -963,7 +1067,11 @@ export class UI {
                     <button class="menu_button epi-mini" data-act="blurb-ai" ${this.hooks.aiOn?.() ? '' : 'disabled title="AI 接口在设置里关掉了"'} title="让 AI 读正文，写一句“谁几月几日写的、说了什么的信”">${this.blurbBusy ? '✨ …' : '✨ AI 概括'}</button>
                     <span class="epi-muted">剧情里的人这样称呼这封信，AI 不会再把暗号写进剧情。${this.hooks.aiOn?.() ? '空着的话，保存后 AI 会自动写一句。' : ''}</span>
                 </div>
-                <div class="epi-lh-envnote">
+                <label class="epi-lh-field epi-lh-imp" title="这封信有多重要：决定读信人记得多少、反应多大。空着就让 AI 按每个读信人自己判断">
+                    <span class="epi-lh-label">分量</span>
+                    <select class="epi-lh-input" data-f="importance">${Object.entries(IMPORTANCE).map(([k, v]) => `<option value="${k}" ${k === (d.importance || '') ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>
+                </label>
+                <div class="epi-lh-envnote" ${isNote(d) ? 'hidden' : ''}>
                     <span class="epi-lh-label" title="写在信封正面的一句话：拆信之前就看得到">✉ 信封上写</span>
                     <input class="epi-lh-input epi-envnote-input" data-f="envNote" value="${esc(d.envNote)}" list="epi-envnote-list" maxlength="120" placeholder="比如：请在确认四下无人时再打开（可以不写）">
                     <datalist id="epi-envnote-list">${['亲启', '烦请亲手交到本人手中', '请在确认四下无人时再打开', '阅后请即焚毁', '请勿折叠，内有画稿', '急件', '若我未归，再拆此信', '请于生日那天再打开'].map(x => `<option value="${esc(x)}">`).join('')}</datalist>
@@ -1082,8 +1190,9 @@ export class UI {
         if (!ta || !paper) return;
         const cs = getComputedStyle(paper);
         const padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-        const ratio = paper.classList.contains('orient-landscape') ? 0.707 : 1.414;
-        const minH = Math.max(260, paper.clientWidth * ratio - padV);
+        const NOTE_RATIO = { scrap: 0.45, sticky: 0.95, card: 0.62, folded: 0.8, custom: 0.6 };
+        const ratio = isNote(this.draft) ? (NOTE_RATIO[this.draft.appearance?.noteStyle] || 0.5) : paper.classList.contains('orient-landscape') ? 0.707 : 1.414;
+        const minH = Math.max(isNote(this.draft) ? 120 : 260, paper.clientWidth * ratio - padV);
         // 量高度时会先把信纸缩回去，外面的滚动条会被顶回顶上 —— 先记住滚到哪了，量完放回去
         const scrollers = [];
         for (let el = ta.parentElement; el; el = el.parentElement) if (el.scrollTop) scrollers.push([el, el.scrollTop]);
@@ -1130,6 +1239,7 @@ export class UI {
         d.links.works = parseTags(d.links.works);
         for (const e of d.events) if (e.type === 'forwarded' && !e.to) e.to = e.note;
         d.code = normalizeCode(d.code);
+        d.autoFrom = null; // 你保存过了：换回复时不再撤掉
         // 简单模式没有“寄出”按钮：写好的信算“写好了，没寄”，等剧情里寄出 / 收到再由经过来改
         if (!this.expert && d.status === 'draft' && !d.aiDraft && String(d.body || '').trim()) d.status = 'unsent';
         const clash = d.code && Object.values(this.archive.letters).find(l => l.id !== d.id && l.code === d.code && (l.scope || '') === (d.scope || ''));
@@ -1141,7 +1251,10 @@ export class UI {
         if (this.draftIsNew) {
             letter = createLetter(this.archive, { ...d, id: undefined });
         } else {
-            if (!d.code) d.code = nextCode(this.archive, d.scope || '');
+            if (!d.code) d.code = nextCode(this.archive, d.scope || '', d.kind);
+            // 你在写的时候，后台 AI 刚写好了简介：别用草稿里的旧简介盖掉它
+            const stored = this.archive.letters[d.id];
+            if (stored?.blurbAuto && stored.blurb && (!d.blurb || d.blurbAuto) && stored.blurbHash && stored.blurbHash !== (d.blurbHash || '')) Object.assign(d, { blurb: stored.blurb, blurbAuto: true, blurbHash: stored.blurbHash });
             letter = normalizeLetter(d, d.id);
             letter.updatedAt = new Date().toISOString();
             this.archive.letters[d.id] = letter;
@@ -1213,6 +1326,31 @@ export class UI {
     }
 
     // 复制暗号
+    async copyPlain(text) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            let ok = false;
+            try { ok = document.execCommand('copy'); } catch { /* 复制不了就算了 */ }
+            ta.remove();
+            return ok;
+        }
+    }
+
+    // 复制信的全文（不带格式记号；落款单独记着的也带上）
+    async copyLetterText(l) {
+        if (!l || !String(l.body || '').trim()) { toastr?.info('这封信还没有正文'); return; }
+        let t = stripMarks(l.body).trim();
+        if (l.signature && !t.endsWith(l.signature.trim())) t += `\n${l.signature.trim()}`;
+        if (await this.copyPlain(t)) toastr?.success(`已复制全文（${charCount(t)} 字）`);
+        else toastr?.error('复制失败，浏览器不让访问剪贴板');
+    }
+
     async copyCode(code) {
         if (!code) { toastr?.info('这封信还没有暗号'); return; }
         try {
@@ -1330,15 +1468,22 @@ ${list}`;
         const n = mark.length;
         const sel = v.slice(s, e);
         let out, ns, ne;
-        if (sel.length >= 2 * n && sel.startsWith(mark) && sel.endsWith(mark)) {
-            // 选中的已经带记号：去掉
-            const inner = sel.slice(n, -n);
-            out = v.slice(0, s) + inner + v.slice(e); ns = s; ne = s + inner.length;
-        } else if (s >= n && v.slice(s - n, s) === mark && v.slice(e, e + n) === mark) {
+        const inner0 = sel.slice(n, -n);
+        if (sel.length > 2 * n && sel.startsWith(mark) && sel.endsWith(mark) && !inner0.includes(mark) && !inner0.includes('\n')) {
+            // 选中的正好是一段带记号的字：去掉
+            out = v.slice(0, s) + inner0 + v.slice(e); ns = s; ne = s + inner0.length;
+        } else if (s >= n && v.slice(s - n, s) === mark && v.slice(e, e + n) === mark && !sel.includes(mark) && !sel.includes('\n')) {
             // 记号在选区外面一圈：去掉
             out = v.slice(0, s - n) + sel + v.slice(e + n); ns = s - n; ne = e - n;
+        } else if (sel.includes('\n')) {
+            // 选了好几行：每一行分别加，不把段落并成一行
+            const wrapped = sel.split('\n').map(line => {
+                const m = line.match(/^(\s*)(.*?)(\s*)$/);
+                return m[2] ? `${m[1]}${mark}${m[2]}${mark}${m[3]}` : line;
+            }).join('\n');
+            out = v.slice(0, s) + wrapped + v.slice(e); ns = s; ne = s + wrapped.length;
         } else {
-            const inner = sel.replace(/\n/g, ' ') || '这里的字';
+            const inner = sel || '这里的字';
             out = v.slice(0, s) + mark + inner + mark + v.slice(e); ns = s + n; ne = ns + inner.length;
         }
         ta.value = out;
@@ -1982,7 +2127,7 @@ ${list}`;
                         const sliced = sliceVerbatim(m.mes, r.start, r.end);
                         const text = sliced && dropParagraphs(sliced, r.skip);
                         if (!text) continue;
-                        found.push({ mesIndex: Number(r.message), speaker: m.name, text, author: r.author || m.name || '', recipient: r.recipient || '', date: normalizeDate(r.date) ? r.date : '', place: r.place || '' });
+                        found.push({ mesIndex: Number(r.message), speaker: m.name, text, author: r.author || m.name || '', recipient: r.recipient || '', date: normalizeDate(r.date) ? r.date : '', place: r.place || '', kind: r.kind === 'note' ? 'note' : 'letter' });
                     }
                 }
             } else {
@@ -2013,6 +2158,7 @@ ${list}`;
                         <label>写信人<input class="text_pole" data-imp-f="author" data-i="${i}" value="${esc(f.author)}"></label>
                         <label>收信人<input class="text_pole" data-imp-f="recipient" data-i="${i}" value="${esc(f.recipient)}"></label>
                         <label>日期<input class="text_pole" data-imp-f="date" data-i="${i}" value="${esc(f.date || (this.expert ? storyDate : ''))}"></label>
+                        <label>是<select class="text_pole" data-imp-f="kind" data-i="${i}"><option value="letter" ${f.kind !== 'note' ? 'selected' : ''}>✉ 信</option><option value="note" ${f.kind === 'note' ? 'selected' : ''}>🗒 便条 / 纸条</option></select></label>
                     </div>
                     <details><summary class="epi-muted">${esc(preview(f.text, 80))}</summary><pre class="epi-pre">${esc(f.text)}</pre></details>
                 </div>`).join('')}
@@ -2141,15 +2287,19 @@ ${list}`;
         for (const i of items) {
             const f = this.importFound[i];
             const date = val(i, 'date');
+            const kind = val(i, 'kind') === 'note' ? 'note' : 'letter';
+            const look = lookFor(this.archive, val(i, 'author')).appearance;
+            if (kind === 'note' && f.note) Object.assign(look, { noteStyle: f.note.style || 'scrap', ...(f.note.style === 'custom' ? { noteDesc: f.note.desc || '', noteWord: f.note.word || '' } : {}) });
             const letter = createLetter(this.archive, {
                 ...(this.hooks.scopeFields?.() || {}),
+                kind,
                 author: val(i, 'author'),
                 recipients: parseNames(val(i, 'recipient')),
                 writtenAt: date,
                 placeFrom: f.place || '',
                 body: f.text,
                 status: 'sent',
-                appearance: lookFor(this.archive, val(i, 'author')).appearance,
+                appearance: look,
                 enclosures: extractEnclosures(f.text),
                 source: { chatId: this.hooks.getChatId(), mes: f.mesIndex },
             });
@@ -2184,8 +2334,21 @@ ${list}`;
         const m = a.mode || {};
         const v = (key, normal) => (m[key] === 'follow' ? '' : m[key] === 'custom' ? (a.custom?.[key] ? `“${String(a.custom[key]).slice(0, 10)}”` : '自定义') : normal);
         const follow = Object.keys(m).filter(k => m[k] === 'follow').length;
-        return [v('orientation', ORIENTATIONS[a.orientation]?.replace(/（.*）/, '')), v('paper', PAPERS[a.paper]), v('ink', a.ink === 'custom' ? '自定义墨色' : INKS[a.ink]?.label), v('font', hand && `字迹${hand}`), v('size', a.size && a.size !== 'md' ? `字号${SIZE_LABELS[a.size].replace(/（.*）/, '')}` : ''), v('envelope', ENVELOPE_LABELS[a.envelope]), v('wax', WAX_LABELS[a.wax])]
+        const note = isNote(this.draft) ? `🗒 ${a.noteStyle === 'custom' ? (a.noteDesc || '自定义') : (NOTE_STYLES[a.noteStyle] || NOTE_STYLES.scrap).label}` : '';
+        return [note || v('orientation', ORIENTATIONS[a.orientation]?.replace(/（.*）/, '')), v('paper', PAPERS[a.paper]), v('ink', a.ink === 'custom' ? '自定义墨色' : INKS[a.ink]?.label), v('font', hand && `字迹${hand}`), v('size', a.size && a.size !== 'md' ? `字号${SIZE_LABELS[a.size].replace(/（.*）/, '')}` : ''), note ? '' : v('envelope', ENVELOPE_LABELS[a.envelope]), note ? '' : v('wax', WAX_LABELS[a.wax])]
             .filter(Boolean).join(' · ') + (follow ? `  · ${follow} 项跟随文中` : '') + (lookWarnings({ appearance: a }).length ? '  ⚠ 有容易被误读的选项' : '');
+    }
+
+    // 自定义纸条：写在什么上 + 剧情里叫它什么
+    noteCustomHtml(d, cls) {
+        const a = d.appearance || {};
+        return `<span class="epi-note-custom">
+            <span class="epi-lh-label">什么样子</span>
+            <input class="${cls} epi-note-desc" data-f="appearance.noteDesc" value="${esc(a.noteDesc || '')}" maxlength="120" list="epi-note-desc-list" placeholder="写在什么上：比如 莫奈的名片背面、一张电车票、餐巾纸">
+            <span class="epi-lh-label">剧情里叫它</span>
+            <input class="${cls} epi-note-word" data-f="appearance.noteWord" value="${esc(a.noteWord || '')}" maxlength="8" placeholder="叫它：名片">
+            <datalist id="epi-note-desc-list">${['写在莫奈的名片背面', '写在一张用过的电车票上', '写在咖啡馆的餐巾纸上', '写在乐谱的空白处', '写在旧报纸的边上', '写在照片背面', '写在一页撕下来的日记上', '写在药方的背面'].map(x => `<option value="${esc(x)}">`).join('')}</datalist>
+        </span>`;
     }
 
     // 款式绑定给人：这个人写的新信默认用这一套
@@ -2258,7 +2421,7 @@ ${list}`;
             ${this.styleBindHtml()}
 
             <h4>信纸</h4>
-            ${row('版式', sel('orientation', ORIENTATIONS, a.orientation), '竖版：寄出时对折一次再装进信封。横版：平放着装进去。')}
+            ${isNote(d) ? row('纸条', `<select class="text_pole" data-f="appearance.noteStyle">${Object.entries(NOTE_STYLES).map(([k, v]) => `<option value="${k}" ${k === a.noteStyle ? 'selected' : ''}>${esc(v.label)}${v.desc ? `：${esc(v.desc)}` : ''}</option>`).join('')}</select>${a.noteStyle === 'custom' ? this.noteCustomHtml(d, 'text_pole') : ''}`, '纸条没有信封和封缄，拿到的人直接就能看。') : row('版式', sel('orientation', ORIENTATIONS, a.orientation), '竖版：寄出时对折一次再装进信封。横版：平放着装进去。')}
             ${row('纸张', sel('paper', PAPERS, a.paper), mean('paper'))}
             ${row('磨损', sel('wear', WEAR_LABELS, a.wear), '纸边毛糙程度和污渍。只影响纸，不影响字。')}
 
@@ -2272,9 +2435,9 @@ ${list}`;
             ${row('笔迹抖动', `<select class="text_pole" data-f="appearance.wobble"><option value="">跟随写信人档案</option>${options(WOBBLE_LABELS, String(a.wobble))}</select>`, '每个字轻微的歪斜、高低和墨色深浅，让字看起来是手写的。只在阅读时显示，写信时是普通文字。')}
             ${row('花体', `<label class="checkbox_label"><input type="checkbox" data-act="toggle-flourish-cb" ${a.flourish ? 'checked' : ''}> 称呼和署名用花体</label>`, '阅读时，开头的称呼和结尾的署名换成花体字，正文不变。')}
 
-            <h4>信封</h4>
+            ${isNote(d) ? '' : `<h4>信封</h4>
             ${row('信封', sel('envelope', ENVELOPE_LABELS, a.envelope), mean('envelope', '寄信、拆信动画里信封的样子。'))}
-            ${row('封缄', sel('wax', labelWithWarn('wax', WAX_LABELS), a.wax), mean('wax'))}
+            ${row('封缄', sel('wax', labelWithWarn('wax', WAX_LABELS), a.wax), mean('wax'))}`}
             <p class="epi-muted">纸、墨水、封缄和信封的样子都会告诉 AI，收信人会按这些来理解。“含义”多来自 19 世纪欧洲的书信礼仪和中文书信习惯，各地不完全一样。</p>
 
             <div class="epi-dialog-actions">
@@ -2616,6 +2779,8 @@ ${list}`;
                 ${chk('memory.rereadText', '信还在角色手里时，TA 说要拿出来重读，世界书给出原文', '只在信“收着 / 随身带着”、而且拿着信的人读过它时才有。关键词是“重读 / 拿出 / 翻出……”挨着写信人、暗号或标题。信烧了、丢了、交出去了，就没有这一条，只剩记忆。')}
                 <label>世界书条目插入深度<input class="text_pole epi-num" type="number" min="0" max="50" data-s="memory.depth" value="${esc(s.memory?.depth ?? 4)}"></label>
                 <div class="epi-row"><button class="menu_button" data-act="mem-backfill" ${this.hooks.hasChat() ? '' : 'disabled'} title="找出这个聊天里以前用暗号读过、还没有记忆的信，从当时那几层整理">📜 给过去读过的信补记忆</button></div>
+                <div class="epi-row"><button class="menu_button" data-act="fill-open" title="给更新之前的旧信补上一句话简介、读信人的分量和“新知道的事”">🧩 一键补全旧信…</button></div>
+                ${this.fillOpen ? this.fillPanelHtml() : ''}
                 <div class="epi-row"><button class="menu_button" data-act="mem-clear-open">🗑 清除记忆…</button><span class="epi-muted">不用 AI 也能用。</span></div>
                 ${this.memClearOpen ? `<div class="epi-inline epi-memclear">
                     <p>清除哪些（清除前会自动备份一份档案，在「档案与备份」里能恢复）：</p>
@@ -2895,10 +3060,11 @@ ${list}`;
                         ${l.authenticity !== 'original' ? `<span class="epi-chip">${esc(AUTHENTICITY[l.authenticity])}</span>` : ''}</span>
                     <span class="epi-reader-actions">
                         ${preview ? `<span class="epi-chip">👁 预览 · 还没保存</span>
-                        <button class="menu_button" data-act="preview-seal" title="回放寄信时的封缄动画：信纸折好装进信封、封口、飞走">▶ 封缄动画</button>
-                        <button class="menu_button" data-act="preview-open" title="回放收信时的拆信动画">▶ 拆信动画</button>
+                        ${isNote(l) ? '' : `<button class="menu_button" data-act="preview-seal" title="回放寄信时的封缄动画：信纸折好装进信封、封口、飞走">▶ 封缄动画</button>
+                        <button class="menu_button" data-act="preview-open" title="回放收信时的拆信动画">▶ 拆信动画</button>`}
                         <button class="menu_button epi-primary" data-act="reader-close">继续写</button>` : `
                         ${l.code ? `<button class="menu_button epi-code" data-act="copy-code" data-code="${esc(l.code)}" title="在聊天里写上这个暗号，那一轮 AI 就会读到这封信。点一下复制">暗号 ${esc(l.code)}</button>` : ''}
+                        <button class="menu_button" data-act="copy-text" data-id="${esc(l.id)}" title="把信的正文复制下来（不带加粗、划掉这些记号）">📋 复制全文</button>
                         <button class="menu_button" data-act="user-reply" data-id="${esc(l.id)}" title="以 ${esc(recipient || '收件人')} 的身份写回信">✎ 回复这封信</button>
                         ${recipient ? `<button class="menu_button" data-act="reply-open-for" data-id="${esc(l.id)}">↩ 让 ${esc(recipient)} 回信</button>` : ''}
                         ${scriptLang(l.language) === 'lat' ? `<button class="menu_button" data-act="reader-translate" data-id="${esc(l.id)}" title="用 AI 翻译成中文看（只是给你看，不改原信）">🌐 中文译文</button>` : ''}
@@ -2908,7 +3074,8 @@ ${list}`;
                 </div>
                 ${orig ? `<div class="epi-reader-link">↩ 这是对 <a href="#" data-act="read" data-id="${esc(orig.id)}">${esc(orig.author)} ${esc(orig.writtenAt)} 来信</a> 的回复</div>` : ''}
                 ${preview ? '' : this.whereHtml(l)}
-                ${l.envNote ? `<div class="epi-envnote-read" title="写在信封正面，拆信之前就看得到"><span class="epi-envnote-k">✉ 信封上写着</span><span class="epi-envnote-text ${esc(handClasses(l))}" style="${esc(paperStyle(l))}">${esc(l.envNote)}</span></div>` : ''}
+                ${isNote(l) && l.appearance.noteStyle === 'custom' && noteLook(l) ? `<div class="epi-note-look">🗒 ${esc(noteLook(l))}</div>` : ''}
+                ${l.envNote && !isNote(l) ? `<div class="epi-envnote-read" title="写在信封正面，拆信之前就看得到"><span class="epi-envnote-k">✉ 信封上写着</span><span class="epi-envnote-text ${esc(handClasses(l))}" style="${esc(paperStyle(l))}">${esc(l.envNote)}</span></div>` : ''}
                 <div class="${esc(paperClasses(l))} epi-paper-read" style="${esc(paperStyle(l))}">${paperLayer(l, hashSeed(l.id + l.author))}
                     ${place ? `<div class="epi-paper-place">${esc(place)}</div>` : ''}
                     <div class="epi-paper-body">${l.shell ? '<p class="epi-muted">（这封信的正文还没写。点「编辑」写正文。）</p>' : renderBody(l.body, this.renderOpts(l))}</div>
@@ -3108,6 +3275,7 @@ ${list}`;
                         <button class="menu_button epi-mini" data-act="mem-del" data-id="${esc(l.id)}" data-person="${esc(m.person)}">删</button>
                     </span></div>
                 <div class="epi-mem-text">${esc(m.text)}</div>
+                ${this.memMetaHtml(l, m)}
             </div>`).join('') : '<p class="epi-muted">还没有。角色在剧情里读过这封信以后会自动整理；也可以点下面的按钮。</p>'}
             <div class="epi-mem-bar">
                 <button class="menu_button" data-act="mem-recent" data-id="${esc(l.id)}" title="把最近几层剧情交给 AI，看谁读了这封信、记住了什么">🧠 从最近的剧情整理</button>
@@ -3119,6 +3287,15 @@ ${list}`;
                 <button class="menu_button epi-mini" data-act="recall-save" data-id="${esc(l.id)}">保存</button></span>
             </label>
         </div>`;
+    }
+
+    // 一段记忆下面：分量（可改）+ 新知道的事（可删）
+    memMetaHtml(l, m, { compact = false } = {}) {
+        const learned = m.learned || [];
+        const w = compact ? (m.weight ? `<span class="epi-mem-w w${m.weight}" title="这封信在 ${esc(m.person)} 心里的分量">${'●'.repeat(m.weight)}${'○'.repeat(3 - m.weight)} ${esc(WEIGHT_LABELS[m.weight])}</span>` : '')
+            : `<label class="epi-mem-w-sel" title="这封信在 ${esc(m.person)} 心里的分量：决定 TA 记得多清楚。AI 会按信的内容和 TA 的反应判断，你可以改">分量 <select class="text_pole" data-act="mem-weight" data-id="${esc(l.id)}" data-mi="${(l.memories || []).indexOf(m)}"><option value="">没定</option>${Object.entries(WEIGHT_LABELS).map(([k, v]) => `<option value="${k}" ${Number(k) === m.weight ? 'selected' : ''}>${'●'.repeat(k)}${'○'.repeat(3 - k)} ${esc(v)}</option>`).join('')}</select></label>`;
+        const facts = learned.length ? `<div class="epi-mem-learned"><div class="epi-mem-learned-h">🔍 ${esc(m.person)} 从信里新知道了</div>${learned.map((f, i) => `<div class="epi-mem-fact"><span class="epi-chip">${esc(f.kind || '其他')}</span>${f.about && f.about !== l.author ? `<b>${esc(f.about)}</b>：` : ''}${esc(f.fact)}${compact ? '' : `<a href="#" class="epi-mem-fact-x" data-act="mem-fact-del" data-id="${esc(l.id)}" data-mi="${(l.memories || []).indexOf(m)}" data-i="${i}" title="删掉这一条">✕</a>`}</div>`).join('')}</div>` : '';
+        return w || facts ? `<div class="epi-mem-meta">${w}${facts}</div>` : '';
     }
 
     // 过去的楼层：列出可能读过这封信的地方，勾选后整理
@@ -3240,6 +3417,7 @@ ${list}`;
             case 'new':
                 if (this.draftDirty && !confirm('当前这封信有未保存的修改，放弃修改、写一封新信吗？')) break;
                 this.draft = null; this.draftDirty = false; this.nl = null;
+                if (this.kindView() === 'note') { this.renderNewLetterChooser(); this.nl.kind = 'note'; }
                 this.closeReader(); this.show('edit');
                 break;
             case 'nl-author':
@@ -3253,7 +3431,7 @@ ${list}`;
             }
             case 'nl-pair':
                 this.nlSync();
-                this.lastNew = { author: el.dataset.a, recipients: parseNames(el.dataset.r), folder: this.nl.folder };
+                this.lastNew = { author: el.dataset.a, recipients: parseNames(el.dataset.r), folder: this.nl.folder, kind: this.nl.kind };
                 this.nl = null;
                 this.startEdit(null, this.lastNew);
                 break;
@@ -3266,7 +3444,22 @@ ${list}`;
                 this.startEdit(null, o);
                 break;
             }
-            case 'nl-skip': this.nl = null; this.startEdit(null); break;
+            case 'nl-skip': { const k = this.nl?.kind; this.nl = null; this.startEdit(null, { kind: k }); break; }
+            case 'know-person': this.knowPerson = el.dataset.name; this.rerenderKeepScroll(); break;
+            case 'kind-view': { const v = el.dataset.kind; this.hooks.getSettings().listKind = v; this.hooks.saveSettings(); this.rerenderKeepScroll(); break; }
+            case 'nl-kind': this.nlSync(); this.nl.kind = el.dataset.kind; this.rerenderKeepScroll(); break;
+            case 'kind-set': {
+                const d = this.draft;
+                if (!d) break;
+                this.commitRaw(d);
+                d.kind = el.dataset.kind === 'note' ? 'note' : 'letter';
+                // 还没存过、暗号是自动编的：换成对应的编号（【信N】↔【条N】）
+                if (this.draftIsNew && /^【[信条]\d+】$/.test(d.code || '')) d.code = nextCode(this.archive, this.hooks.getScope?.()?.key ?? null, d.kind);
+                this.setDirty();
+                this.rerenderKeepScroll();
+                this.fitPage();
+                break;
+            }
             case 'edit':
                 if (this.draftDirty && this.draft?.id !== id && !confirm('当前这封信有未保存的修改，放弃修改吗？')) break;
                 this.closeReader(); this.startEdit(id); break;
@@ -3508,6 +3701,8 @@ ${list}`;
             case 'mem-past-run': if (!this.busy) await this.runPast(id); break;
             case 'mem-backfill': await this.backfillAll(); break;
             case 'mem-clear-open': this.memClearOpen = !this.memClearOpen; this.rerenderKeepScroll(); break;
+            case 'fill-open': this.fillOpen = !this.fillOpen; this.rerenderKeepScroll(); break;
+            case 'fill-run': this.runFill(); break;
             case 'mem-clear-run': {
                 const box = el.closest('.epi-memclear');
                 const o = {
@@ -3549,6 +3744,8 @@ ${list}`;
                 toastr?.success('保存了');
                 break;
             }
+            case 'copy-text': this.copyLetterText(id ? this.archive.letters[id] : this.draft); break;
+            case 'mem-fact-del': await this.hooks.saveMemoryMeta(id, parseInt(el.dataset.mi, 10), { dropFact: parseInt(el.dataset.i, 10) }); this.rerenderHere(id); break;
             case 'copy-code': this.copyCode(el.closest('.epi-lh-code') ? normalizeCode(this.draft?.code) : el.dataset.code); break;
             case 'days': {
                 const inp = this.root.querySelector(el.dataset.target);
@@ -3856,6 +4053,10 @@ ${list}`;
         if (act === 'list-sort') { if (e.type === 'change') { this.hooks.getSettings().listSort = t.value; this.hooks.saveSettings(); this.rerenderKeepScroll(); } return; }
         if (act === 'tl-folder') { if (e.type === 'change') { this.tlFolder = t.value === '*' ? null : t.value; this.show('timeline'); } return; }
         if (act === 'tl-pair') { if (e.type === 'change') { this.tlPair = t.value; this.show('timeline'); } return; }
+        if (act === 'mem-weight') {
+            if (e.type === 'change') { this.hooks.saveMemoryMeta(t.dataset.id, parseInt(t.dataset.mi, 10), { weight: t.value }).then(() => this.rerenderHere(t.dataset.id)); }
+            return;
+        }
         if (act === 'style-bind') {
             if (e.type !== 'change') return;
             const p = this.bindStyle(t.dataset.name, t.value);
@@ -3954,7 +4155,8 @@ ${list}`;
                 if (t.dataset.f === 'appearance.inkColor') d.appearance.ink = 'custom';
                 this.refreshPaper();
                 this.fontTouched = true; // 自己动过外观：换写信人时不再自动套 TA 的款式
-                if (t.dataset.f === 'appearance.orientation') this.fitPage();
+                if (t.dataset.f === 'appearance.orientation' || t.dataset.f === 'appearance.noteStyle') this.fitPage();
+                if (t.dataset.f === 'appearance.noteStyle' && e.type === 'change' && !t.closest('.epi-dialog')) { this.commitRaw(d); this.rerenderKeepScroll(); this.fitPage(); }
                 // 外观对话框里改了选项：重绘对话框，让说明和对比度跟着变
                 if (e.type === 'change' && t.closest('.epi-dialog') && t.tagName === 'SELECT') this.reopenStyleDialog();
                 else if (t.closest('.epi-dialog')) {

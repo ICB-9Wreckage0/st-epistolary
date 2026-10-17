@@ -279,7 +279,7 @@ function setInitial(stage, { face }) {
  * @param {object} opts { flyOut: 是否飞走（寄出）; 否则原地淡出（只存档） }
  */
 export async function playSeal(letter, { flyOut = true, render } = {}) {
-    if (reducedMotion()) return;
+    if (reducedMotion() || letter?.kind === 'note') return; // 纸条没有信封，不放封缄动画
     const st = new Stage(letter, render);
     setInitial(st, { face: 'back' });
     st.mount();
@@ -466,7 +466,7 @@ export async function playSeal(letter, { flyOut = true, render } = {}) {
  * 拆信动画。结束时信纸迎面放大、淡出，接着显示真正的阅读视图或写信页。
  */
 export async function playOpen(letter, { render } = {}) {
-    if (reducedMotion()) return;
+    if (reducedMotion() || letter?.kind === 'note') return;
     const st = new Stage(letter, render);
     setInitial(st, { face: 'front' });
     const q = st.q;

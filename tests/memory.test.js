@@ -102,3 +102,18 @@ test('信的称呼：有简介用简介，没有就按日期和人；规则里�
     assert.match(callNameRule(l), /不要叫它“【信18】”或“信18”/);
     assert.equal(cleanBlurb('「文森特3月17日写来、说想回北方的信。」\n多余'), '文森特3月17日写来、说想回北方的信');
 });
+
+test('读信记忆：分量和新知道的事', async () => {
+    const c = await import('../src/correspondence.js');
+    const r = c.parseMemoryResult('{"memories":[{"person":"提奥","weight":3,"memory":"提奥记得……","gist":"g","learned":[{"about":"文森特","kind":"家庭","fact":"父亲临终前给他写过一封信"},{"about":"","kind":"乱写","fact":"x"},{"fact":""}]},{"person":"高更","weight":"9","memory":"高更记得……","learned":[]}]}');
+    assert.equal(r.memories[0].weight, 3);
+    assert.deepEqual(r.memories[0].learned, [{ about: '文森特', kind: '家庭', fact: '父亲临终前给他写过一封信' }, { about: '', kind: '其他', fact: 'x' }]);
+    assert.equal(r.memories[1].weight, null);
+    const L = { author: '文森特', recipients: ['提奥'], writtenAt: '1890-03-17', code: '【信1】' };
+    const e = c.memoryEntryContent(L, { person: '提奥', text: '提奥记得……', weight: 1, learned: r.memories[0].learned });
+    assert.match(e, /细节记不太清了/);
+    assert.match(e, /提奥 从这封信里新知道了：\n- 关于文森特（家庭）：父亲临终前给他写过一封信/);
+    const { prompt } = c.buildMemoryPrompt({ ...L, importance: 'light', body: '正文' }, '剧情', { known: [{ person: '提奥', facts: ['文森特：父亲是牧师'] }] });
+    assert.match(prompt, /平常——随手写的近况/);
+    assert.match(prompt, /提奥：文森特：父亲是牧师/);
+});

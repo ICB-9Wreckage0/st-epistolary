@@ -1,7 +1,20 @@
 // 书信簿 · 往来书信：收信反应、回信
 // 纯函数，拼提示词、算日期。实际调用 AI 的部分在 index.js。
 
-import { findPerson, sameName, segmentPosition, normalizeDate, aiText, stripMarks, MARK_RE } from './model.js';
+import { findPerson, sameName, segmentPosition, normalizeDate, aiText, stripMarks, MARK_RE, normalizeLearned, isNote, noteWord, noteLook, NOTE_STYLES } from './model.js';
+
+// 便条 / 纸条：把给 AI 的话里“这封信”换成“这张纸条”（【信件 …】这类标记不动）
+export function asNote(text, l) {
+    if (!isNote(l)) return text;
+    const w = noteWord(l);
+    return String(text)
+        .replace(/(这|那|一)封(?=信)信/g, `$1张${w}`)
+        .replace(/整封信/g, `整张${w}`).replace(/整封/g, '整张')
+        .replace(/(?<!【)信的(原文|全文|内容)/g, `${w}的$1`)
+        .replace(/另编一封/g, '另编一张')
+        .replace(/读信/g, `看${w}`)
+        .replace(/拆开读它/g, '拿起来看').replace(/他上次的信/g, `他上次那张${w}`);
+}
 import { effectiveWobble, normalizeHand, INKS } from './render.js';
 import { enclosuresForAI, enclosureFeel, ENCLOSURE_KINDS } from './enclosures.js';
 
@@ -238,7 +251,8 @@ export function cleanReply(text) {
 /**
  * 角色收到信、读信时注入给 AI 的引导
  */
-export function buildReactionGuidance(archive, letter, reader, arrival, extra = {}) {
+export const buildReactionGuidance = (archive, letter, reader, arrival, extra) => asNote(_buildReactionGuidance(archive, letter, reader, arrival, extra), letter);
+function _buildReactionGuidance(archive, letter, reader, arrival, extra = {}) {
     const person = findPerson(archive, reader);
     const lines = [];
     const dv = letter.delivery || {};
@@ -255,6 +269,20 @@ export function buildReactionGuidance(archive, letter, reader, arrival, extra = 
         );
         if (person?.historical) lines.push(`- ${reader} 是真实历史人物，反应要符合此人在这个时期的真实状况和性格。`);
         if (letter.enclosures?.length) lines.push(enclosuresForAI(letter, archive));
+        if (extra.look) lines.push(...lookLines(archive, letter, { envelope: false }));
+        return lines.join('\n');
+    }
+    if (isNote(letter)) {
+        const w = noteWord(letter);
+        lines.push(`【${w}】${arrival ? `${arrival}，` : ''}${reader} 拿到了 ${letter.author || '某人'} 留的一张${w}（${w}的全文就是上一条消息）。${describeEnvelope(letter)}。`);
+        lines.push(`请描写 ${reader} 发现、看这张${w}的情境和反应：`);
+        lines.push(
+            `- ${w}是怎么到 ${reader} 手上的：夹在门缝里、压在杯子底下、塞进口袋、当面递过来、留在桌上……照剧情来，剧情没写就自然地安排一个。`,
+            `- ${w}很短，看一眼就读完了；反应可以很快，也可以盯着某一句看很久。对具体的字句有反应，不要复述全文。`,
+            `- 反应要符合 ${reader} 的性格、处境，以及和写${w}的人的关系。看完以后怎么处理这张${w}（收起来、揉掉、夹进书里、照着去做……）也可以写。`,
+        );
+        if (person?.historical) lines.push(`- ${reader} 是真实历史人物，反应要符合此人在这个时期的真实状况和性格。`);
+        if (letter.enclosures?.length) lines.push(`${enclosuresForAI(letter, archive)}${reader} 会注意到它们。`);
         if (extra.look) lines.push(...lookLines(archive, letter, { envelope: false }));
         return lines.join('\n');
     }
@@ -595,6 +623,10 @@ function lookPart(a, key, normal) {
 
 export function describeEnvelope(letter) {
     const a = letter.appearance || {};
+    if (isNote(letter)) {
+        const look = noteLook(letter) || `一张${noteWord(letter)}`;
+        return `${look}，没有信封，也没有封口——谁拿到都能直接看`;
+    }
     const env = lookPart(a, 'envelope', LOOK_ENVELOPE[a.envelope] || '信封');
     const sealText = a.wax === 'none' ? '用胶水封着口' : `封口压着${LOOK_WAX[a.wax] || '火漆'}`;
     const wax = a.mode?.wax === 'custom' ? (a.custom?.wax ? `封口：${a.custom.wax}` : '') : lookPart(a, 'wax', sealText);
@@ -607,8 +639,9 @@ export function describeEnvelope(letter) {
 export function describeAppearance(letter, person) {
     const a = letter.appearance || {};
     const parts = [];
-    const fold = lookPart(a, 'orientation', a.orientation === 'landscape' ? '平放在信封里' : '对折了一次');
-    const paper = lookPart(a, 'paper', LOOK_PAPER[a.paper] || '信纸');
+    const fold = isNote(letter) ? '' : lookPart(a, 'orientation', a.orientation === 'landscape' ? '平放在信封里' : '对折了一次');
+    // 便签 / 自定义纸条：纸的样子已经由“样子”说了，不再说成信纸
+    const paper = isNote(letter) && ['sticky', 'custom'].includes(a.noteStyle) ? '' : lookPart(a, 'paper', LOOK_PAPER[a.paper] || '信纸');
     const wear = lookPart(a, 'wear', LOOK_WEAR[a.wear] || '');
     const p1 = [paper, fold, wear].filter(Boolean).join('，');
     if (p1) parts.push(p1);
@@ -627,6 +660,7 @@ export function describeAppearance(letter, person) {
 
 // 信封上写的那句话：拆信之前就看得到，所以每次都告诉 AI（不管有没有开“描写外观”）
 export function envNoteLine(letter, { reader = '' } = {}) {
+    if (isNote(letter)) return ''; // 纸条没有信封
     const n = stripMarks(letter?.envNote || '').trim();
     if (!n) return '';
     return `信封正面，${letter.author || '写信人'}亲笔写着：「${n}」。这句话拆信之前就看得到——${reader || '拿到信的人'}会先看到它，可以照做、犹豫、或者偏不照做，要对它有反应；不要把它当成信的正文。`;
@@ -634,8 +668,8 @@ export function envNoteLine(letter, { reader = '' } = {}) {
 
 export function lookLines(archive, letter, { envelope = true, paper = true } = {}) {
     const lines = [];
-    if (envelope) lines.push(`信封：${describeEnvelope(letter)}。`);
-    if (paper) lines.push(`信纸：${describeAppearance(letter, findPerson(archive, letter.author))}。`);
+    if (envelope) lines.push(`${isNote(letter) ? '样子' : '信封'}：${describeEnvelope(letter)}。`);
+    if (paper) lines.push(`${isNote(letter) ? '纸和字' : '信纸'}：${describeAppearance(letter, findPerson(archive, letter.author))}。`);
     if (lines.length) lines.push('这些是读信的人看得见、摸得着的东西，可以自然地带到一两处（比如字迹透露出写信人的状态），不用逐条描写。');
     return lines;
 }
@@ -707,14 +741,15 @@ export function buildPendingHints({ arrived = [], atVia = [], storyDate = '' }) 
 }
 
 // 收信人在剧情里收到信时，直接把原文放进上下文
-export function inlineLetterBlock(letter, reader, arrival, { peek = false } = {}) {
-    const head = peek ? `【${reader} 拆开的这封信（本来要转交给 ${(letter.recipients || []).join('、')}），原文如下】` : `【${reader} 收到的信${arrival ? `（${arrival}）` : ''}，原文如下】`;
+export const inlineLetterBlock = (letter, reader, arrival, o) => asNote(_inlineLetterBlock(letter, reader, arrival, o), letter);
+function _inlineLetterBlock(letter, reader, arrival, { peek = false } = {}) {
+    const head = peek ? `【${reader} 拆开的这封信（本来要转交给 ${(letter.recipients || []).join('、')}），原文如下】` : `【${reader} 收到的${noteWord(letter)}${arrival ? `（${arrival}）` : ''}，原文如下】`;
     return `${head}\n${aiText(letter.body)}\n【原文完】\n这封信的原文没有出现在聊天记录里，是直接给你的。描写读信时可以引用其中的句子，但不要整封复述。`;
 }
 
 // 收信 / 拆信引导里，“信的全文就是上一条消息”改成“原文见上”
 export function inlineGuidance(text) {
-    return String(text || '').replace('（信的全文就是上一条消息）', '（原文见上）').replace('，信的全文就是上一条消息', '，原文见上');
+    return String(text || '').replace(/（[^（），]{1,8}的全文就是上一条消息）/, '（原文见上）').replace(/，[^（），]{1,8}的全文就是上一条消息/, '，原文见上');
 }
 
 // 托人转交：转交人最晚哪天要转交出去，收信人才能在希望的日子收到
@@ -725,7 +760,8 @@ export function viaDeadline(target, legDays) {
 
 // ---------- 暗号：用户消息里写了某封信的暗号，这一轮把整封信交给 AI ----------
 
-export function buildCodeBlock(archive, letter, { look = false } = {}) {
+export const buildCodeBlock = (archive, letter, o) => asNote(_buildCodeBlock(archive, letter, o), letter);
+function _buildCodeBlock(archive, letter, { look = false } = {}) {
     const head = [
         letter.author && `写信人：${letter.author}`,
         letter.recipients?.length && `收信人：${letter.recipients.join('、')}`,
@@ -750,33 +786,42 @@ export function buildCodeBlock(archive, letter, { look = false } = {}) {
 
 // ---------- 读信以后的记忆：谁读了、记得什么、想到什么、做了什么 ----------
 
-export function buildMemoryPrompt(letter, scene, { existing = [], storyDate = '', userName = '' } = {}) {
+export function buildMemoryPrompt(...a) { const r = _buildMemoryPrompt(...a); return { system: r.system, prompt: asNote(r.prompt, a[0]) }; }
+function _buildMemoryPrompt(letter, scene, { existing = [], storyDate = '', userName = '', known = [] } = {}) {
     const system = '你是剧情记录员，负责把角色读信的经过整理成这个角色日后会记得的东西。只输出 JSON。';
+    const imp = { light: '平常——随手写的近况、寒暄', normal: '要紧', high: '非常重要——会改变关系、处境或命运的信' }[letter.importance] || '';
+    const knownText = known.length ? `\n【这些人以前从别的信里已经知道的事】（这次又读到的不算新发现）\n${known.map(k => `${k.person}：${k.facts.join('；')}`).join('\n').slice(0, 3000)}\n` : '';
     const prev = existing.length ? `\n【之前已经记下的】（这些人以前读过这封信。如果这次又读了或者想起了它，在原来的基础上把这次的新内容补进去，合成一段，不超过 400 字；这次没读的人不用输出）\n${existing.map(m => `${m.person}：${m.text}`).join('\n')}\n` : '';
     const prompt = `下面是一封信的原文，以及剧情里有人读这封信的那一段。请为剧情里**读了这封信（或听人念过、被告知内容）的每个人**，各写一段这个人日后会记得的东西。${userName ? `${userName} 是用户扮演的角色，不用替 TA 写。` : ''}
 
-每段写成第三人称、像这个人的记忆一样（比如“提奥记得……”），150 到 300 字，包含：
+先给每个人定 weight：这封信在 TA 心里的分量。${imp ? `写信人 / 用户标的分量是「${imp}」，以此为准，但对不同的人可以轻一点或重一点（比如偷看了一封和自己无关的信的转交人）。` : '看信的内容、TA 和写信人的关系、TA 在剧情里的反应来判断，每个人可以不一样。'}
+- 1 = 没太往心里去：60 到 120 字，只记得大意和一两处印象，细节模糊，可以没有原话；
+- 2 = 记在心上：150 到 300 字；
+- 3 = 刻骨铭心：300 到 500 字，记得很清楚，2 到 4 句原话，情绪写足，读完以后的举动和之后反复想起也写进去。
+
+每段写成第三人称、像这个人的记忆一样（比如“提奥记得……”），长短按 weight，包含：
 1. 什么时候、在什么情况下读的（${storyDate ? `当前剧情日期是 ${storyDate}，` : ''}剧情里写了就照写）；
 2. 信里说了什么：只挑这个人在剧情里在意、停下来细看、有反应的部分；其余一句带过；
 3. 这个人记得的原话：1 到 3 句，必须是**从信的原文里逐字摘出来的**，用「」括起来，可以是外文原句加括号里的中文；
 4. 读的时候想到了什么（剧情里写到的联想、回忆、判断）；
 5. 读完以后做了什么、打算怎么办。
+每人再列 learned：TA **通过这封信新知道的事**——尤其是关于写信人的：家庭和父母、过去的经历、身体状况、经济和处境、感情、秘密、打算、和别人的关系；也可以是关于信里提到的第三个人。每条写 about（关于谁）、kind（家庭 / 过去 / 身体 / 处境 / 感情 / 秘密 / 打算 / 关系 / 其他）、fact（一句话，不超过 40 字）。**每个人不一样**：同一件事，对早就知道的人不算新发现（看剧情、看下面“以前已经知道的事”）；信里没有透露新东西就写 []，不要硬凑。
 另外每人写一句 gist：不超过 40 字，这个人会怎么一句话概括这封信（比如“勒鲁说每月寄一封信，托我按时转交”）。
-只写剧情和信里确实有的，不要补充、不要编。剧情里没读这封信的人不要写；写信人自己不算读者，除非剧情里 TA 重读了这封信。
+只写剧情和信里确实有的，不要补充、不要编。记忆和 gist 里提到这封信时，用“${letterCallName(letter)}”这类说法，不要写【信1】【条1】这种暗号（剧情里的人不知道暗号）。剧情里没读这封信的人不要写；写信人自己不算读者，除非剧情里 TA 重读了这封信。
 
 再看**这封信本身**在这段剧情里发生了什么（events，按先后）：type 是 written 写好 | sent 寄出 / 交给信差 / 托人带走 | received 收到 | read 读了 | forwarded 转交给别人 | kept 收起来 | mentioned 只是提到；who 是谁做的；to 是寄给 / 交给谁（sent、forwarded 时写）；date 是剧情里的日期（YYYY-MM-DD，看得出来才写）；place 是在哪（城市或地方，看得出来才写）；mes 是第几层（剧情前面标着楼层号就写）。分清楚：**写信人寄出**是 sent，**收信人拿到**是 received，拿到以后打开看是 read。剧情里没发生的不要写。
 storyDate：这段剧情发生在哪天（YYYY-MM-DD），看不出来就写空字符串。
 
 最后看这段剧情结束时，**这封信本身**在哪里：在谁手里（holder）、放在什么地方（place，比如“书桌左边的抽屉”）、状态（state）：kept 收着 | carried 随身带着 | given 交给了别人 | burned 烧了或毁了 | lost 丢了。剧情里没写到信最后放哪，letter 就写 null，不要猜。
-${prev}
-【信】${letter.author || '？'} 写给 ${(letter.recipients || []).join('、') || '？'}${letter.writtenAt ? `，${letter.writtenAt}` : ''}${letter.code ? `，暗号 ${letter.code}` : ''}
+${prev}${knownText}
+【信】${letter.author || '？'} 写给 ${(letter.recipients || []).join('、') || '？'}${letter.writtenAt ? `，${letter.writtenAt}` : ''}
 ${aiText(letter.body || '').slice(0, 12000)}
 
 【读信的那段剧情】
 ${String(scene || '').slice(0, 12000)}
 
 只输出一个 JSON 对象，例如：
-{"memories": [{"person": "提奥", "memory": "提奥记得，1890 年 7 月 1 日早上……他记得信里写着「（信里的原句）」……读完以后……", "gist": "……"}], "events": [{"type": "received", "who": "提奥", "date": "1890-07-01", "place": "巴黎", "mes": 120}, {"type": "read", "who": "提奥", "date": "1890-07-01", "place": "巴黎", "mes": 120}], "storyDate": "1890-07-01", "letter": {"holder": "提奥", "place": "画廊办公室的抽屉", "state": "kept"}}
+{"memories": [{"person": "提奥", "weight": 3, "memory": "提奥记得，1890 年 7 月 1 日早上……他记得信里写着「（信里的原句）」……读完以后……", "gist": "……", "learned": [{"about": "文森特", "kind": "身体", "fact": "文森特又犯过一次病，在疗养院躺了两周"}]}], "events": [{"type": "received", "who": "提奥", "date": "1890-07-01", "place": "巴黎", "mes": 120}, {"type": "read", "who": "提奥", "date": "1890-07-01", "place": "巴黎", "mes": 120}], "storyDate": "1890-07-01", "letter": {"holder": "提奥", "place": "画廊办公室的抽屉", "state": "kept"}}
 没有人读这封信，memories 就是 []。`;
     return { system, prompt };
 }
@@ -784,7 +829,7 @@ ${String(scene || '').slice(0, 12000)}
 function cleanMemories(arr) {
     return (Array.isArray(arr) ? arr : [])
         .filter(x => x && typeof x === 'object' && String(x.person || '').trim() && String(x.memory || '').trim())
-        .map(x => ({ person: String(x.person).trim().slice(0, 40), text: String(x.memory).trim().slice(0, 1500), gist: String(x.gist || '').trim().slice(0, 120) }));
+        .map(x => ({ person: String(x.person).trim().slice(0, 40), text: String(x.memory).trim().slice(0, 2000), gist: String(x.gist || '').trim().slice(0, 120), weight: [1, 2, 3].includes(Number(x.weight)) ? Number(x.weight) : null, learned: normalizeLearned(x.learned) }));
 }
 
 const STORY_EVENT_TYPES = new Set(['written', 'sent', 'received', 'read', 'forwarded', 'kept', 'mentioned']);
@@ -854,15 +899,48 @@ export function letterCallName(l) {
     if (l.blurb) return l.blurb;
     const when = shortDate(l.writtenAt);
     const to = (l.recipients || []).join('、');
-    return `${l.author || ''}${when}${to ? `写给${to}` : '写'}的${l.title ? `「${l.title}」那封` : ''}信`;
+    const w = noteWord(l);
+    return `${l.author || ''}${when}${to ? `写给${to}` : '写'}的${l.title ? `「${l.title}」那${isNote(l) ? '张' : '封'}` : ''}${w}`;
 }
 
 // 给 AI 的一句规则：别用暗号称呼信
-export function callNameRule(l) {
-    return `剧情里提到这封信时，说成“${letterCallName(l)}”这样（可以按人物口吻改，比如“昨天那封信”“他上次的信”）。${l.code ? `不要叫它“${l.code}”或“信${String(l.code).replace(/\D+/g, '')}”：暗号只是玩家用的标签，剧情里的人不知道。` : ''}`;
+export const callNameRule = (l) => asNote(_callNameRule(l), l);
+function _callNameRule(l) {
+    return `剧情里提到这封信时，说成“${letterCallName(l)}”这样（可以按人物口吻改，比如“昨天那封信”“他上次的信”）。${l.code ? `不要叫它“${l.code}”或“${String(l.code).replace(/^[【\[]|[】\]]$/g, '')}”：暗号只是玩家用的标签，剧情里的人不知道。` : ''}`;
 }
 
-export function buildBlurbPrompt(l) {
+// 旧的读后记忆：没有分量和“新知道的事”，按信的原文和记忆补上（不用剧情）
+export function buildEnrichPrompt(letter, memories, { known = [] } = {}) {
+    const system = '你是剧情记录员。只输出 JSON。';
+    const imp = { light: '平常', normal: '要紧', high: '非常重要' }[letter.importance] || '';
+    const knownText = known.length ? `\n【这些人以前从别的信里已经知道的事】（不算新发现）\n${known.map(k => `${k.person}：${k.facts.join('；')}`).join('\n').slice(0, 3000)}\n` : '';
+    const prompt = `下面是一封信，以及读过它的人各自记得的东西。请给每个人补两样：
+1. weight：这封信在 TA 心里的分量。1 = 没太往心里去，2 = 记在心上，3 = 刻骨铭心。看记忆里 TA 的反应、TA 和写信人的关系、信的内容来判断${imp ? `（写信人 / 用户标的分量是「${imp}」，以此为准，对不同的人可以轻一点或重一点）` : ''}。
+2. learned：TA 通过这封信**新知道的事**——尤其是关于写信人的：家庭和父母、过去、身体、处境、感情、秘密、打算、和别人的关系；也可以是关于信里提到的第三个人。每条写 about（关于谁）、kind（家庭 / 过去 / 身体 / 处境 / 感情 / 秘密 / 打算 / 关系 / 其他）、fact（一句话，不超过 40 字）。只写信里确实写了的；对早就知道的人不算新发现；没有就写 []。
+${knownText}
+【信】${letter.author || '？'} 写给 ${(letter.recipients || []).join('、') || '？'}${letter.writtenAt ? `，${letter.writtenAt}` : ''}
+${aiText(letter.body || '').slice(0, 10000)}
+
+【读过的人记得的】
+${memories.map(m => `${m.person}：${String(m.text || '').slice(0, 1500)}`).join('\n\n')}
+
+只输出一个 JSON 对象，例如：
+{"memories": [{"person": "提奥", "weight": 3, "learned": [{"about": "文森特", "kind": "身体", "fact": "文森特又犯过一次病"}]}]}`;
+    return { system, prompt: asNote(prompt, letter) };
+}
+
+export function parseEnrichResult(text) {
+    const m = String(text || '').match(/\{[\s\S]*\}/);
+    if (!m) return [];
+    try {
+        const o = JSON.parse(m[0]);
+        return (Array.isArray(o.memories) ? o.memories : []).filter(x => x && String(x.person || '').trim())
+            .map(x => ({ person: String(x.person).trim(), weight: [1, 2, 3].includes(Number(x.weight)) ? Number(x.weight) : null, learned: normalizeLearned(x.learned) }));
+    } catch { return []; }
+}
+
+export function buildBlurbPrompt(...a) { const r = _buildBlurbPrompt(...a); return { system: r.system, prompt: asNote(r.prompt, a[0]) }; }
+function _buildBlurbPrompt(l) {
     const system = '你是剧情记录员。只输出一句话。';
     const prompt = `用一句话（不超过 30 个字）概括下面这封信，写成剧情里的人提起它时会怎么说：谁、什么时候写的、主要说了什么。
 例如：文森特3月17日从圣雷米寄来、说想回北方的信；勒鲁托我转交、催问画款的那封信。
@@ -878,14 +956,36 @@ export function cleanBlurb(text) {
 }
 
 // 世界书条目：这个人对这封信的记忆
-export function memoryEntryContent(letter, m, whereLine = '') {
-    return `【${m.person}的记忆｜${letterCallName(letter)}${letter.writtenAt ? `（${letter.writtenAt}）` : ''}】\n${m.text}\n${whereLine ? `${whereLine}\n` : ''}（这是 ${m.person} 读过这封信以后记得的东西；没读过的人不知道这些。需要逐字读信时以原文为准。${callNameRule(letter)}）`;
+// 这个人从信里新知道的事，写成几行
+export function learnedLines(person, learned, { author = '' } = {}) {
+    const list = normalizeLearned(learned);
+    if (!list.length) return '';
+    return `${person} 从这封信里新知道了：\n${list.map(f => `- ${f.about && f.about !== author ? `关于${f.about}` : author ? `关于${author}` : ''}${f.kind && f.kind !== '其他' ? `（${f.kind}）` : ''}：${f.fact}`).join('\n')}`;
+}
+
+const WEIGHT_NOTE = { 1: '这封信 TA 没太往心里去，细节记不太清了，被提起时只想得起大概。', 3: '这封信对 TA 非常重要，记得很清楚，常常想起。' };
+
+export const memoryEntryContent = (letter, m, w) => asNote(_memoryEntryContent(letter, m, w), letter);
+function _memoryEntryContent(letter, m, whereLine = '') {
+    const learned = learnedLines(m.person, m.learned, { author: letter.author });
+    const weight = WEIGHT_NOTE[m.weight] || '';
+    return `【${m.person}的记忆｜${letterCallName(letter)}${letter.writtenAt ? `（${letter.writtenAt}）` : ''}】\n${m.text}\n${weight ? `${weight}\n` : ''}${learned ? `${learned}\n` : ''}${whereLine ? `${whereLine}\n` : ''}（这是 ${m.person} 读过这封信以后记得的东西；没读过的人不知道这些。需要逐字读信时以原文为准。${callNameRule(letter)}）`;
 }
 
 // 一个人读过同一个写信人的好几封信：平时只放这份一览，点到具体哪封才放那封的详细记忆
 export function summaryEntryContent(person, author, items) {
     const lines = items.map(({ letter, memory, where }) => `- ${letterCallName(letter)}${letter.writtenAt && !letterCallName(letter).includes(shortDate(letter.writtenAt)) ? `（${letter.writtenAt}）` : ''}：${gistOf(memory)}${where ? `（${where}）` : ''}`);
-    return `【${person}读过的 ${author} 来信】\n${person} 一共读过 ${items.length} 封 ${author} 写的信：\n${lines.join('\n')}\n（说起具体哪一封——日期、月份、标题——${person} 会想起那封信更多的细节。没读过的人不知道这些。剧情里用上面这种说法称呼信，不要用“信18”这类暗号。）`;
+    // 读这些信陆续知道的、关于写信人的事（去重）
+    const facts = [];
+    for (const { memory } of items) for (const f of normalizeLearned(memory.learned)) {
+        const line = `${f.about && f.about !== author ? `关于${f.about}，` : ''}${f.kind && f.kind !== '其他' ? `（${f.kind}）` : ''}${f.fact}`;
+        if (!facts.includes(line)) facts.push(line);
+    }
+    const known = facts.length ? `\n${person} 从这些信里陆续知道的、关于 ${author} 的事：\n${facts.slice(-15).map(x => `- ${x}`).join('\n')}` : '';
+    const nNotes = items.filter(x => isNote(x.letter)).length;
+    const nLetters = items.length - nNotes;
+    const what = [nLetters && `${nLetters} 封 ${author} 写的信`, nNotes && `${nNotes} 张 ${author} 留的纸条`].filter(Boolean).join('、');
+    return `【${person}读过的 ${author} 来信】\n${person} 一共读过 ${what}：\n${lines.join('\n')}${known}\n（说起具体哪一封——日期、月份、标题——${person} 会想起那封信更多的细节。没读过的人不知道这些。剧情里用上面这种说法称呼信，不要用“信18”这类暗号。）`;
 }
 
 const esc = s => String(s).replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
@@ -932,7 +1032,8 @@ export function rereadKey(letter, names = []) {
     return `/${act}[^。！？.!?\\n]{0,15}(${who})|(${who})[^。！？.!?\\n]{0,15}${act}/i`;
 }
 
-export function rereadEntryContent(letter, holder, place = '') {
+export const rereadEntryContent = (letter, h, p) => asNote(_rereadEntryContent(letter, h, p), letter);
+function _rereadEntryContent(letter, holder, place = '') {
     return `【信件原文｜${letterCallName(letter)}｜现在在 ${holder} 手里${place ? `（${place}）` : ''}】\n${aiText(letter.body || '').trim()}\n【信件完】\n（${holder} 把这封信拿出来重读时，读到的就是上面的原文。没有这封信的人读不到。${callNameRule(letter)}）`;
 }
 
@@ -940,7 +1041,7 @@ export function rereadEntryContent(letter, holder, place = '') {
 
 export function buildStatusPrompt(items, story, { storyDate = '', userName = '' } = {}) {
     const system = '你是剧情记录员，负责根据剧情更新信件的状态。只写剧情里确实发生了的事，不猜。只输出 JSON。';
-    const list = items.map(({ n, letter, now }) => `#${n}：${letter.author || '？'} 写给 ${(letter.recipients || []).join('、') || '？'}${letter.writtenAt ? `，${letter.writtenAt} 写的` : ''}${letter.code ? `，暗号 ${letter.code}` : ''}${letter.title ? `，信封上写着「${letter.title}」` : ''}${letter.envNote ? `，信封上还写着「${stripMarks(letter.envNote)}」` : ''}。开头：${stripMarks(letter.body || '').replace(/\s+/g, ' ').slice(0, 40) || '（正文还没写）'}。目前记录：${now}`).join('\n');
+    const list = items.map(({ n, letter, now }) => `#${n}：${letter.author || '？'} 写给 ${(letter.recipients || []).join('、') || '？'}${letter.writtenAt ? `，${letter.writtenAt} 写的` : ''}${letter.code ? `，暗号 ${letter.code}` : ''}${letter.title ? `，信封上写着「${letter.title}」` : ''}${letter.envNote && !isNote(letter) ? `，信封上还写着「${stripMarks(letter.envNote)}」` : ''}${isNote(letter) ? `（这是一张${noteWord(letter)}，没有信封）` : ''}。开头：${stripMarks(letter.body || '').replace(/\s+/g, ' ').slice(0, 40) || '（正文还没写）'}。目前记录：${now}`).join('\n');
     const prompt = `下面是一些信，以及最近的一段剧情（每段前标着楼层号）。请看剧情里这些信**有没有发生新的事**：
 
 - received：收信人是不是在这段剧情里收到了这封信（true / false；没写到就 null）；receivedBy 谁收到的；receivedDate 哪天收到（YYYY-MM-DD，剧情里看得出来才写）；receivedPlace 在哪收到（城市、住处，看得出来才写）

@@ -5,7 +5,7 @@
 import { Store } from './src/store.js';
 import { UI } from './src/ui.js';
 import { retrieve, DEFAULT_RETRIEVAL } from './src/retrieval.js';
-import { sameName, normalizeDate, findPerson, lettersByCode, unknownCodes, ensureCodes, createLetter, aiText, bodyHash } from './src/model.js';
+import { sameName, normalizeDate, findPerson, lettersByCode, unknownCodes, ensureCodes, createLetter, aiText, bodyHash, isNote, noteWord, normalizeLetter, nextCode } from './src/model.js';
 import {
     buildReactionGuidance, replyChatMessage, sceneSwitchMessage, sceneReturnMessage,
     deliveryEvents, buildDatePrompt, parseStoryDate, addDays,
@@ -13,12 +13,12 @@ import {
     viaReceivedEvents, nextEventId, VIA_ACTIONS,
     mentionsReceipt, mentionsDate, mentionsName, buildPendingHints, inlineLetterBlock, inlineGuidance, buildCodeBlock,
     buildMemoryPrompt, parseMemoryResult, checkQuotes, memoryEntryContent, memoryKeys,
-    authorKey, summaryEntryContent, rereadKey, rereadEntryContent, buildStatusPrompt, parseStatusResponse, callNameRule, buildBlurbPrompt, cleanBlurb, envNoteLine,
+    authorKey, summaryEntryContent, rereadKey, rereadEntryContent, buildStatusPrompt, parseStatusResponse, callNameRule, buildBlurbPrompt, cleanBlurb, envNoteLine, asNote, buildEnrichPrompt, parseEnrichResult,
 } from './src/correspondence.js';
 import { lookFor } from './src/styles.js';
 import { whereNow, setWhere, suggestWhere, acceptSuggestion, dismissSuggestion, revokeWhere, whereText, whereForPerson, REREADABLE, deliveryText, deliveryState } from './src/whereabouts.js';
 import { playSeal, playOpen } from './src/envelope.js';
-import { detectInMessage, guessRecipient, guessAuthor, findDuplicate, isSalutation } from './src/importer.js';
+import { detectInMessage, detectNotes, guessRecipient, guessAuthor, findDuplicate, isSalutation } from './src/importer.js';
 import { extractEnclosures } from './src/enclosures.js';
 import { findReadingScenes, sceneText } from './src/memoryscan.js';
 import { callAI, DEFAULT_API } from './src/api.js';
@@ -295,7 +295,7 @@ function reactionGuidance() {
         if (!letter) continue;
         if (letter.shell) {
             // 空壳信：正文还没写，不能让 AI 自己编
-            parts.push(`【${i.reader} ${i.peek ? '拆开的' : '收到的'}这封信（${letter.author} 写的${letter.title ? `，信封上写着「${letter.title}」` : ''}${letter.envNote ? `，信封上还写着「${letter.envNote}」` : ''}），正文还没有定下来】\n描写 ${i.reader} 拆信、展开信纸为止，或者写 TA 拿着信的样子。**不要编造信里写了什么**，原文会之后给出。`);
+            parts.push(asNote(`【${i.reader} ${i.peek ? '拆开的' : '收到的'}这封信（${letter.author} 写的${letter.title ? `，信封上写着「${letter.title}」` : ''}${letter.envNote && !isNote(letter) ? `，信封上还写着「${letter.envNote}」` : ''}），正文还没有定下来】\n描写 ${i.reader} 拆信、展开信纸为止，或者写 TA 拿着信的样子。**不要编造信里写了什么**，原文会之后给出。`, letter));
             continue;
         }
         const g = buildReactionGuidance(store.archive, letter, i.reader, i.arrival, { peek: i.peek, look });
@@ -336,12 +336,12 @@ const blockStart = l => `【信件 ${l.code}｜`;
 const BLOCK_END = '【信件完】';
 
 function letterBlock(l) {
-    const head = [`${l.author || '？'} 写给 ${l.recipients.join('、') || '？'}`, l.writtenAt, l.blurb].filter(Boolean).join('｜');
+    const head = [`${isNote(l) ? `🗒${noteWord(l)}：` : ''}${l.author || '？'} 写给 ${l.recipients.join('、') || '？'}`, l.writtenAt, l.blurb].filter(Boolean).join('｜');
     const note = envNoteLine(l) ? `${envNoteLine(l)}\n\n` : '';
     const enc = l.enclosures?.length ? `\n\n（随信附上：${l.enclosures.map(e => e.name + (e.value && !e.name.includes(e.value) ? `，${e.value}` : '')).join('；')}）` : '';
     // 和“剧情推进”一样：直接写进用户这一楼，并且明确告诉 AI 这是既定内容
     const rule = `（以下是这封信的原文，已经写好。剧情里有人读它时，读到的就是这些字句：可以引用，不要另编一封，不要改写或增删。${callNameRule(l)}${/〔(加粗|划掉|写得很大|画了线)：/.test(aiText(l.body)) ? '〔划掉：……〕是写信人写了又划掉的字（读的人看得见被划掉的内容），〔写得很大：……〕〔加粗：……〕〔画了线：……〕是写信人特意强调的地方。' : ''}）`;
-    return `${blockStart(l)}${head}】\n\n${rule}\n\n${note}${aiText(l.body || '').trim()}${enc}\n\n${BLOCK_END}`;
+    return `${blockStart(l)}${head}】\n\n${asNote(rule, l)}\n\n${note}${aiText(l.body || '').trim()}${enc}\n\n${BLOCK_END}`;
 }
 
 // 一段文字里有暗号：把对应的信接在后面。返回 { text, letters }（没有要加的就原样返回）
@@ -359,7 +359,7 @@ function withLetterBlocks(text) {
 function toastEmbedded(letters, where = '') {
     if (!letters.length) return;
     console.info(`[书信簿] 暗号 ${letters.map(l => l.code).join(' ')} → 信已接在消息后面（${where}）`);
-    toastr.success(letters.map(l => `${l.code} ${l.author} → ${l.recipients.join('、')}`).join('<br>'), '✉ 信已放进你的消息（折叠显示）', { timeOut: 4000, escapeHtml: false });
+    toastr.success(letters.map(l => esc(`${l.code} ${l.author} → ${l.recipients.join('、')}`)).join('<br>'), '✉ 信已放进你的消息（折叠显示）', { timeOut: 4000, escapeHtml: false });
 }
 
 // ① 最早的时机：酒馆处理完斜杠命令、还没读输入框（GENERATION_AFTER_COMMANDS）——直接改输入框里的文字
@@ -445,7 +445,8 @@ function foldLetters(mesId) {
         const details = document.createElement('details');
         details.className = 'epi-fold';
         const parts = m[2].split('｜');
-        details.innerHTML = `<summary>✉ ${esc(parts[0].replace(' 写给 ', '写给'))} 的信${parts[1] ? ` · ${esc(parts[1])}` : ''} <span class="epi-fold-code">${esc(m[1])}</span><span class="epi-fold-hint">点开看全文 · AI 读得到</span></summary>`;
+        const nw = (parts[0].match(/^🗒([^：]{1,8})：/) || [])[1];
+        details.innerHTML = `<summary>${nw ? '🗒' : '✉'} ${esc(parts[0].replace(/^🗒[^：]{1,8}：/, '').replace(' 写给 ', '写给'))} 的${esc(nw || '信')}${parts[1] ? ` · ${esc(parts[1])}` : ''} <span class="epi-fold-code">${esc(m[1])}</span><span class="epi-fold-hint">点开看全文 · AI 读得到</span></summary>`;
         start.before(details);
         for (let k = i + 1; k < j; k++) details.appendChild(nodes[k]);
         start.remove();
@@ -468,11 +469,11 @@ function codeFeedback(type) {
     const key = `${ctx().chat.length}|${type}|${hit.map(l => l.id).join(',')}|${miss.join(',')}`;
     if (key === lastCodeToast) return;
     lastCodeToast = key;
-    if (hit.length && settings().codeMode === 'inject') toastr.success(hit.map(l => `${l.code} ${l.author} → ${l.recipients.join('、')}`).join('<br>'), '✉ 这一轮把信交给了 AI', { timeOut: 4000, escapeHtml: false });
+    if (hit.length && settings().codeMode === 'inject') toastr.success(hit.map(l => esc(`${l.code} ${l.author} → ${l.recipients.join('、')}`)).join('<br>'), '✉ 这一轮把信交给了 AI', { timeOut: 4000, escapeHtml: false });
     if (!hit.length && !miss.length) {
         // 写了“信1”却没带括号
         const bare = Object.values(here().letters).find(l => l.code && new RegExp(`(^|[^【\\[])${l.code.replace(/^【|】$/g, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\d】\\]])`).test(m.mes || ''));
-        if (bare && /^【信\d+】$/.test(bare.code)) toastr.info(`如果你是想用 ${bare.code} 那封信，暗号要连括号一起写：${bare.code}`, '书信簿', { timeOut: 6000 });
+        if (bare && /^【[信条]\d+】$/.test(bare.code)) toastr.info(`如果你是想用 ${bare.code} 那${isNote(bare) ? `张${noteWord(bare)}` : '封信'}，暗号要连括号一起写：${bare.code}`, '书信簿', { timeOut: 6000 });
     }
     if (miss.length) toastr.warning(`${curScope() ? `「${curScope().name}」这张角色卡里` : '档案里'}没有 ${miss.join('、')} 这个暗号。打开书信簿看看那封信的暗号是什么（信件列表里每封信前面那个）；别的角色卡的信在这里不生效。`, '书信簿', { timeOut: 8000 });
 }
@@ -515,11 +516,12 @@ async function autoBlurb(letterId, { force = false } = {}) {
     if (!force && l.blurb && (!l.blurbAuto || l.blurbHash === bodyHash(l))) return '';
     blurbBusy.add(letterId);
     try {
+        const hash = bodyHash(l); // 概括的是这一版正文；等 AI 的时候你又改了正文，下次保存会再写
         const { system, prompt } = buildBlurbPrompt(l);
         const out = cleanBlurb(await ai(system, prompt, { kind: 'blurb' }));
         const now = store.archive.letters[letterId];
         if (!out || !now || (now.blurb && !now.blurbAuto && !force)) return '';
-        Object.assign(now, { blurb: out, blurbAuto: true, blurbHash: bodyHash(now) });
+        Object.assign(now, { blurb: out, blurbAuto: true, blurbHash: hash });
         store.save();
         ui.refresh();
         return out;
@@ -821,11 +823,15 @@ function upsertMemories(letter, found, { auto = true, fromMes = null } = {}) {
         const old = letter.memories.find(m => isMine(m) && same(m.person, f.person));
         if (old) {
             if (auto && old.auto === false) continue; // 用户改过的，不覆盖
-            if (fromMes == null || old.fromMes !== fromMes) old.prev = { text: old.text, gist: old.gist || '', fromMes: old.fromMes ?? null, fromSwipe: old.fromSwipe ?? null };
-            Object.assign(old, { text, gist: f.gist || '', updatedAt: now, auto, fromMes, fromSwipe: swipeOf(fromMes), chatId: chatId() });
+            if (fromMes == null || old.fromMes !== fromMes) old.prev = { text: old.text, gist: old.gist || '', fromMes: old.fromMes ?? null, fromSwipe: old.fromSwipe ?? null, weight: old.weight ?? null, learned: old.learned || [] };
+            // 新知道的事：这次的补进原来的（同一件事不重复）
+            const base = fromMes != null && old.fromMes === fromMes ? (old.prev?.learned || []) : (old.learned || []);
+            const learned = [...base];
+            for (const x of f.learned || []) if (!learned.some(y => y.fact === x.fact)) learned.push(x);
+            Object.assign(old, { text, gist: f.gist || '', weight: f.weight ?? old.weight ?? null, learned: learned.slice(-12), updatedAt: now, auto, fromMes, fromSwipe: swipeOf(fromMes), chatId: chatId() });
             changed.push(old);
         } else {
-            const m = { person: f.person, text, gist: f.gist || '', updatedAt: now, wiUid: null, wiBook: '', auto, fromMes, fromSwipe: swipeOf(fromMes), prev: null, chatId: chatId() };
+            const m = { person: f.person, text, gist: f.gist || '', weight: f.weight ?? null, learned: f.learned || [], updatedAt: now, wiUid: null, wiBook: '', auto, fromMes, fromSwipe: swipeOf(fromMes), prev: null, chatId: chatId() };
             letter.memories.push(m);
             changed.push(m);
         }
@@ -869,9 +875,26 @@ function applyStoryEvents(letter, events, { fromMes = null, past = false, manual
 
 // 让 AI 从一段剧情里整理某封信：谁读了记得什么、这封信发生了什么、信最后放哪（建议）
 // memMode：first 只给还没有记忆的人写 | every 都更新 | off 不写记忆
+// 各人以前从别的信里已经知道的事（关于这封信的写信人优先），免得 AI 把旧事当新发现
+function knownFacts(letter) {
+    const by = new Map();
+    for (const l of Object.values(here().letters)) {
+        if (l.id === letter.id) continue;
+        for (const m of (l.memories || []).filter(isMine)) for (const f of m.learned || []) {
+            const list = by.get(m.person) || [];
+            const line = `${f.about ? `${f.about}：` : ''}${f.fact}`;
+            if (!list.includes(line)) list.push(line);
+            by.set(m.person, list);
+        }
+    }
+    const first = f => (f.startsWith(`${letter.author}：`) ? 0 : 1);
+    return [...by.entries()].map(([person, facts]) => ({ person, facts: facts.sort((a, b) => first(a) - first(b)).slice(0, 20) }));
+}
+
 async function extractMemories(letter, scene, { quiet = false, past = false, fromMes = null, memMode = 'every' } = {}) {
     const { system, prompt } = buildMemoryPrompt(letter, scene, {
         existing: (letter.memories || []).filter(isMine),
+        known: knownFacts(letter),
         storyDate: past ? '' : getStoryDate(),
         userName: ctx().name1 || '',
     });
@@ -953,6 +976,16 @@ async function revokeFrom(mesFrom, { stash = false, quiet = false } = {}) {
         const k = `${mes}:${swipe ?? 0}`;
         (box[k] = box[k] || []).push({ ...item, at: Date.now() });
     };
+    // 从被换掉 / 删掉的回复里自动记下的纸条 / 封起来的信：一起撤掉（收起来，划回那个回复时原样放回）
+    // 你已经动过的（打开读了、标了回信、放进文件夹、记了在谁手里、自己改过简介或记忆）留着
+    const touchedByYou = l => l.openedAt || l.replied || l.folder || l.whereabouts?.current || (l.blurb && !l.blurbAuto) || (l.memories || []).some(m => m.auto === false);
+    for (const l of Object.values(store.archive.letters)) {
+        if (!l.autoFrom || l.autoFrom.chatId !== cid || l.autoFrom.mes < mesFrom) continue;
+        if (touchedByYou(l)) { l.autoFrom = null; any = true; continue; }
+        keep(l.autoFrom.mes, l.autoFrom.swipe, { letterId: l.id, kind: 'auto', data: JSON.parse(JSON.stringify(l)) });
+        delete store.archive.letters[l.id];
+        any = true; n++;
+    }
     for (const l of Object.values(store.archive.letters)) {
         let touched = false;
         const sug = revokeWhere(l, mesFrom, cid);
@@ -972,7 +1005,7 @@ async function revokeFrom(mesFrom, { stash = false, quiet = false } = {}) {
         for (const m of [...(l.memories || [])]) {
             if (!isMine(m) || m.auto === false || m.fromMes == null || m.fromMes < mesFrom) continue;
             keep(m.fromMes, m.fromSwipe, { letterId: l.id, kind: 'mem', data: JSON.parse(JSON.stringify(m)) });
-            if (m.prev && (m.prev.fromMes == null || m.prev.fromMes < mesFrom)) Object.assign(m, { text: m.prev.text, gist: m.prev.gist, fromMes: m.prev.fromMes, fromSwipe: m.prev.fromSwipe ?? null, prev: null });
+            if (m.prev && (m.prev.fromMes == null || m.prev.fromMes < mesFrom)) Object.assign(m, { text: m.prev.text, gist: m.prev.gist, weight: m.prev.weight ?? m.weight ?? null, learned: m.prev.learned || [], fromMes: m.prev.fromMes, fromSwipe: m.prev.fromSwipe ?? null, prev: null });
             else l.memories.splice(l.memories.indexOf(m), 1);
             touched = true;
             n++;
@@ -1016,6 +1049,14 @@ async function restoreStash(mes, swipe) {
         const l = store.archive.letters[it.letterId];
         if (!l) continue;
         l.status = it.data.now.status; l.delivery = it.data.now.delivery; l.placeTo = it.data.now.placeTo;
+    }
+    // 撤下的纸条 / 信：原样放回（同一段正文已经又记了一份的，不重复放）
+    for (const it of items.filter(x => x.kind === 'auto')) {
+        if (store.archive.letters[it.letterId]) continue;
+        if (Object.values(here().letters).some(x => String(x.body || '').trim() === String(it.data.body || '').trim())) continue;
+        const l = normalizeLetter(it.data, it.letterId);
+        if (Object.values(store.archive.letters).some(x => x.code === l.code && (x.scope || '') === (l.scope || ''))) l.code = isNote(l) ? nextCodeFor(l) : nextCode(store.archive, l.scope || '', l.kind);
+        store.archive.letters[it.letterId] = l;
     }
     for (const it of items) {
         const l = store.archive.letters[it.letterId];
@@ -1102,6 +1143,87 @@ function codeReadsInChat() {
     return out;
 }
 
+// ---------- 一键补全旧信：简介、分量和“新知道的事”、旧纸条的暗号 ----------
+function fillPlan() {
+    const letters = Object.values(here().letters).filter(l => l.status !== 'draft');
+    return {
+        blurbs: letters.filter(l => !l.blurb && !l.shell && String(l.body || '').trim()),
+        memories: letters.filter(l => !l.shell && (l.memories || []).some(m => m.weight == null)),
+        notes: letters.filter(l => isNote(l) && /^【信\d+】$/.test(l.code || '')),
+    };
+}
+
+function fillCounts() {
+    const p = fillPlan();
+    return { blurbs: p.blurbs.length, memories: p.memories.reduce((n, l) => n + l.memories.filter(m => m.weight == null).length, 0), memLetters: p.memories.length, notes: p.notes.length };
+}
+
+async function fillOld({ blurbs = true, memories = true, renumber = false } = {}, onStep = () => {}) {
+    const p = fillPlan();
+    const out = { blurbs: 0, memories: 0, notes: 0, failed: 0, renamed: [] };
+    if (renumber) {
+        for (const l of p.notes) {
+            const old = l.code;
+            l.code = nextCodeFor(l);
+            out.renamed.push(`${old}→${l.code}`);
+            out.notes++;
+        }
+        if (out.notes) store.save();
+    }
+    const total = (blurbs ? p.blurbs.length : 0) + (memories ? p.memories.length : 0);
+    let done = 0;
+    if (blurbs && aiOn()) for (const l of p.blurbs) {
+        onStep(++done, total, `简介：${l.author} → ${l.recipients.join('、')}`);
+        if (await autoBlurb(l.id)) out.blurbs++; else out.failed++;
+    }
+    if (memories && aiOn()) for (const l of p.memories) {
+        onStep(++done, total, `记忆：${l.author} → ${l.recipients.join('、')}`);
+        const todo = l.memories.filter(m => m.weight == null);
+        try {
+            const { system, prompt } = buildEnrichPrompt(l, todo, { known: knownFacts(l) });
+            const res = parseEnrichResult(await ai(system, prompt, { kind: 'enrich' }));
+            for (const m of todo) {
+                const r = res.find(x => same(x.person, m.person));
+                m.weight = r?.weight || 2; // AI 没给就当“记在心上”，免得下次又补
+                const learned = [...(m.learned || [])];
+                for (const f of r?.learned || []) if (!learned.some(y => y.fact === f.fact)) learned.push(f);
+                m.learned = learned.slice(-12);
+                out.memories++;
+            }
+            l.updatedAt = new Date().toISOString();
+            store.save();
+        } catch (e) {
+            if (e.aiOff) break;
+            console.warn('[书信簿] 补全记忆失败', e);
+            out.failed++;
+        }
+    }
+    if (out.memories || out.notes) await syncWorldBook(); // 改了暗号，世界书里的关键词也要换
+    ui.refresh();
+    return out;
+}
+
+// 旧纸条换成【条N】：同一张角色卡里下一个空着的编号
+function nextCodeFor(l) {
+    const used = new Set(Object.values(store.archive.letters).filter(x => (x.scope || '') === (l.scope || '')).map(x => x.code));
+    for (let n = 1; ; n++) if (!used.has(`【条${n}】`)) return `【条${n}】`;
+}
+
+// 改某人记忆的分量 / 删一条“新知道的事”
+// mi：这段记忆在这封信 memories 里的位置（界面上列的是所有聊天的记忆，按位置找才不会改错）
+async function saveMemoryMeta(letterId, mi, { weight, dropFact } = {}) {
+    const m = Number.isInteger(mi) ? store.archive.letters[letterId]?.memories?.[mi] : null;
+    if (!m) return false;
+    if (weight !== undefined) m.weight = [1, 2, 3].includes(Number(weight)) ? Number(weight) : null;
+    if (Number.isInteger(dropFact)) m.learned = (m.learned || []).filter((_, i) => i !== dropFact);
+    m.auto = false; // 你动过了，以后 AI 不覆盖
+    m.prev = null;
+    m.updatedAt = new Date().toISOString();
+    store.save();
+    await syncWorldBook();
+    return true;
+}
+
 async function saveMemoryEdit(letterId, person, text) {
     const letter = store.archive.letters[letterId];
     if (!letter) return;
@@ -1110,7 +1232,7 @@ async function saveMemoryEdit(letterId, person, text) {
     const t = String(text || '').trim();
     if (i >= 0 && !t) letter.memories.splice(i, 1);
     else if (i >= 0) Object.assign(letter.memories[i], { text: t, gist: '', auto: false, prev: null, updatedAt: new Date().toISOString() });
-    else if (person && t) letter.memories.push({ person, text: t, gist: '', auto: false, updatedAt: new Date().toISOString(), wiUid: null, wiBook: '', fromMes: null, prev: null, chatId: chatId() });
+    else if (person && t) letter.memories.push({ person, text: t, gist: '', weight: null, learned: [], auto: false, updatedAt: new Date().toISOString(), wiUid: null, wiBook: '', fromMes: null, prev: null, chatId: chatId() });
     letter.updatedAt = new Date().toISOString();
     store.save();
     await syncWorldBook();
@@ -2066,7 +2188,58 @@ function pendingHints() {
 
 // 这段文字里有没有寄给“我”的信
 function lettersToMe(text) {
-    return detectInMessage(text).filter(c => ui.isMe(guessRecipient(c.salutation)));
+    // 旁白说是纸条的，不算信（纸条不封起来，见 recordNotes）
+    return detectInMessage(text).filter(c => !c.note && ui.isMe(guessRecipient(c.salutation)));
+}
+
+// 角色回复里写出来的纸条 / 便签：存成便条（不封起来，写出来就看得到）
+function notesInText(text) {
+    const all = detectInMessage(text);
+    const out = all.filter(c => c.note).map(c => ({ text: c.text, salutation: c.salutation, signoff: c.signoff, hint: c.note, before: '' }));
+    for (const n of detectNotes(text)) {
+        if (all.some(c => c.text.includes(n.text) || n.text.includes(c.text))) continue;
+        out.push({ text: n.text, salutation: n.salutation, signoff: n.signoff, hint: { word: n.word, style: n.style, desc: n.desc }, before: n.before });
+    }
+    return out;
+}
+
+async function recordNotes(mesId) {
+    if (settings().sealIncoming === false || !hasChat() || store.mode === 'unloaded') return [];
+    const c = ctx();
+    const m = c.chat?.[mesId];
+    if (!m || m.is_user || m.is_system || m.extra?.epistolary) return [];
+    const made = [];
+    for (const n of notesInText(m.mes || '')) {
+        const same = Object.values(here().letters).find(l => String(l.body || '').trim() === n.text.trim());
+        if (same) continue;
+        // 落款只有首字母（——S）：当成说话的角色
+        let author = guessAuthor(n.signoff) || m.name;
+        if (m.name && author.length <= 2 && m.name.toLowerCase().startsWith(author.replace(/\.$/, '').toLowerCase())) author = m.name;
+        const to = guessRecipient(n.salutation);
+        // 没写给谁：角色自己写的纸条，一对一聊天里多半是给你的
+        const forMe = to ? [to] : c.name1 && (sameName(store.archive, author, m.name) || n.before.includes(c.name1) || /给你|留给你|塞给你|递给你|你的(门|桌|口袋|书)/.test(n.before)) ? [c.name1] : [];
+        const look = lookFor(store.archive, author).appearance;
+        const letter = createLetter(store.archive, {
+            kind: 'note',
+            author,
+            recipients: forMe,
+            writtenAt: isSimple() ? '' : getStoryDate(),
+            body: n.text,
+            status: 'sent',
+            appearance: { ...look, noteStyle: n.hint?.style || 'scrap', ...(n.hint?.style === 'custom' ? { noteDesc: n.hint.desc || '', noteWord: n.hint.word || '' } : {}) },
+            source: { chatId: chatId(), mes: mesId },
+            autoFrom: { chatId: chatId(), mes: mesId, swipe: m.swipe_id ?? 0 },
+            ...scopeFields(),
+        });
+        letter.events.push({ id: nextEventId(letter.events), type: 'written', who: letter.author, date: getStoryDate(), segments: null, to: letter.recipients.join('、'), note: '角色在回复里写的', place: '', mes: mesId, auto: false });
+        made.push(letter);
+    }
+    if (!made.length) return [];
+    store.save();
+    toastr.info(made.map(l => esc(`${l.author} 的${noteWord(l)}：${String(l.body).replace(/\s+/g, ' ').slice(0, 30)}`)).join('<br>'), esc(`🗒 记下了 ${made.length} 张${made.length > 1 ? '便条' : noteWord(made[0])}（${made.map(l => l.code).join(' ')}）`), { timeOut: 5000, escapeHtml: false });
+    ui.refresh();
+    for (const l of made) autoBlurb(l.id);
+    return made;
 }
 
 // 正在生成的文字里，是不是已经开始写一封给“我”的信了（流式输出时先模糊掉）
@@ -2172,6 +2345,7 @@ async function sealIncoming(mesId) {
             appearance: lookFor(store.archive, author).appearance,
             enclosures: extractEnclosures(f.text),
             source: { chatId: chatId(), mes: mesId },
+            autoFrom: { chatId: chatId(), mes: mesId, swipe: m.swipe_id ?? 0 }, // 换掉这个回复时撤掉（还没拆的话）
             ...scopeFields(),
         });
         letter.events.push({ id: nextEventId(letter.events), type: 'written', who: letter.author, date: getStoryDate(), segments: null, to: letter.recipients.join('、'), note: '角色在回复里写的', place: '', mes: mesId, auto: false });
@@ -2455,6 +2629,9 @@ jQuery(async () => {
         memoriesFromFloors,
         codeReadsInChat,
         saveMemoryEdit,
+        saveMemoryMeta,
+        fillCounts,
+        fillOld,
         saveRecallKeys,
         clearMemories,
         saveWhereabouts,
@@ -2525,6 +2702,7 @@ jQuery(async () => {
         setTimeout(async () => {
             const id = Number.isInteger(mesId) ? mesId : (ctx().chat || []).length - 1;
             await sealIncoming(id);
+            await recordNotes(id);
             // 这条（包括 AI 的思考）里写到你收到了之前那封信 / 刚写的这封
             const m = ctx().chat?.[id];
             if (m && !m.is_user) await detectMyReceipt(`${m.mes || ''}\n${m.extra?.reasoning || ''}`);
@@ -2552,7 +2730,7 @@ jQuery(async () => {
             const msg = ctx().chat?.[id];
             const sw = msg?.swipe_id ?? 0;
             const existing = Array.isArray(msg?.swipes) && sw < msg.swipes.length && String(msg.swipes[sw] || '').trim();
-            if (existing) await restoreStash(id, sw);
+            if (existing) { await restoreStash(id, sw); await sealIncoming(id); await recordNotes(id); }
         })();
     });
     if (eventTypes.MESSAGE_DELETED) eventSource.on(eventTypes.MESSAGE_DELETED, len => {

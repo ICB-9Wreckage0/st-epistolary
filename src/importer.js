@@ -96,6 +96,74 @@ function looksLikeNarration(p) {
     return t.length <= 160 && NARR_BREAK.test(t) && !/我/.test(t) && !/\b(I|my|je|mon|ma)\b/i.test(t);
 }
 
+// ---------- 便条 / 纸条 ----------
+// 旁白里说的是“纸条 / 便签 / 名片……”，那写出来的就是便条，不是信
+const NOTE_RE = /(纸条|便条|便签|字条|留言条|小纸片|纸片|卡片|名片|小卡|\bnote\b|\bslip of paper\b|\bcard\b)/i;
+export function noteHint(context) {
+    // 只看紧挨着的最后一句；那句话里说的是“信 / 信封 / 信纸”，就不是纸条（比如“信封里还夹着一张卡片”）
+    const sentences = String(context || '').trim().split(/(?<=[。！？!?\n])/).filter(x => x.trim());
+    const last = sentences[sentences.length - 1] || '';
+    if (/(一封|这封|那封|写|拆|读)信|信(封|纸|笺)|letter|envelope/i.test(last)) return null;
+    const m = last.slice(-200).match(new RegExp(NOTE_RE.source, 'gi'));
+    if (!m) return null;
+    const w = m[m.length - 1].toLowerCase();
+    if (w === '便签') return { word: '便签', style: 'sticky' };
+    if (w === '名片') return { word: '名片', style: 'custom', desc: '写在一张名片上' };
+    if (/卡片|小卡|card/.test(w)) return { word: '卡片', style: 'card' };
+    return { word: '纸条', style: 'scrap' };
+}
+
+const QUOTES = [['「', '」'], ['“', '”'], ['『', '』'], ['"', '"']];
+// 旁白里写着“纸条上写着：「……」”的那种：找出引号里的字
+export function detectNotes(text) {
+    const t = String(text || '');
+    const out = [];
+    const re = new RegExp(`${NOTE_RE.source}[^。！？\n]{0,40}?(写着|写道|写了|上写|只写|一行字|几个字|几行字|字迹|:|：|reads|says|written)`, 'gi');
+    let m;
+    while ((m = re.exec(t))) {
+        const after = t.slice(m.index + m[0].length, m.index + m[0].length + 420);
+        const hint = noteHint(m[0]);
+        // 紧跟着的引号
+        const q = after.match(/^[^「“『"\n。]{0,12}?([「“『"])/);
+        let body = '';
+        if (q) {
+            const close = QUOTES.find(([o]) => o === q[1])[1];
+            const start = q[0].length;
+            const end = after.indexOf(close, start);
+            if (end > start) body = after.slice(start, end);
+        } else {
+            // 引用块：> 开头的几行
+            const bq = after.match(/^\s*\n((?:[ \t]*>.*(?:\n|$))+)/);
+            if (bq) body = bq[1].split('\n').map(l => l.replace(/^\s*>\s?/, '')).join('\n').trim();
+        }
+        body = body.trim();
+        if (!body) continue;
+        if (body.length > 400) continue;
+        pushNote(out, body, hint, t.slice(Math.max(0, m.index - 120), m.index + m[0].length));
+        re.lastIndex = m.index + m[0].length;
+    }
+    // 旁白一段提到纸条，紧接着是引用块（> ……）：引用块就是纸条上的字
+    const raws = rawParagraphs(t);
+    for (let i = 0; i < raws.length - 1; i++) {
+        if (raws[i].quoted || !NOTE_RE.test(raws[i].text) || !raws[i + 1].quoted) continue;
+        const parts = [];
+        for (let k = i + 1; k < raws.length && raws[k].quoted; k++) parts.push(raws[k].text);
+        const body = parts.join('\n\n').trim();
+        if (body.length <= 600) pushNote(out, body, noteHint(raws[i].text), raws[i].text);
+    }
+    return out;
+}
+
+function pushNote(out, body, hint, before) {
+    if (body.replace(/\s/g, '').length < 2 || out.some(o => o.text === body || o.text.includes(body) || body.includes(o.text))) return;
+    const lines = body.split('\n').map(x => x.trim()).filter(Boolean);
+    // 落款：句末“——S”这样的破折号署名（不认连字符，免得“3-4点”被当成署名）；或者单独一行、像署名的最后一行
+    const last = lines[lines.length - 1];
+    const dash = last.match(/(?:^|[\s，。！？、,.!?])[—–]{1,2}\s*([^—–\s，。！？]{1,8})$/);
+    const signoff = dash ? dash[1] : lines.length > 1 && /^(你的|爱你的|永远是你的|yours|your)\s*\S/i.test(last) && isSignature(last) ? last : '';
+    out.push({ text: body, word: hint.word, style: hint.style, desc: hint.desc || '', salutation: lines.length > 1 && isSalutation(lines[0]) ? lines[0] : '', signoff, before });
+}
+
 export function detectInMessage(text) {
     const raws = rawParagraphs(text);
     const ps = raws.map(p => p.text);
@@ -148,8 +216,12 @@ export function detectInMessage(text) {
             parts.push(r.text);
         }
         const body = parts.join('\n\n');
-        if (body.replace(/\s/g, '').length >= 30) {
-            out.push({ text: body, salutation, signoff: lastLine(parts[parts.length - 1] || ps[stop]), parts });
+        // 前面的旁白说这是纸条：短一点也算，并记成便条
+        const before = ps.slice(Math.max(0, begin - 2), begin).join('\n');
+        // 很长的、像一封完整的信的，不当纸条
+        const hint = body.replace(/\s/g, '').length <= 200 ? noteHint(before) : null;
+        if (body.replace(/\s/g, '').length >= (hint ? 2 : 30)) {
+            out.push({ text: body, salutation, signoff: lastLine(parts[parts.length - 1] || ps[stop]), parts, note: hint });
         }
         i = stop + 1;
     }
@@ -166,7 +238,8 @@ export function detectInChat(chat, { from = 0 } = {}) {
     chat.forEach((m, idx) => {
         if (idx < from || !m || m.is_system || typeof m.mes !== 'string') return;
         if (m.extra?.epistolary) return; // 本插件发进聊天的信，档案里已经有了
-        for (const c of detectInMessage(m.mes)) {
+        const letters = detectInMessage(m.mes);
+        for (const c of letters) {
             found.push({
                 mesIndex: idx,
                 speaker: m.name,
@@ -175,7 +248,13 @@ export function detectInChat(chat, { from = 0 } = {}) {
                 author: guessAuthor(c.signoff) || m.name || '',
                 recipient: guessRecipient(c.salutation),
                 date: guessDate(c.text),
+                kind: c.note ? 'note' : 'letter',
+                note: c.note || null,
             });
+        }
+        for (const n of detectNotes(m.mes)) {
+            if (letters.some(c => c.text.includes(n.text) || n.text.includes(c.text))) continue;
+            found.push({ mesIndex: idx, speaker: m.name, isUser: !!m.is_user, text: n.text, author: guessAuthor(n.signoff) || m.name || '', recipient: guessRecipient(n.salutation), date: '', kind: 'note', note: n });
         }
     });
     return found;
@@ -223,9 +302,10 @@ export function buildImportPrompt(chunk) {
 - recipient：收信人
 - date：信上写的日期或剧情里的日期，格式 YYYY-MM-DD，不知道就留空字符串
 - place：写信地点，不知道就留空字符串
+- kind：是信就写 "letter"；是没有信封的便条、纸条、便签、写在卡片 / 名片上的几句话，写 "note"
 
 只输出一个 JSON 数组，例如：
-[{"message": 12, "start": "亲爱的提奥：近来可好", "end": "紧握你的手，文森特", "skip": ["他停下笔，望着窗外"], "author": "文森特", "recipient": "提奥", "date": "1889-06-05", "place": "圣雷米"}]
+[{"message": 12, "start": "亲爱的提奥：近来可好", "end": "紧握你的手，文森特", "skip": ["他停下笔，望着窗外"], "author": "文森特", "recipient": "提奥", "date": "1889-06-05", "place": "圣雷米", "kind": "letter"}]
 没有找到任何信，就输出 []。
 
 【聊天记录】

@@ -137,3 +137,19 @@ test('分批：按字数、按条数、只发可能有信的消息、长消息�
     assert.ok(mayContainLetter('Mon cher Vincent,'));
     assert.ok(!mayContainLetter('他走进了画廊，外面在下雨。'));
 });
+
+test('认出剧情里写出来的纸条', async () => {
+    const m = await import('../src/importer.js');
+    const n = m.detectNotes('他摸出一张纸条，上面写着：「明晚八点，老地方。——V」\n\n她把便签贴在门上，只写了几个字：“别等我吃饭”。');
+    assert.deepEqual(n.map(x => [x.text, x.style, x.signoff]), [['明晚八点，老地方。——V', 'scrap', 'V'], ['别等我吃饭', 'sticky', '']]);
+    const q = m.detectNotes('他把一张名片塞进她手里。\n\n> 有事来找我。\n> ——M\n\n她笑了。');
+    assert.equal(q[0].text, '有事来找我。\n——M');
+    assert.equal(q[0].style, 'custom');
+    // 普通的信不算纸条
+    const t = '他提笔写信。\n\n亲爱的提奥：\n\n今天天气很好，我在院子里画画，画了一整天，非常开心，想念你。\n\n紧握你的手，\n文森特';
+    assert.deepEqual(m.detectNotes(t), []);
+    assert.equal(m.detectInChat([{ name: 'A', mes: t }])[0].kind, 'letter');
+    // 旁白说是纸条的短信：记成便条
+    const s = '她在桌上留了张字条。\n\n提奥：\n\n我出去了。\n\n——V';
+    assert.equal(m.detectInChat([{ name: 'A', mes: s }])[0].kind, 'note');
+});

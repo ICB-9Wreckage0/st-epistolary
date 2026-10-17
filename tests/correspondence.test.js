@@ -213,3 +213,30 @@ test('信封上的话：拆信前就交给 AI，转交人也看得到', async ()
     assert.match(c.viaSceneMessage(L, '高更', ''), /下面还有一行字：“请在确认四下无人时再打开”/);
     assert.equal(c.envNoteLine({ ...L, envNote: '' }), '');
 });
+
+test('便条：没有信封，给 AI 的话说成纸条', async () => {
+    const c = await import('../src/correspondence.js');
+    const L = { kind: 'note', author: '文森特', recipients: ['提奥'], body: '钥匙在花盆底下', envNote: '亲启', code: '【信3】', appearance: { noteStyle: 'sticky' }, enclosures: [], events: [] };
+    const A = { people: [], letters: {} };
+    const block = c.buildCodeBlock(A, L);
+    assert.match(block, /这张便签/);
+    assert.ok(!/这封信/.test(block));
+    assert.equal(c.envNoteLine(L), '');
+    assert.match(c.buildReactionGuidance(A, L, '提奥', ''), /^【便签】提奥 拿到了 文森特 留的一张便签（便签的全文就是上一条消息）/);
+    assert.equal(c.inlineGuidance('（便签的全文就是上一条消息）'), '（原文见上）');
+    assert.equal(c.letterCallName(L), '文森特写给提奥的便签');
+    assert.match(c.describeEnvelope(L), /没有信封/);
+});
+
+test('便条：自己的暗号编号、自定义样子', async () => {
+    const m = await import('../src/model.js');
+    const c = await import('../src/correspondence.js');
+    const A = { people: [], letters: { a: { code: '【信1】' }, b: { code: '【条1】' } } };
+    assert.equal(m.nextCode(A, null, 'note'), '【条2】');
+    assert.equal(m.nextCode(A, null), '【信2】');
+    const L = { kind: 'note', author: '文森特', recipients: ['提奥'], body: '老地方', code: '【条1】', appearance: { noteStyle: 'custom', noteDesc: '写在莫奈的名片背面', noteWord: '名片' }, enclosures: [], events: [] };
+    assert.equal(m.noteWord(L), '名片');
+    assert.match(c.describeEnvelope(L), /^写在莫奈的名片背面，没有信封/);
+    assert.match(c.callNameRule(L), /不要叫它“【条1】”或“条1”/);
+    assert.deepEqual(m.unknownCodes({ letters: {} }, '看【条9】'), ['【条9】']);
+});

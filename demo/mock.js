@@ -176,6 +176,11 @@ const MOCK_REPLY = {
 
 globalThis.__epistolaryDemoMock = async ({ prompt, kind, target }) => {
     await new Promise(r => setTimeout(r, 500));
+    if (kind === 'enrich') {
+        const people = [...(prompt.split('【读过的人记得的】')[1] || '').matchAll(/^(\S+?)：/gm)].map(m => m[1]);
+        const author = (prompt.match(/【信】(\S+?) 写给/) || [])[1] || '';
+        return JSON.stringify({ memories: people.map(p => ({ person: p, weight: 2, learned: [{ about: author, kind: '处境', fact: `（演示）${author}最近手头很紧` }] })) });
+    }
     if (kind === 'blurb') {
         const head = prompt.split('【信】')[1] || '';
         const who = (head.match(/^(\S+?) 写给/) || [])[1] || '他';
@@ -263,7 +268,7 @@ globalThis.__epistolaryDemoMock = async ({ prompt, kind, target }) => {
         const events = [];
         if (/收到/.test(scene)) events.push({ type: 'received', who: reader, date: sd, place, mes });
         events.push({ type: 'read', who: reader, date: sd, place, mes });
-        return JSON.stringify({ events, storyDate: sd, memories: [{ person: reader, memory: `${reader}记得，他是在剧情里拆开这封信读的（演示）。信里写着「${q.slice(0, 20)}」，他读到这里停了一下。还有一句他记成了「这句话信里没有」。读完以后，他把信折好收了起来。`, gist: `（演示）${q.slice(0, 16)}` }], letter: where });
+        return JSON.stringify({ events, storyDate: sd, memories: [{ person: reader, weight: /非常重要/.test(prompt) ? 3 : 2, memory: `${reader}记得，他是在剧情里拆开这封信读的（演示）。信里写着「${q.slice(0, 20)}」，他读到这里停了一下。还有一句他记成了「这句话信里没有」。读完以后，他把信折好收了起来。`, gist: `（演示）${q.slice(0, 16)}`, learned: /父亲|母亲|家里/.test(body) ? [{ about: (prompt.match(/【信】(\S+?) 写给/) || [])[1] || '', kind: '家庭', fact: `（演示）${(body.match(/[^。\n]*(父亲|母亲|家里)[^。\n]*/) || [''])[0].slice(0, 36)}` }] : [] }], letter: where });
     }
     if (kind === 'reply') {
         const m = prompt.match(/§\d+ ([^\n]{4,40})/g) || [];

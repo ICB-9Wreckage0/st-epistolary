@@ -49,6 +49,7 @@ export function paperClasses(letter) {
         `script-${scriptLang(letter.language)}`,
         a.flourish ? 'flourish' : '',
         Number(a.wear) > 0 ? `worn worn-${Number(a.wear)}` : '',
+        letter.kind === 'note' ? `kind-note note-${a.noteStyle || 'scrap'}` : '',
     ].filter(Boolean).join(' ');
 }
 

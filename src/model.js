@@ -13,6 +13,31 @@ export const KINDS = {
     invitation: '请柬',
 };
 
+// 便条 / 纸条：没有信封、火漆、邮票，通常当面递过去、或者留在桌上
+export const NOTE_STYLES = {
+    scrap: { label: '纸条', desc: '从本子或信纸上撕下来的一小条，边是毛的', word: '纸条' },
+    sticky: { label: '便签', desc: '方方正正的小便签纸，淡黄色', word: '便签' },
+    card: { label: '小卡片', desc: '硬一点的小卡片，可以夹在书里、塞进门缝', word: '卡片' },
+    folded: { label: '折起来的纸', desc: '一张纸对折两次，捏在手心里能藏住', word: '纸条' },
+    custom: { label: '自定义…', desc: '', word: '纸条' },
+};
+export const isNote = l => l?.kind === 'note';
+// 称呼这张纸：信 / 纸条 / 便签 / 卡片
+export const noteWord = l => {
+    if (!isNote(l)) return '信';
+    const a = l.appearance || {};
+    if (a.noteStyle === 'custom') return String(a.noteWord || '').trim() || '纸条';
+    return (NOTE_STYLES[a.noteStyle] || NOTE_STYLES.scrap).word;
+};
+// 便条长什么样（一句话）
+export const noteLook = l => {
+    const a = l?.appearance || {};
+    if (a.noteStyle === 'custom') return String(a.noteDesc || '').trim();
+    return (NOTE_STYLES[a.noteStyle] || NOTE_STYLES.scrap).desc;
+};
+// 暗号的前缀：信 →【信1】，便条 →【条1】
+export const codePrefix = kind => (kind === 'note' ? '条' : '信');
+
 export const STATUSES = {
     draft: '草稿',
     sealed: '已封口',
@@ -71,7 +96,8 @@ export function maxLevel(a, b) {
 export const MARKS = { '**': 'bold', '~~': 'strike', '++': 'big', '__': 'under' };
 export const MARK_LABELS = { bold: '加粗', strike: '划掉', big: '写得很大', under: '画了线' };
 // 成对出现、里面不以空格开头结尾的才算（免得把 C++、__init__ 之类误认）
-export const MARK_RE = /(\*\*|~~|\+\+|__)(?=\S)([^\n]*?\S)\1/;
+// 前后挨着英文字母 / 数字的不算（x**2**、snake__case 里的记号原样保留）
+export const MARK_RE = /(?<![A-Za-z0-9])(\*\*|~~|\+\+|__)(?=\S)([^\n]*?\S)\1(?![A-Za-z0-9])/;
 
 // 去掉格式标记，只留字
 // 正文的指纹：AI 写的简介跟不跟得上正文
@@ -243,6 +269,9 @@ function normalizeAppearance(a = {}) {
         inkColor: /^#[0-9a-f]{6}$/i.test(a.inkColor || '') ? a.inkColor : '', // 墨水选“自定义颜色”时用
         size: ['sm', 'md', 'lg', 'xl'].includes(a.size) ? a.size : 'md',      // 字号：sm 小 | md 标准 | lg 大 | xl 特大
         cjkSize: ['xs', 'sm', 'md', 'lg'].includes(a.cjkSize) ? a.cjkSize : 'md', // 外文信里夹着的中文的字号
+        noteStyle: NOTE_STYLES[a.noteStyle] ? a.noteStyle : 'scrap', // 便条的样子（只对便条有用）
+        noteDesc: String(a.noteDesc || '').replace(/\s+/g, ' ').trim().slice(0, 120), // 自定义：写在什么上，如“莫奈的名片背面”
+        noteWord: String(a.noteWord || '').replace(/[\s【】]/g, '').slice(0, 8),        // 自定义：剧情里叫它什么，如“名片”
         // 每一项可以是：选好的样式 | follow 空着（跟随文中，不告诉 AI，由剧情决定）| custom 自定义（自己写描述，纸 / 信封 / 火漆 / 墨水还能选颜色）
         mode: cleanMap(a.mode, v => (v === 'follow' || v === 'custom' ? v : null)),
         custom: cleanMap(a.custom, v => String(v || '').trim().slice(0, 200) || null),
@@ -292,6 +321,8 @@ export function normalizeLetter(l, id) {
         appearance: normalizeAppearance(l.appearance),
         links: { works: [], ...(l.links || {}) },
         inReplyTo: l.inReplyTo || '',   // 回复的是哪封信
+        importance: IMPORTANCE[l.importance] && l.importance ? l.importance : '', // 这封信有多重要（空 = 让 AI 按每个读信人看着办）
+        autoFrom: l.autoFrom && typeof l.autoFrom === 'object' && Number.isInteger(l.autoFrom.mes) ? { chatId: String(l.autoFrom.chatId || ''), mes: l.autoFrom.mes, swipe: Number.isInteger(l.autoFrom.swipe) ? l.autoFrom.swipe : 0 } : null, // 从哪条回复里自动记下的（换回复 / 删消息时撤掉；你改过就清空）
         envNote: String(l.envNote || '').replace(/\s*\n\s*/g, ' ').trim().slice(0, 120), // 信封上写的一句话（拆信之前就看得到），如“请在确认四下无人时打开”
         blurb: String(l.blurb || '').replace(/\s+/g, ' ').trim().slice(0, 80), // 一句话简介：剧情里怎么称呼这封信（如“3月17日说想离开圣雷米的那封信”）
         blurbAuto: !!l.blurbAuto,       // 简介是 AI 写的（你改过就变成 false）
@@ -313,6 +344,31 @@ export function normalizeLetter(l, id) {
     };
 }
 
+// 信的分量：决定读信人记得多少、反应多大
+export const IMPORTANCE = {
+    '': '让 AI 看着办',
+    light: '平常（随手写的近况）',
+    normal: '要紧',
+    high: '非常重要（会改变关系或处境）',
+};
+// 每个读信人心里的分量 1-3
+export const WEIGHT_LABELS = { 1: '没太往心里去', 2: '记在心上', 3: '刻骨铭心' };
+// 从信里新知道的事：哪一类
+export const LEARN_KINDS = ['家庭', '过去', '身体', '处境', '感情', '秘密', '打算', '关系', '其他'];
+
+export function normalizeLearned(arr) {
+    return (Array.isArray(arr) ? arr : [])
+        .filter(x => x && typeof x === 'object' && String(x.fact || '').trim())
+        .map(x => ({
+            about: String(x.about || '').trim().slice(0, 40),
+            kind: LEARN_KINDS.includes(String(x.kind || '').trim()) ? String(x.kind).trim() : '其他',
+            fact: String(x.fact).trim().slice(0, 80),
+        }))
+        .slice(0, 12);
+}
+
+const normWeight = w => ([1, 2, 3].includes(Number(w)) ? Number(w) : null);
+
 export function normalizeMemory(m = {}) {
     return {
         person: String(m.person || '').trim(),
@@ -324,7 +380,9 @@ export function normalizeMemory(m = {}) {
         chatId: m.chatId || '',      // 在哪个聊天里读的
         fromMes: Number.isInteger(m.fromMes) ? m.fromMes : null, // 由哪一层整理出来的（换回复、删消息时撤回）
         fromSwipe: Number.isInteger(m.fromSwipe) ? m.fromSwipe : null, // 那一层的第几个回复
-        prev: m.prev && typeof m.prev === 'object' ? { text: String(m.prev.text || ''), gist: String(m.prev.gist || ''), fromMes: Number.isInteger(m.prev.fromMes) ? m.prev.fromMes : null } : null, // 这次整理之前的样子
+        prev: m.prev && typeof m.prev === 'object' ? { text: String(m.prev.text || ''), gist: String(m.prev.gist || ''), fromMes: Number.isInteger(m.prev.fromMes) ? m.prev.fromMes : null, fromSwipe: Number.isInteger(m.prev.fromSwipe) ? m.prev.fromSwipe : null, weight: normWeight(m.prev.weight), learned: normalizeLearned(m.prev.learned) } : null, // 这次整理之前的样子
+        weight: normWeight(m.weight),        // 这封信在这个人心里的分量 1-3
+        learned: normalizeLearned(m.learned), // 这个人从信里新知道的事（关于写信人 / 别人）
         auto: m.auto !== false,      // AI 整理的（false = 用户手写或改过）
     };
 }
@@ -369,9 +427,10 @@ export function normalizeCode(code) {
 
 // 下一个没被用过的暗号：【信1】【信2】……
 // scope：只看同一张角色卡的信（不同角色卡可以各自从【信1】编起）
-export function nextCode(archive, scope = null) {
+export function nextCode(archive, scope = null, kind = 'letter') {
     const used = new Set(Object.values(archive.letters).filter(l => scope == null || (l.scope || '') === scope).map(l => l.code));
-    for (let n = 1; ; n++) if (!used.has(`【信${n}】`)) return `【信${n}】`;
+    const p = codePrefix(kind);
+    for (let n = 1; ; n++) if (!used.has(`【${p}${n}】`)) return `【${p}${n}】`;
 }
 
 // 比对暗号时宽松一点：各种括号都当成【】，全角数字字母当成半角，忽略空格
@@ -395,21 +454,21 @@ export function unknownCodes(archive, text) {
     // 已经放进消息里的信（【信件 ……】……【信件完】）不算
     const t = looseCode(String(text || '').replace(/【信件 [\s\S]*?【信件完】/g, ''));
     const known = new Set(Object.values(archive.letters).map(l => looseCode(l.code)).filter(Boolean));
-    return [...new Set((t.match(/【[^【】]{1,12}】/g) || []))].filter(c => !known.has(c) && /^【信/.test(c));
+    return [...new Set((t.match(/【[^【】]{1,12}】/g) || []))].filter(c => !known.has(c) && /^【[信条]/.test(c));
 }
 
 // 旧档案里没有暗号的信，按编号顺序补上
 export function ensureCodes(archive) {
     let changed = false;
     for (const l of Object.values(archive.letters).sort((a, b) => a.id.localeCompare(b.id))) {
-        if (!l.code) { l.code = nextCode(archive, l.scope || ''); changed = true; }
+        if (!l.code) { l.code = nextCode(archive, l.scope || '', l.kind); changed = true; }
     }
     return changed;
 }
 
 export function createLetter(archive, partial = {}) {
     const id = nextId(archive, 'letter');
-    const letter = normalizeLetter({ ...partial, id, code: partial.code || nextCode(archive, partial.scope ?? null) }, id);
+    const letter = normalizeLetter({ ...partial, id, code: partial.code || nextCode(archive, partial.scope ?? null, partial.kind) }, id);
     resegment(letter);
     archive.letters[id] = letter;
     return letter;
