@@ -76,7 +76,7 @@ export const REPLY_STATES = {
 };
 
 // 真的寄到了的回信才算（草稿、AI 还没确认的回信、写了没寄的、寄丢的都不算）
-const counts = x => !x.aiDraft && deliveryState(x) === 'delivered';
+const counts = x => x.kind !== 'note' && !x.aiDraft && deliveryState(x) === 'delivered';
 
 function repliesTo(archive, l) {
     return Object.values(archive.letters || {}).filter(x => x.inReplyTo === l.id && counts(x));
@@ -156,10 +156,13 @@ export function pairSummary(archive, a, b) {
     const fromB = items.length - fromA;
     const last = items.filter(i => i.date).at(-1) || items.at(-1) || null;
     let owes = '';
-    const inTransit = items.filter(i => i.transit);
-    if (last && last.transit) return { total: items.length, fromA, fromB, last, owes: '', inTransit };
-    if (last && last.letter.status === 'sent' && !last.answered) {
-        const lastFromA = sameName(archive, a, last.from);
+    // 便条不算寄送、不等回信
+    const inTransit = items.filter(i => i.transit && i.letter.kind !== 'note');
+    const ls = items.filter(i => i.letter.kind !== 'note');
+    const lastL = ls.filter(i => i.date).at(-1) || ls.at(-1) || null;
+    if (lastL && lastL.transit) return { total: items.length, fromA, fromB, last, owes: '', inTransit };
+    if (lastL && lastL.letter.status === 'sent' && !lastL.answered) {
+        const lastFromA = sameName(archive, a, lastL.from);
         owes = lastFromA ? b : a;
     }
     return { total: items.length, fromA, fromB, last, owes, inTransit };

@@ -83,3 +83,10 @@ test('回信状态：自己定的优先，没定就推算', async () => {
     archive.letters.a.replied = 'no';
     assert.equal(replyInfo(archive, archive.letters.a).state, 'no');
 });
+
+test('便条不算“等谁回信”', async () => {
+    const { pairSummary } = await import('../src/timeline.js');
+    const L = (id, author, to, date, extra = {}) => ({ id, author, recipients: [to], writtenAt: date, status: 'sent', events: [], memories: [], createdAt: date, ...extra });
+    const archive = { people: [], letters: { a: L('a', '甲', '乙', '1890-01-01'), b: L('b', '乙', '甲', '1890-01-05'), n: L('n', '甲', '乙', '1890-01-09', { kind: 'note' }) } };
+    assert.equal(pairSummary(archive, '甲', '乙').owes, '甲');
+});

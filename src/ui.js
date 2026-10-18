@@ -306,11 +306,11 @@ export class UI {
             const open = this.tlExpanded?.has(l.id);
             if (!open) {
                 // 收起：只留一句简介
-                const bits = [deliveryText(l), this.isAwaiting(l) ? '⏳ 等回信' : l.replied === 'none' ? '— 不用回' : (l.replied === 'yes' || (deliveryState(l) === 'delivered' && i.reply.state === 'yes') ? '↩ 已回' : ''), i.readers.length ? `👁 ${i.readers.map(r => r.who).join('、')}` : '', l.memories?.length ? '🧠' : '', l.whereabouts?.suggest ? '📍？' : ''].filter(Boolean);
+                const bits = [isNote(l) ? '' : deliveryText(l), isNote(l) ? '' : this.isAwaiting(l) ? '⏳ 等回信' : l.replied === 'none' ? '— 不用回' : (l.replied === 'yes' || (deliveryState(l) === 'delivered' && i.reply.state === 'yes') ? '↩ 已回' : ''), i.readers.length ? `👁 ${i.readers.map(r => r.who).join('、')}` : '', l.memories?.length ? '🧠' : '', l.whereabouts?.suggest ? '📍？' : ''].filter(Boolean);
                 return `${head}${gap}<div class="epi-tl-item epi-tl-${side(i)}">
                 <div class="epi-tl-card epi-tl-mini" data-act="tl-toggle" data-id="${esc(l.id)}" title="点开看详细">
                     <div class="epi-tl-top"><span class="epi-tl-arrow">▸</span>${isNote(l) ? '🗒 ' : ''}<b>${esc(l.author || '？')} → ${esc(i.to || '？')}</b> <span class="epi-muted">${esc(when)}</span>${l.code ? ` <span class="epi-muted">${esc(l.code)}</span>` : ''}</div>
-                    <div class="epi-tl-oneline">${esc(bits.join(' · '))}<span class="epi-muted"> — ${l.blurb ? esc(l.blurb) : l.title ? `「${esc(l.title)}」` : esc(preview(l.body, 28))}</span></div>
+                    <div class="epi-tl-oneline">${esc(bits.join(' · '))}<span class="epi-muted">${bits.length ? ' — ' : ''}${l.blurb ? esc(l.blurb) : l.title ? `「${esc(l.title)}」` : esc(preview(l.body, 28))}</span></div>
                 </div>
             </div>`;
             }
@@ -428,7 +428,7 @@ export class UI {
     }
 
     // 还没送到：写好没寄、在路上、在转交人那里（草稿不算）
-    isPending(l) { return ['unsent', 'transit', 'atVia'].includes(deliveryState(l)); }
+    isPending(l) { return !isNote(l) && ['unsent', 'transit', 'atVia'].includes(deliveryState(l)); }
 
     // 信件页 / 时间线：全部 · 只看信 · 只看纸条
     kindView() { const k = this.hooks.getSettings().listKind; return k === 'letter' || k === 'note' ? k : ''; }
@@ -594,12 +594,14 @@ export class UI {
                ${sug ? `<div class="epi-st-sug">AI 觉得：${esc(whereText(sug))}${sug.mes != null ? `<span class="epi-muted">（第 ${esc(sug.mes)} 层）</span>` : ''} <a href="#" data-act="where-accept" data-id="${esc(l.id)}">采用</a> · <a href="#" data-act="where-dismiss" data-id="${esc(l.id)}">忽略</a></div>` : ''}`;
         const floors = this.hooks.getCodeFloors?.(l.id) || [];
         const codeRow = floors.length ? `<div class="epi-st-row"><span class="epi-st-k">🔑 暗号出现</span><span class="epi-st-v">${floors.slice(-8).map(f => `第 ${f} 层`).join('、')}${floors.length > 8 ? ` 等 ${floors.length} 处` : ''}</span></div>` : '';
+        // 便条没有“寄送”和“回信”：只记在谁手里
+        if (isNote(l)) return `${codeRow}${whereRow.replace('📍 信在谁手里', `📍 ${esc(noteWord(l))}在谁手里`)}${this.inlineFor(l, 'where')}`;
         return `${codeRow}${this.replyRow(l)}<div class="epi-st-row"><span class="epi-st-k">📮 寄送</span><span class="epi-st-v">${esc(deliveryText(l).replace(/^\S+\s/, ''))}</span><a href="#" class="epi-st-edit" data-act="delivery-edit" data-id="${esc(l.id)}">${this.inlineEdit?.id === l.id && this.inlineEdit.kind === 'dv' ? '收起' : '改'} ▾</a></div>${this.inlineFor(l, 'dv')}${whereRow}${this.inlineFor(l, 'where')}`;
     }
 
     // 有没有收到回信：一行，直接点选（不弹窗）
     replyRow(l) {
-        if (l.status === 'draft') return '';
+        if (l.status === 'draft' || isNote(l)) return '';
         const r = replyInfo(this.scopedArchive(), l);
         const opt = (v, label, title) => `<button class="epi-rp-opt ${l.replied === v ? 'on' : ''}" data-act="replied-set" data-id="${esc(l.id)}" data-v="${v}" title="${esc(title)}">${label}</button>`;
         return `<div class="epi-st-row epi-rp-row"><span class="epi-st-k">↩ 回信</span><span class="epi-st-v">${esc(r.text.replace(/^\S+\s/, ''))}${r.auto ? ' <span class="epi-muted">（按信件推算，可以自己改）</span>' : ''}</span>
@@ -608,8 +610,7 @@ export class UI {
 
     // 在等对方回信：已经送到（或寄出了没记送到），还没收到回信
     isAwaiting(l) {
-        // 纸条一般不等回信：只有你标了“没收到”才算
-        if (isNote(l) && l.replied !== 'no') return false;
+        if (isNote(l)) return false; // 便条不等回信
         return l.status !== 'draft' && deliveryState(l) === 'delivered' && replyInfo(this.scopedArchive(), l).state === 'no';
     }
 
@@ -669,7 +670,7 @@ export class UI {
                         ${isNote(l) ? `<span class="epi-chip epi-note-chip" title="便条 / 纸条：没有信封">🗒 ${esc(noteWord(l))}</span>` : ''}
                         <b>${esc(l.author || '？')} → ${esc(l.recipients.join('、') || '？')}</b>
                         <span class="epi-muted">${esc(l.writtenAt || ((l.events || []).map(e => e.date).filter(Boolean).sort()[0] ? `剧情里 ${(l.events || []).map(e => e.date).filter(Boolean).sort()[0]}` : ''))}</span>
-                        <span class="epi-chip epi-dv-chip" title="寄送到哪一步">${esc(deliveryText(l))}</span>
+                        ${isNote(l) ? '' : `<span class="epi-chip epi-dv-chip" title="寄送到哪一步">${esc(deliveryText(l))}</span>`}
                         ${ex && l.delivery?.status === 'transit' ? `<span class="epi-chip epi-transit">📮 在途 · ${esc(this.etaText(l))}</span>` : ''}
                         ${ex && l.delivery?.status === 'arrived' ? `<span class="epi-chip epi-transit">📬 刚送到</span>` : ''}
                         ${ex ? this.viaChip(l) : ''}

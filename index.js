@@ -1376,7 +1376,7 @@ async function saveWhereabouts(letterId, w) {
 // ---------- 时间线「更新」：不等自动，马上把各封信的状态对一遍 ----------
 
 function statusLine(l) {
-    const parts = [deliveryText(l).replace(/^\S+\s/, '')];
+    const parts = isNote(l) ? ['便条（没有寄送这一步）'] : [deliveryText(l).replace(/^\S+\s/, '')];
     const readers = [...new Set([...(l.events || []).filter(e => ['read', 'heard'].includes(e.type)).map(e => e.who), ...(l.memories || []).map(m => m.person)].filter(Boolean))];
     if (readers.length) parts.push(`${readers.join('、')} 读过`);
     const w = whereNow(l);
