@@ -49,7 +49,7 @@ export function paperClasses(letter) {
         `script-${scriptLang(letter.language)}`,
         a.flourish ? 'flourish' : '',
         Number(a.wear) > 0 ? `worn worn-${Number(a.wear)}` : '',
-        letter.kind === 'note' ? `kind-note note-${a.noteStyle || 'scrap'}` : '',
+        letter.kind === 'note' ? `kind-note note-${a.noteStyle || 'scrap'}${a.noteStyle === 'custom' ? ` note-${a.noteBase || 'card'}` : ''}` : '',
     ].filter(Boolean).join(' ');
 }
 
@@ -354,15 +354,19 @@ export function renderBody(body, opts = {}) {
     const level = Math.max(0, Math.min(3, Number(opts.wobble) || 0));
     const rand = level ? rng(opts.seed ?? hashSeed(body)) : null;
     const state = {};
-    return analyze(body).map(p => {
-        const lines = p.lines.map(l => {
+    // 分页线：opts.pageBreaks = [{ p, l, label }]，在那一行前面画一道“第 2 张 · 背面”
+    const pb = new Map((opts.pageBreaks || []).map(b => [`${b.p}:${b.l}`, b.label]));
+    return analyze(body).map((p, pi) => {
+        const lines = p.lines.map((l, li) => {
+            const brk = pb.get(`${pi}:${li}`);
+            const sep = brk ? `<div class="epi-pagebreak" aria-hidden="true"><span>${brk.replace(/[<>&]/g, '')}</span></div>` : '';
             const cls = l.role !== 'body' ? ` class="epi-l-${l.role}"` : '';
             const draw = t => (level ? wobbleLine(t, rand, level, opts.hand, state) : markCjk(t));
             const inner = inlineSegments(l.raw ?? l.text).map(seg => {
                 const h = draw(seg.text);
                 return seg.flags.length ? `<span class="epi-m ${seg.flags.map(f => `m-${f}`).join(' ')}">${h}</span>` : h;
             }).join('');
-            return `<div${cls}>${inner || '&nbsp;'}</div>`;
+            return `${sep}<div${cls}>${inner || '&nbsp;'}</div>`;
         }).join('');
         return `<div class="epi-p epi-p-${p.role}">${lines}</div>`;
     }).join('');

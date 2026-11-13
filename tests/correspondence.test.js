@@ -240,3 +240,14 @@ test('便条：自己的暗号编号、自定义样子', async () => {
     assert.match(c.callNameRule(L), /不要叫它“【条1】”或“条1”/);
     assert.deepEqual(m.unknownCodes({ letters: {} }, '看【条9】'), ['【条9】']);
 });
+
+test('稿纸和自定义纸条的“看起来像”', async () => {
+    const m = await import('../src/model.js');
+    const { paperClasses } = await import('../src/render.js');
+    const g = m.normalizeLetter({ kind: 'note', appearance: { noteStyle: 'grid' } }, 'g');
+    assert.equal(m.noteWord(g), '稿纸');
+    assert.match(paperClasses(g), /note-grid/);
+    const c = m.normalizeLetter({ kind: 'note', appearance: { noteStyle: 'custom', noteBase: 'grid', noteWord: '作文纸' } }, 'c');
+    assert.match(paperClasses(c), /note-custom note-grid/);
+    assert.equal(m.normalizeLetter({ appearance: { noteBase: 'custom' } }, 'x').appearance.noteBase, 'card');
+});

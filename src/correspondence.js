@@ -1,6 +1,7 @@
 // 书信簿 · 往来书信：收信反应、回信
 // 纯函数，拼提示词、算日期。实际调用 AI 的部分在 index.js。
 
+import { paginate, pagesText } from './pages.js';
 import { findPerson, sameName, segmentPosition, normalizeDate, aiText, stripMarks, MARK_RE, normalizeLearned, isNote, noteWord, noteLook, NOTE_STYLES } from './model.js';
 
 // 便条 / 纸条：把给 AI 的话里“这封信”换成“这张纸条”（【信件 …】这类标记不动）
@@ -566,7 +567,7 @@ ${draft.body?.trim() || '（还没写）'}
 ${cur}
 
 要求：
-- author 写信人、recipients 收信人（数组）。正文里的称呼和署名最可信；没写的话，通常是用户的角色写给当前聊天的角色。
+- author 写信人、recipients 收信人（数组）。只看正文里的称呼和署名、或者剧情里明确说了写给谁；看不出来就留空（recipients 给 []），不要默认填当前聊天的角色。
 - writtenAt 写信日期，格式 YYYY-MM-DD。正文日期行 > 剧情里提到的日期 > 当前剧情日期。实在不知道就留空字符串。
 - placeFrom 寄出地、placeTo 寄往地：写信人和收信人此刻所在的地方，用剧情里的地名，尽量具体到城市或地点。
 - language 两人实际用什么语言通信，如“法语”“英语”；如果是用中文写出来、但人物之间其实说外语，写成“法语（中文显示）”；就是中文写空字符串。
@@ -669,6 +670,9 @@ export function envNoteLine(letter, { reader = '' } = {}) {
 export function lookLines(archive, letter, { envelope = true, paper = true } = {}) {
     const lines = [];
     if (envelope) lines.push(`${isNote(letter) ? '样子' : '信封'}：${describeEnvelope(letter)}。`);
+    // 篇幅：几张纸、正反面（写信人花了多少笔墨，读的人一拿到手就看得出）
+    const pg = paginate(letter);
+    if (pg.units && pg.sides > 1) lines.push(`篇幅：${pagesText(pg, { note: isNote(letter) })}。`);
     if (paper) lines.push(`${isNote(letter) ? '纸和字' : '信纸'}：${describeAppearance(letter, findPerson(archive, letter.author))}。`);
     if (lines.length) lines.push('这些是读信的人看得见、摸得着的东西，可以自然地带到一两处（比如字迹透露出写信人的状态），不用逐条描写。');
     return lines;
@@ -965,10 +969,29 @@ export function learnedLines(person, learned, { author = '' } = {}) {
 
 const WEIGHT_NOTE = { 1: '这封信 TA 没太往心里去，细节记不太清了，被提起时只想得起大概。', 3: '这封信对 TA 非常重要，记得很清楚，常常想起。' };
 
-export const memoryEntryContent = (letter, m, w) => asNote(_memoryEntryContent(letter, m, w), letter);
-function _memoryEntryContent(letter, m, whereLine = '') {
+export const memoryEntryContent = (letter, m, w, o) => asNote(_memoryEntryContent(letter, m, w, o), letter);
+// 记忆里记住的原话（「……」里的），精简模式只留几句
+export function memoryQuotes(text, max = 2) {
+    return [...String(text || '').matchAll(/「([^「」]{2,60})」/g)].map(x => x[1]).slice(0, max);
+}
+
+function _memoryEntryContent(letter, m, whereLine = '', { compact = false } = {}) {
     const learned = learnedLines(m.person, m.learned, { author: letter.author });
     const weight = WEIGHT_NOTE[m.weight] || '';
+    if (compact) {
+        // 精简：一句话概括 + 记得的一两句原话 + 新知道的事 + 信在哪；规则只留最要紧的一句
+        const gist = gistOf(m) || String(m.text || '').slice(0, 80);
+        const quotes = memoryQuotes(m.text, m.weight === 3 ? 3 : m.weight === 1 ? 0 : 2);
+        return [
+            `【${m.person}的记忆｜${letterCallName(letter)}${letter.writtenAt ? `（${letter.writtenAt}）` : ''}】`,
+            gist,
+            quotes.length ? `记得的原话：${quotes.map(q => `「${q}」`).join('')}` : '',
+            m.weight === 1 ? '细节记不太清了。' : m.weight === 3 ? '记得很清楚，常常想起。' : '',
+            learned,
+            whereLine,
+            `（只有读过的人知道；剧情里叫它“${letterCallName(letter)}”，不要说暗号。）`,
+        ].filter(Boolean).join('\n');
+    }
     return `【${m.person}的记忆｜${letterCallName(letter)}${letter.writtenAt ? `（${letter.writtenAt}）` : ''}】\n${m.text}\n${weight ? `${weight}\n` : ''}${learned ? `${learned}\n` : ''}${whereLine ? `${whereLine}\n` : ''}（这是 ${m.person} 读过这封信以后记得的东西；没读过的人不知道这些。需要逐字读信时以原文为准。${callNameRule(letter)}）`;
 }
 

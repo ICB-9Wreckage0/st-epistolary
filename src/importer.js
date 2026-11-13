@@ -98,7 +98,39 @@ function looksLikeNarration(p) {
 
 // ---------- 便条 / 纸条 ----------
 // 旁白里说的是“纸条 / 便签 / 名片……”，那写出来的就是便条，不是信
-const NOTE_RE = /(纸条|便条|便签|字条|留言条|小纸片|纸片|卡片|名片|小卡|\bnote\b|\bslip of paper\b|\bcard\b)/i;
+// 这两张词表可以在设置里改（setNoteVocab）。
+// 纸条的叫法：旁白里出现这些词，才可能是纸条
+export const DEFAULT_NOTE_WORDS = ['纸条', '便条', '便签', '字条', '留言条', '小纸片', '纸片', '卡片', '名片', '小卡', 'note', 'slip of paper', 'card'];
+// “纸上写了字”的说法：纸条的叫法后面跟着这些话，紧接着的引号 / 引用块才算纸条上的字
+export const DEFAULT_NOTE_WRITTEN = ['写着', '写道', '写了', '写的是', '只写了', '只写', '潦草地写着', '工整地写着', '留言是', '一行字', '几个字', '几行字', '上面：', '上头：', '上：', 'reads', 'says', 'is written'];
+
+const escRe = x => String(x).replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+const isLatin = w => /^[a-z ]+$/i.test(w);
+function wordsRe(words) {
+    const list = [...new Set(words.map(w => String(w).trim()).filter(Boolean))].sort((a, b) => b.length - a.length);
+    if (!list.length) return null;
+    return new RegExp(`(${list.map(w => (isLatin(w) ? `\\b${escRe(w)}\\b` : escRe(w))).join('|')})`, 'i');
+}
+// 每个说法后面允许再跟几个字（“写了几个字：”“只写了一句：”），但不能跨过引号和句号
+function writtenRe(phrases) {
+    const list = [...new Set(phrases.map(w => String(w).trim()).filter(Boolean))].sort((a, b) => b.length - a.length);
+    if (!list.length) return null;
+    const tail = '[^，。！？\\n“”「」"『]{0,6}';
+    return `(?:上面|上头|上|背面|里面)?(?:${list.map(w => (/[：:]$/.test(w) ? escRe(w.replace(/[：:]$/, '')) + '[：:]' : escRe(w) + (isLatin(w) ? '' : tail))).join('|')})`;
+}
+
+let NOTE_RE = wordsRe(DEFAULT_NOTE_WORDS);
+let WRITTEN = writtenRe(DEFAULT_NOTE_WRITTEN);
+
+// 换词表；传空数组 / 不传 = 用默认的
+export function setNoteVocab({ words, written } = {}) {
+    NOTE_RE = wordsRe(words?.length ? words : DEFAULT_NOTE_WORDS);
+    WRITTEN = writtenRe(written?.length ? written : DEFAULT_NOTE_WRITTEN);
+}
+// 设置里的文字（逗号、顿号或换行隔开）→ 词表
+export function parseVocab(text) {
+    return String(text || '').split(/[\n,，、;；]+/).map(x => x.trim()).filter(Boolean).slice(0, 80);
+}
 export function noteHint(context) {
     // 只看紧挨着的最后一句；那句话里说的是“信 / 信封 / 信纸”，就不是纸条（比如“信封里还夹着一张卡片”）
     const sentences = String(context || '').trim().split(/(?<=[。！？!?\n])/).filter(x => x.trim());
@@ -110,46 +142,60 @@ export function noteHint(context) {
     if (w === '便签') return { word: '便签', style: 'sticky' };
     if (w === '名片') return { word: '名片', style: 'custom', desc: '写在一张名片上' };
     if (/卡片|小卡|card/.test(w)) return { word: '卡片', style: 'card' };
-    return { word: '纸条', style: 'scrap' };
+    if (/纸条|便条|字条|留言条|纸片|note|slip/.test(w)) return { word: '纸条', style: 'scrap' };
+    // 你自己加的叫法（火柴盒、餐巾纸、电车票……）：就叫它这个，样子写成“写在一张××上”
+    const own = m[m.length - 1];
+    return { word: own.slice(0, 8), style: 'custom', desc: `写在${/^[一这那]/.test(own) ? '' : '一张'}${own}上` };
 }
 
 const QUOTES = [['「', '」'], ['“', '”'], ['『', '』'], ['"', '"']];
 // 旁白里写着“纸条上写着：「……」”的那种：找出引号里的字
+// 说明纸上写了字的说法（只认这些；光有冒号、破折号不算——那多半是人在说话）
+// 夹在纸条和“写着”中间的话里有人在说话 / 换了一句，就不是纸条上的字
+const SPEECH = /[说问答喊叫笑骂叹]道?|——|……|[”」』"]|[。！？!?]/;
+
+// 旁白里写着“纸条上写着：「……」”的那种：找出引号里的字
 export function detectNotes(text) {
     const t = String(text || '');
     const out = [];
-    const re = new RegExp(`${NOTE_RE.source}[^。！？\n]{0,40}?(写着|写道|写了|上写|只写|一行字|几个字|几行字|字迹|:|：|reads|says|written)`, 'gi');
+    const re = new RegExp(`${NOTE_RE.source}([^。！？\\n]{0,24}?)(${WRITTEN})`, 'gi');
     let m;
     while ((m = re.exec(t))) {
+        const between = m[m.length - 2] || '';
+        if (SPEECH.test(between)) continue;
         const after = t.slice(m.index + m[0].length, m.index + m[0].length + 420);
         const hint = noteHint(m[0]);
-        // 紧跟着的引号
-        const q = after.match(/^[^「“『"\n。]{0,12}?([「“『"])/);
+        // 引号要紧跟着（中间最多一个冒号、逗号、空格）
+        const q = after.match(/^[\s：:，,]{0,3}([「“『"])/);
         let body = '';
         if (q) {
             const close = QUOTES.find(([o]) => o === q[1])[1];
             const start = q[0].length;
             const end = after.indexOf(close, start);
             if (end > start) body = after.slice(start, end);
+            // 引号后面紧跟着“他说 / 她问”：是台词，不是纸条
+            if (/^[，,]?\s*(他|她|它|我|你|[\u4e00-\u9fff]{1,4})?(说|问|答|喊|笑道|低声道|开口)/.test(after.slice(end + 1, end + 12))) body = '';
         } else {
             // 引用块：> 开头的几行
-            const bq = after.match(/^\s*\n((?:[ \t]*>.*(?:\n|$))+)/);
+            const bq = after.match(/^[\s：:]*\n((?:[ \t]*>.*(?:\n|$))+)/);
             if (bq) body = bq[1].split('\n').map(l => l.replace(/^\s*>\s?/, '')).join('\n').trim();
         }
         body = body.trim();
-        if (!body) continue;
-        if (body.length > 400) continue;
+        if (!body || body.length > 400) continue;
         pushNote(out, body, hint, t.slice(Math.max(0, m.index - 120), m.index + m[0].length));
         re.lastIndex = m.index + m[0].length;
     }
-    // 旁白一段提到纸条，紧接着是引用块（> ……）：引用块就是纸条上的字
+    // 旁白一段说纸条上写了字（“纸条上写着：”“只留了一行字：”），紧接着是引用块（> ……）：引用块就是纸条上的字
     const raws = rawParagraphs(t);
     for (let i = 0; i < raws.length - 1; i++) {
-        if (raws[i].quoted || !NOTE_RE.test(raws[i].text) || !raws[i + 1].quoted) continue;
+        if (raws[i].quoted || !raws[i + 1].quoted) continue;
+        const nar = raws[i].text.trim();
+        const wm = nar.match(new RegExp(`${NOTE_RE.source}([^。！？\\n]{0,24}?)(${WRITTEN})[^。！？\\n]{0,6}$`, 'i'));
+        if (!wm || SPEECH.test(wm[wm.length - 2] || '')) continue;
         const parts = [];
         for (let k = i + 1; k < raws.length && raws[k].quoted; k++) parts.push(raws[k].text);
         const body = parts.join('\n\n').trim();
-        if (body.length <= 600) pushNote(out, body, noteHint(raws[i].text), raws[i].text);
+        if (body.length <= 600) pushNote(out, body, noteHint(nar), nar);
     }
     return out;
 }
@@ -220,7 +266,11 @@ export function detectInMessage(text) {
         const before = ps.slice(Math.max(0, begin - 2), begin).join('\n');
         // 很长的、像一封完整的信的，不当纸条
         const hint = body.replace(/\s/g, '').length <= 200 ? noteHint(before) : null;
-        if (body.replace(/\s/g, '').length >= (hint ? 2 : 30)) {
+        // 很短的（不到 30 字）只有在旁白说是纸条、而且最后一行是署名（——V / 文森特）时才算；末尾混进一句旁白的不算
+        const tail = lastLine(body);
+        const signed = /^[—–]{1,2}\s*\S/.test(tail) || (isSignature(tail) && !/[，。！？,.!?]/.test(tail));
+        const short = body.replace(/\s/g, '').length < 30;
+        if (short ? hint && signed : true) {
             out.push({ text: body, salutation, signoff: lastLine(parts[parts.length - 1] || ps[stop]), parts, note: hint });
         }
         i = stop + 1;

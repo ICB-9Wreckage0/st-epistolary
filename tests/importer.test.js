@@ -142,7 +142,7 @@ test('认出剧情里写出来的纸条', async () => {
     const m = await import('../src/importer.js');
     const n = m.detectNotes('他摸出一张纸条，上面写着：「明晚八点，老地方。——V」\n\n她把便签贴在门上，只写了几个字：“别等我吃饭”。');
     assert.deepEqual(n.map(x => [x.text, x.style, x.signoff]), [['明晚八点，老地方。——V', 'scrap', 'V'], ['别等我吃饭', 'sticky', '']]);
-    const q = m.detectNotes('他把一张名片塞进她手里。\n\n> 有事来找我。\n> ——M\n\n她笑了。');
+    const q = m.detectNotes('他把一张名片塞进她手里，名片背面写着：\n\n> 有事来找我。\n> ——M\n\n她笑了。');
     assert.equal(q[0].text, '有事来找我。\n——M');
     assert.equal(q[0].style, 'custom');
     // 普通的信不算纸条
@@ -152,4 +152,31 @@ test('认出剧情里写出来的纸条', async () => {
     // 旁白说是纸条的短信：记成便条
     const s = '她在桌上留了张字条。\n\n提奥：\n\n我出去了。\n\n——V';
     assert.equal(m.detectInChat([{ name: 'A', mes: s }])[0].kind, 'note');
+});
+
+test('纸条识别不把台词、破折号后的对话当成纸条', async () => {
+    const m = await import('../src/importer.js');
+    for (const t of [
+        '她低头看了一眼那张纸条，又抬起头：“你怎么还在这儿？”——他没回答。',
+        '他收起纸条——她问他：“写的什么？”',
+        '纸条——他看了一眼：“又是他。”',
+        '他递过一张名片：“有事打这个电话。”',
+        '他把一张卡片塞进她手里。\n\n> 生日快乐。',
+        '纸条上写着：“你好，”他说，“我来了。”',
+    ]) assert.deepEqual(m.detectNotes(t), [], t);
+    assert.deepEqual(m.detectNotes('她在便签上写了几个字：“晚饭在锅里”').map(x => x.text), ['晚饭在锅里']);
+    assert.deepEqual(m.detectNotes('便签上只写了一句：「明天八点」').map(x => x.text), ['明天八点']);
+    assert.deepEqual(m.detectNotes('她留下的纸条上只有一行字：\n\n> 我走了，别找我。').map(x => x.text), ['我走了，别找我。']);
+    // 末尾混进旁白的短段落不算纸条
+    assert.deepEqual(m.detectInChat([{ name: 'A', mes: '纸条掉在地上。\n\n亲爱的：\n\n我走了。\n\n他捡起来，什么也没说。' }]), []);
+});
+
+test('纸条词表可以自己改', async () => {
+    const m = await import('../src/importer.js');
+    m.setNoteVocab({ words: m.parseVocab('纸条、火柴盒'), written: m.parseVocab('写着\n上：') });
+    assert.deepEqual(m.detectNotes('火柴盒背面写着：「快跑」').map(x => [x.text, x.word, x.style]), [['快跑', '火柴盒', 'custom']]);
+    assert.deepEqual(m.detectNotes('便签上写着：「晚点回」'), []); // 便签不在词表里了
+    assert.deepEqual(m.detectNotes('纸条上：“走了”').map(x => x.text), ['走了']);
+    m.setNoteVocab({}); // 恢复默认
+    assert.deepEqual(m.detectNotes('便签上写着：「晚点回」').map(x => x.text), ['晚点回']);
 });

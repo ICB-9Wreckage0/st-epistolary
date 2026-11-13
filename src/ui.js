@@ -17,7 +17,7 @@ import {
     viaReceivedEvents, VIA_ACTIONS, threadBetween, viaDeadline, nextEventId,
     HEAD_FIELDS, guessHeadFromThread, buildFillPrompt, parseFill, letterCallName, buildBlurbPrompt, cleanBlurb,
 } from './correspondence.js';
-import { detectInChat, chunkChat, buildImportPrompt, parseImportResponse, sliceVerbatim, dropParagraphs, findDuplicate, buildShellPrompt, parseShellResponse, findShellDuplicate, SHELL_STATES } from './importer.js';
+import { detectInChat, chunkChat, buildImportPrompt, parseImportResponse, sliceVerbatim, dropParagraphs, findDuplicate, buildShellPrompt, parseShellResponse, findShellDuplicate, SHELL_STATES, DEFAULT_NOTE_WORDS, DEFAULT_NOTE_WRITTEN } from './importer.js';
 import { API_MODES, listProfiles, testConnection, fetchModels } from './api.js';
 import { playSeal, playOpen, WAX_LABELS, ENVELOPE_LABELS } from './envelope.js';
 import { STYLE_PACKS, STYLE_KEYS, applyStyle, pickStyle, findStyle, personStyle, boundPeople, lookFor } from './styles.js';
@@ -26,6 +26,7 @@ import { ENCLOSURE_KINDS, normalizeEnclosure, extractEnclosures, enclosureText }
 import { WHERE_STATES, whereNow, whereText, DELIVERY_STATES, deliveryState, deliveryText } from './whereabouts.js';
 import { correspondentPairs, buildTimeline, pairSummary, replyInfo, REPLY_STATES } from './timeline.js';
 import { knowledgePeople, knowledgeOf, letterLabel as knowLabel } from './knowledge.js';
+import { paginate, pagesText, sideLabel } from './pages.js';
 import { HANDS, ORIENTATIONS, handClasses, paperClasses, renderBody, analyze, scriptLang, renderOptions, WOBBLE_LABELS, WEAR_LABELS, paperLayer, ensureWearFilters, hashSeed, INKS, inkColor, inkContrast, paperStyle, SIZE_LABELS, CJK_SIZE_LABELS } from './render.js';
 
 const PAPERS = { plain: '素白', cream: '奶油棉纸', aged: '泛黄旧纸', lined: '横格信笺', redline: '红线信笺', blue: '淡蓝航空信纸' };
@@ -148,14 +149,18 @@ export class UI {
             : [['edit', '✎ 写信'], ['list', '信件'], ['timeline', '时间线'], ['know', '谁知道什么'], ['settings', '⚙ 设置']];
     }
 
+    isOpen() { return !this.root.classList.contains('epi-hidden'); }
+
     open(tab) {
         this.root.classList.remove('epi-hidden');
         this.show(tab || this.tab);
+        this.hooks.onPanel?.(true);
     }
 
     close() {
         if (this.draft && this.draftDirty && !confirm('这封信有未保存的修改，确定关闭吗？')) return;
         this.root.classList.add('epi-hidden');
+        this.hooks.onPanel?.(false);
     }
 
     show(tab) {
@@ -203,6 +208,21 @@ export class UI {
         const y = this.body.scrollTop;
         this.show(this.tab);
         this.body.scrollTop = y;
+    }
+
+    // 省 token：一行数字，看看书信簿占了多少
+    tokenStatsHtml() {
+        const t = this.hooks.tokenStats?.();
+        if (!t) return '';
+        const k = n => (n >= 1000 ? `${(n / 1000).toFixed(1)} 千` : `${n}`);
+        const keep = Number(this.getS('trimOldLetters')) || 0;
+        return `<div class="epi-token-stats epi-muted">
+            📏 世界书里书信簿的条目：${t.entries} 条，共约 ${k(t.chars)} 字（只有聊到相关的人和信时才发给 AI，不是每轮都发）。<br>
+            聊天里整封的信：约 ${k(t.embedded)} 字${keep > 0 ? `，其中 ${k(t.old)} 字在 ${keep} 层以前，发给 AI 时只留一句话` : '，每一轮都会整封发给 AI'}${t.lastSaved ? `（上一轮省了约 ${k(t.lastSaved)} 字）` : ''}。
+        </div>
+        <div class="epi-row epi-trim" title="用暗号交给 AI 的信会整封写进你的消息，留在聊天记录里，以后每一轮都再发一遍。设个层数：比这更早的消息里的信，发给 AI 时换成一句话（AI 当时已经读过；谁记得什么由世界书的记忆负责）。只影响发给 AI 的内容，聊天记录里还是整封信。填 0 不省。">
+            <span>省 token：</span><input class="text_pole" type="number" min="0" step="1" data-s="trimOldLetters" value="${keep}"><span>层以前的消息里的信，发给 AI 时只留一句话（0 = 一直整封发）</span>
+        </div>`;
     }
 
     // 一键补全旧信（设置 → 读信的记忆）
@@ -525,7 +545,7 @@ export class UI {
     renderNewLetterChooser() {
         const names = this.nameOptions();
         const me = this.hooks.getUserName?.() || '';
-        const nl = this.nl || (this.nl = { author: this.lastNew?.author ?? me, recipients: this.lastNew?.recipients ?? [this.hooks.getCharName?.()].filter(Boolean), folder: this.folder || this.lastNew?.folder || '' });
+        const nl = this.nl || (this.nl = { author: this.lastNew?.author ?? me, recipients: this.lastNew?.recipients ?? [], folder: this.folder || this.lastNew?.folder || '' }); // 收信人不默认填角色名，自己选
         const chip = (n, on, act) => `<button class="epi-pick ${on ? 'active' : ''}" data-act="${act}" data-name="${esc(n)}">${esc(n)}${n === me ? ' <span class="epi-muted">（你）</span>' : ''}</button>`;
         // 最近的通信组合：点一下直接开写
         const seen = new Map();
@@ -761,7 +781,7 @@ export class UI {
                 id: '（新信件）',
                 status: 'draft',
                 author: opts.author ?? (this.hooks.getUserName() || ''),
-                recipients: opts.recipients ?? [this.hooks.getCharName()].filter(Boolean),
+                recipients: opts.recipients ?? [],
                 writtenAt: this.expert ? (this.hooks.getStoryDate() || '') : '',
                 code: nextCode(this.archive, this.hooks.getScope?.()?.key ?? null, opts.kind),
                 folder: opts.folder ?? (this.folder || ''),
@@ -865,6 +885,23 @@ export class UI {
     }
 
     // 正文渲染参数：手写随机感的种子和程度
+    // 字数和换页
+    pages(l) {
+        const s = this.hooks.getSettings();
+        return paginate(l, { capZh: s.pageCapZh, capLat: s.pageCapLat });
+    }
+    pageBreaksFor(l) {
+        if (this.hooks.getSettings().pageBreaks === false) return [];
+        const pg = this.pages(l);
+        return pg.breaks.map(b => ({ ...b, label: sideLabel(b.side, pg.duplex) }));
+    }
+    countHtml(d) {
+        const pg = this.pages(d);
+        const n = charCount(d.body);
+        const tip = `中文按字（含中文标点）、外文按词，两种语言分开算。张数只按这封信的主要语言（${pg.script === 'zh' ? '中文' : pg.latName}）估：括号里的另一种语言（比如外文信里的中文译文）当作注释，不占纸。一行约 ${pg.perLine} ${pg.unitName}、一面约 ${pg.lines} 行（字号、横竖版、纸条样子都会影响）；称呼、署名这种短行也占一整行。一面能写多少可以在设置 →「显示」里改。`;
+        return `<span title="${esc(tip)}">${pg.units ? esc(pagesText(pg, { note: isNote(d) })) : `${n} 字`}</span>`;
+    }
+
     renderOpts(letter) {
         return renderOptions(letter, findPerson(this.archive, letter.author), this.hooks.getSettings().jitter !== false);
     }
@@ -1042,7 +1079,7 @@ export class UI {
                     <span class="epi-lh-label">写的是</span>
                     <button class="epi-pick ${isNote(d) ? '' : 'active'}" data-act="kind-set" data-kind="letter">✉ 信</button>
                     <button class="epi-pick ${isNote(d) ? 'active' : ''}" data-act="kind-set" data-kind="note" title="没有信封、火漆、邮票">🗒 便条 / 纸条</button>
-                    ${isNote(d) ? `<select class="epi-lh-input epi-note-style" data-f="appearance.noteStyle" title="纸条长什么样">${Object.entries(NOTE_STYLES).map(([k, v]) => `<option value="${k}" ${k === d.appearance.noteStyle ? 'selected' : ''}>${esc(v.label)}${v.desc ? `：${esc(v.desc)}` : '（自己写写在什么上）'}</option>`).join('')}</select>` : ''}
+                    ${isNote(d) ? `<select class="epi-lh-input epi-note-style" data-f="appearance.noteStyle" title="纸条长什么样">${this.noteStyleOptions(d)}</select>` : ''}
                     ${isNote(d) && d.appearance.noteStyle === 'custom' ? this.noteCustomHtml(d, 'epi-lh-input') : ''}
                 </div>
                 ${field('author', '写信人', d.author, '谁写的', '写这封信的人。这个名字决定谁“知道”信的内容，也用来匹配人物档案里的字迹和文风。')}
@@ -1095,7 +1132,8 @@ export class UI {
             ${this.renderEnclosures(d)}
             <div class="epi-docstatus">
                 <span>${esc(STATUSES[d.status])}${d.delivery?.status === 'transit' ? `（在途，${esc(this.etaText(d))}）` : ''}</span>
-                <span data-role="count">${charCount(d.body)} 字</span>
+                <span data-role="count">${this.countHtml(d)}</span>
+                <label class="epi-duplex" title="正反面都写：两面算一张纸"><input type="checkbox" data-f="appearance.duplex" ${d.appearance.duplex ? 'checked' : ''}> 正反面</label>
                 ${ex ? `<span>${esc(d.id)}</span><span>${d.segments.length} 段</span>` : ''}
                 <span data-role="dirty" class="epi-dirty">${this.draftDirty ? '● 未保存' : ''}</span>
             </div>`;
@@ -1191,8 +1229,8 @@ export class UI {
         if (!ta || !paper) return;
         const cs = getComputedStyle(paper);
         const padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-        const NOTE_RATIO = { scrap: 0.45, sticky: 0.95, card: 0.62, folded: 0.8, custom: 0.6 };
-        const ratio = isNote(this.draft) ? (NOTE_RATIO[this.draft.appearance?.noteStyle] || 0.5) : paper.classList.contains('orient-landscape') ? 0.707 : 1.414;
+        const NOTE_RATIO = { scrap: 0.45, sticky: 0.95, card: 0.62, folded: 0.8, grid: 0.75 };
+        const ratio = isNote(this.draft) ? (NOTE_RATIO[this.draft.appearance?.noteStyle === 'custom' ? this.draft.appearance?.noteBase : this.draft.appearance?.noteStyle] || 0.5) : paper.classList.contains('orient-landscape') ? 0.707 : 1.414;
         const minH = Math.max(isNote(this.draft) ? 120 : 260, paper.clientWidth * ratio - padV);
         // 量高度时会先把信纸缩回去，外面的滚动条会被顶回顶上 —— 先记住滚到哪了，量完放回去
         const scrollers = [];
@@ -1498,7 +1536,7 @@ ${list}`;
 
     updateCount() {
         const el = this.body.querySelector('[data-role="count"]');
-        if (el) el.textContent = `${charCount(this.draft.body)} 字`;
+        if (el) el.innerHTML = this.countHtml(this.draft);
     }
 
     // ================= 寄出 =================
@@ -2340,15 +2378,35 @@ ${list}`;
             .filter(Boolean).join(' · ') + (follow ? `  · ${follow} 项跟随文中` : '') + (lookWarnings({ appearance: a }).length ? '  ⚠ 有容易被误读的选项' : '');
     }
 
-    // 自定义纸条：写在什么上 + 剧情里叫它什么
+    // 你存下的纸条样子：[{ id, desc, word, base }]
+    myNoteStyles() { return Array.isArray(this.hooks.getSettings().myNoteStyles) ? this.hooks.getSettings().myNoteStyles : []; }
+
+    // 纸条样子的下拉选项：内置的、你存的、自定义
+    noteStyleOptions(d) {
+        const a = d.appearance || {};
+        const mine = this.myNoteStyles();
+        const cur = a.noteStyle === 'custom' ? mine.find(m => m.desc === a.noteDesc && m.word === a.noteWord && m.base === a.noteBase) : null;
+        const builtIn = Object.entries(NOTE_STYLES).filter(([k]) => k !== 'custom')
+            .map(([k, v]) => `<option value="${k}" ${k === a.noteStyle ? 'selected' : ''}>${esc(v.label)}：${esc(v.desc)}</option>`).join('');
+        const saved = mine.length ? `<optgroup label="我的样子">${mine.map(m => `<option value="my:${esc(m.id)}" ${cur?.id === m.id ? 'selected' : ''}>★ ${esc(m.word || '纸条')}：${esc(m.desc || '')}</option>`).join('')}</optgroup>` : '';
+        return `${builtIn}${saved}<option value="custom" ${a.noteStyle === 'custom' && !cur ? 'selected' : ''}>自定义…（自己写写在什么上）</option>`;
+    }
+
+    // 自定义纸条：写在什么上 + 剧情里叫它什么 + 看起来像哪种纸；可以存成“我的样子”
     noteCustomHtml(d, cls) {
         const a = d.appearance || {};
+        const mine = this.myNoteStyles();
+        const saved = mine.some(m => m.desc === a.noteDesc && m.word === a.noteWord && m.base === a.noteBase);
         return `<span class="epi-note-custom">
             <span class="epi-lh-label">什么样子</span>
             <input class="${cls} epi-note-desc" data-f="appearance.noteDesc" value="${esc(a.noteDesc || '')}" maxlength="120" list="epi-note-desc-list" placeholder="写在什么上：比如 莫奈的名片背面、一张电车票、餐巾纸">
             <span class="epi-lh-label">剧情里叫它</span>
             <input class="${cls} epi-note-word" data-f="appearance.noteWord" value="${esc(a.noteWord || '')}" maxlength="8" placeholder="叫它：名片">
             <datalist id="epi-note-desc-list">${['写在莫奈的名片背面', '写在一张用过的电车票上', '写在咖啡馆的餐巾纸上', '写在乐谱的空白处', '写在旧报纸的边上', '写在照片背面', '写在一页撕下来的日记上', '写在药方的背面'].map(x => `<option value="${esc(x)}">`).join('')}</datalist>
+            <span class="epi-lh-label">看起来像</span>
+            <select class="${cls} epi-note-base" data-f="appearance.noteBase">${Object.entries(NOTE_STYLES).filter(([k]) => k !== 'custom').map(([k, v]) => `<option value="${k}" ${k === a.noteBase ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>
+            <button class="menu_button epi-mini" data-act="note-style-save" ${saved ? 'disabled' : ''} title="存下来，以后在样子的下拉框里直接选">${saved ? '★ 已存' : '☆ 存为我的样子'}</button>
+            ${mine.length ? `<span class="epi-note-mine">我的样子：${mine.map(m => `<span class="epi-chip">${esc(m.word || '纸条')}<a href="#" data-act="note-style-del" data-id="${esc(m.id)}" title="删掉这个样子（已经写好的纸条不受影响）">✕</a></span>`).join(' ')}</span>` : ''}
         </span>`;
     }
 
@@ -2422,7 +2480,7 @@ ${list}`;
             ${this.styleBindHtml()}
 
             <h4>信纸</h4>
-            ${isNote(d) ? row('纸条', `<select class="text_pole" data-f="appearance.noteStyle">${Object.entries(NOTE_STYLES).map(([k, v]) => `<option value="${k}" ${k === a.noteStyle ? 'selected' : ''}>${esc(v.label)}${v.desc ? `：${esc(v.desc)}` : ''}</option>`).join('')}</select>${a.noteStyle === 'custom' ? this.noteCustomHtml(d, 'text_pole') : ''}`, '纸条没有信封和封缄，拿到的人直接就能看。') : row('版式', sel('orientation', ORIENTATIONS, a.orientation), '竖版：寄出时对折一次再装进信封。横版：平放着装进去。')}
+            ${isNote(d) ? row('纸条', `<select class="text_pole" data-f="appearance.noteStyle">${this.noteStyleOptions(d)}</select>${a.noteStyle === 'custom' ? this.noteCustomHtml(d, 'text_pole') : ''}`, '纸条没有信封和封缄，拿到的人直接就能看。') : row('版式', sel('orientation', ORIENTATIONS, a.orientation), '竖版：寄出时对折一次再装进信封。横版：平放着装进去。')}
             ${row('纸张', sel('paper', PAPERS, a.paper), mean('paper'))}
             ${row('磨损', sel('wear', WEAR_LABELS, a.wear), '纸边毛糙程度和污渍。只影响纸，不影响字。')}
 
@@ -2760,6 +2818,13 @@ ${list}`;
                 <summary><h4>🖋 显示</h4><span class="epi-sec-sum">${esc(this.secSummary('display'))}</span></summary>
                 <label>写信时的字号<select class="text_pole" data-s="editZoom">${[0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.3].map(z => `<option value="${z}" ${Math.abs(this.editZoom() - z) < 0.01 ? 'selected' : ''}>${Math.round(z * 100)}%${z === 0.9 ? '（默认）' : ''}</option>`).join('')}</select></label>
                 <label>模式<select class="text_pole" data-s="mode"><option value="simple" ${s.mode === 'simple' ? 'selected' : ''}>简单：存档信件 + 暗号</option><option value="expert" ${s.mode === 'expert' ? 'selected' : ''}>高级：寄送、转交、知情过滤、自动注入，以及段落、流转、注入预览</option></select></label>
+                ${chk('fab', '屏幕上的悬浮按钮（点一下打开书信簿，按住可以拖到别处）')}
+                ${chk('pageBreaks', '阅读页里分页：在换页的地方画一道线，写着“第 1 张 · 背面”', '关掉以后正文连着显示，不画分页线；写信页下面的字数和张数照常显示。')}
+                <div class="epi-row epi-pagecap" title="写信页下面显示“几张信纸”、阅读页画分页线时，一面大约能写多少。空着就按字号、横竖版自动估（中文约 300 字、外文约 220 词）。">
+                    <span>一面信纸大约写</span>
+                    <input class="text_pole" type="number" min="0" step="10" data-s="pageCapZh" value="${Number(s.pageCapZh) || ''}" placeholder="自动"><span>个中文字</span>
+                    <input class="text_pole" type="number" min="0" step="10" data-s="pageCapLat" value="${Number(s.pageCapLat) || ''}" placeholder="自动"><span>个外文词</span>
+                </div>
                 ${chk('animations', '寄信时的封缄动画、收信时的拆信动画')}
                 ${chk('jitter', '手写随机感（阅读时每个字轻微的歪斜和墨色深浅）')}
                 ${chk('onlineFonts', '在线加载中文书信字体（霞鹜文楷、思源宋体、马善政楷书）', '英文和法文字体已随插件附带；中文字体从 jsDelivr 按需加载，只下载用到的字。关闭后用电脑自带的楷体和宋体（刷新后生效）。')}
@@ -2777,6 +2842,8 @@ ${list}`;
                 <p class="epi-muted">每整理一封信，调用一次上面设置的 AI 接口。“第一次读时”：这封信在这一轮的回复里出现了还没有记忆的人，才会整理。整理时也会顺便记下信最后放在哪、在谁手里。</p>
                 ${chk('memory.trackEvents', '用暗号读到信的那一轮，让 AI 记下剧情里这封信发生了什么（写好、寄出、收到、读、转交），记进时间线', '同一次调用里完成，不额外花调用。寄出、收到会顺便改「📮 寄送」，剧情日期往前走了也会跟上；这些都可以自己再改。换回复、删消息时会撤回。')}
                 ${chk('memory.worldbook', '把记忆写进这个聊天的世界书', '写进聊天绑定的世界书；没绑定就自动建一本。每人每封信一条，关键词是“写信人+信”、暗号、标题和你填的关键词，按深度插入。')}
+                ${chk('memory.compact', '省 token：世界书里的记忆写得精简一点', '每段记忆只放一句话概括、记得的一两句原话、新知道的事和信在哪，不放整段回忆。记忆本身不变，随时可以切回来。')}
+                ${this.tokenStatsHtml()}
                 ${chk('memory.rereadText', '信还在角色手里时，TA 说要拿出来重读，世界书给出原文', '只在信“收着 / 随身带着”、而且拿着信的人读过它时才有。关键词是“重读 / 拿出 / 翻出……”挨着写信人、暗号或标题。信烧了、丢了、交出去了，就没有这一条，只剩记忆。')}
                 <label>世界书条目插入深度<input class="text_pole epi-num" type="number" min="0" max="50" data-s="memory.depth" value="${esc(s.memory?.depth ?? 4)}"></label>
                 <div class="epi-row"><button class="menu_button" data-act="mem-backfill" ${this.hooks.hasChat() ? '' : 'disabled'} title="找出这个聊天里以前用暗号读过、还没有记忆的信，从当时那几层整理">📜 给过去读过的信补记忆</button></div>
@@ -2802,6 +2869,14 @@ ${list}`;
                 ${ex ? chk('autoKeywords', '保存信件时，自动用 AI 给没有关键词的段落生成检索关键词') : ''}
                 ${ex ? chk('detectArrival', '剧情里写到收信、拆信时，自动把信的原文交给 AI', '角色的回复（包括它的思考过程）或你自己的消息里，写到收信人收到信（名字 + 收信/来信/拆信等说法 + 送达日期，或者信已经到了），就把原文发进聊天让角色读；写到转交人拆信、转交、扣下，也会照办。还会提醒 AI：已经送到但还没读的信不要自己编内容。') : ''}
                 ${chk('sealIncoming', '角色写给你的信：先藏起来，剧情里收到了再拆（拆信动画以后才看得到内容）', '按格式认出“称呼是你”的信（称呼要对得上你的用户名，或者高级模式「人物」页里你的别名）。认出以后存进档案，聊天里只把信的那几段藏起来，旁白照常显示。之后剧情里写到你收到了（AI 的回复、思考，或者你自己写“我收到了信”），右下角提醒你拆；点「拆开」播放拆信动画、打开信纸，藏起来的那几段才露出来。开着流式输出时，一写到给你的称呼，那条消息会先模糊掉。')}
+                ${chk('noteDetect', '自动认出角色回复里写的纸条 / 便签', '旁白里先出现“纸条的叫法”，后面紧跟着“纸上写了字的说法”，再接引号或引用块（> ……），引号里的字就记成一张便条。比如：纸条上写着：「……」、便签上只写了一句：“……”。光有冒号、破折号，或者引号后面跟着“他说 / 她问”的，都不算。')}
+                ${s.noteDetect !== false ? `<div class="epi-note-vocab">
+                    <label>纸条的叫法<span class="epi-muted">（用顿号、逗号或换行隔开；自己加的词，比如“火柴盒”，就会记成“写在一张火柴盒上”的纸条）</span>
+                        <textarea class="text_pole" rows="2" data-s="noteWords">${esc(s.noteWords || DEFAULT_NOTE_WORDS.join('、'))}</textarea></label>
+                    <label>“纸上写了字”的说法<span class="epi-muted">（后面可以再跟几个字，比如“写了”也能认出“写了几个字：”；以冒号结尾的，冒号后面就得是引号）</span>
+                        <textarea class="text_pole" rows="2" data-s="noteWritten">${esc(s.noteWritten || DEFAULT_NOTE_WRITTEN.join('、'))}</textarea></label>
+                    <div class="epi-row"><button class="menu_button epi-mini" data-act="note-vocab-reset">恢复默认</button><span class="epi-muted">留空也是用默认的。</span></div>
+                </div>` : ''}
                 ${chk('describeLook', '读信时把信的样子告诉 AI（信纸、墨水、字迹、字号、信封、封口）', '角色收信、读信时，AI 会知道这封信摸上去、看上去是什么样，比如字写得潦草发抖、纸很旧、封着火漆。正文永远会给。')}
                 ${chk('autoFill', '写新信时让 AI 自动填信头（写信人、收信人、日期、地点、语言）', '根据最近的剧情推断，并估算路上要走几天。你自己改过的格子不会被覆盖。写信页里随时可以点「✨ AI 填写」重新填。')}
             </details>
@@ -2909,7 +2984,7 @@ ${list}`;
         switch (k) {
             case 'code': return s.codeMode === 'inject' ? '生成时注入' : '接在你的消息后面（折叠）';
             case 'memory': return s.memory?.when === 'off' ? '不自动整理' : `${s.memory?.when === 'every' ? '每次读都整理' : '第一次读时整理'}${s.memory?.worldbook === false ? '' : ' · 写进世界书'}`;
-            case 'letters': return `给你的信先藏起来：${on(s.sealIncoming)} · AI 填信头：${on(s.autoFill)}`;
+            case 'letters': return `给你的信先藏起来：${on(s.sealIncoming)} · 认纸条：${on(s.noteDetect !== false)} · AI 填信头：${on(s.autoFill)}`;
             case 'api': return API_MODES[s.api?.mode] || '';
             case 'delivery': return this.hooks.getStoryDate() ? `剧情日期 ${this.hooks.getStoryDate()}` : '';
             case 'display': return `字号 ${Math.round(this.editZoom() * 100)}% · 动画：${on(s.animations)}`;
@@ -3058,7 +3133,8 @@ ${list}`;
                 <div class="epi-reader-bar">
                     <span><b>${esc(l.author)}</b> → ${esc(l.recipients.join('、'))}
                         ${l.status !== 'sent' ? `<span class="epi-chip">${esc(STATUSES[l.status])}</span>` : ''}
-                        ${l.authenticity !== 'original' ? `<span class="epi-chip">${esc(AUTHENTICITY[l.authenticity])}</span>` : ''}</span>
+                        ${l.authenticity !== 'original' ? `<span class="epi-chip">${esc(AUTHENTICITY[l.authenticity])}</span>` : ''}
+                        ${!l.shell && this.pages(l).units ? `<span class="epi-chip epi-pages-chip" title="只算主要语言；按字号、横竖版估的">${esc(pagesText(this.pages(l), { note: isNote(l) }))}</span>` : ''}</span>
                     <span class="epi-reader-actions">
                         ${preview ? `<span class="epi-chip">👁 预览 · 还没保存</span>
                         ${isNote(l) ? '' : `<button class="menu_button" data-act="preview-seal" title="回放寄信时的封缄动画：信纸折好装进信封、封口、飞走">▶ 封缄动画</button>
@@ -3079,7 +3155,7 @@ ${list}`;
                 ${l.envNote && !isNote(l) ? `<div class="epi-envnote-read" title="写在信封正面，拆信之前就看得到"><span class="epi-envnote-k">✉ 信封上写着</span><span class="epi-envnote-text ${esc(handClasses(l))}" style="${esc(paperStyle(l))}">${esc(l.envNote)}</span></div>` : ''}
                 <div class="${esc(paperClasses(l))} epi-paper-read" style="${esc(paperStyle(l))}">${paperLayer(l, hashSeed(l.id + l.author))}
                     ${place ? `<div class="epi-paper-place">${esc(place)}</div>` : ''}
-                    <div class="epi-paper-body">${l.shell ? '<p class="epi-muted">（这封信的正文还没写。点「编辑」写正文。）</p>' : renderBody(l.body, this.renderOpts(l))}</div>
+                    <div class="epi-paper-body">${l.shell ? '<p class="epi-muted">（这封信的正文还没写。点「编辑」写正文。）</p>' : renderBody(l.body, { ...this.renderOpts(l), pageBreaks: this.pageBreaksFor(l) })}</div>
                     ${showSign ? `<div class="epi-paper-sign">${esc(l.signature)}</div>` : ''}
                     ${attach}
                 </div>
@@ -3562,8 +3638,8 @@ ${list}`;
                 this.show('list');
                 break;
             }
-            case 'only-pending': this.onlyPending = !this.onlyPending; this.rerenderKeepScroll(); break;
-            case 'only-awaiting': this.onlyAwaiting = !this.onlyAwaiting; this.rerenderKeepScroll(); break;
+            case 'only-pending': this.onlyPending = !this.onlyPending; if (this.onlyPending) this.onlyAwaiting = false; this.rerenderKeepScroll(); break; // 两个筛选只能开一个
+            case 'only-awaiting': this.onlyAwaiting = !this.onlyAwaiting; if (this.onlyAwaiting) this.onlyPending = false; this.rerenderKeepScroll(); break;
             case 'replied-set': {
                 const v = el.dataset.v;
                 const cur = this.archive.letters[id]?.replied || '';
@@ -3702,6 +3778,29 @@ ${list}`;
             case 'mem-past-run': if (!this.busy) await this.runPast(id); break;
             case 'mem-backfill': await this.backfillAll(); break;
             case 'mem-clear-open': this.memClearOpen = !this.memClearOpen; this.rerenderKeepScroll(); break;
+            case 'note-style-save': {
+                const a = this.draft?.appearance;
+                if (!a || !(a.noteDesc || a.noteWord)) { toastr?.info('先写“什么样子”或“剧情里叫它”'); break; }
+                const list = this.myNoteStyles().slice();
+                list.push({ id: `n${Date.now().toString(36)}`, desc: a.noteDesc || '', word: a.noteWord || '', base: a.noteBase || 'card' });
+                this.hooks.getSettings().myNoteStyles = list.slice(-30);
+                this.hooks.saveSettings();
+                this.hooks.applyNoteVocab?.();
+                toastr?.success(`存好了：以后在“纸条的样子”里直接选「★ ${a.noteWord || '纸条'}」`);
+                if (this.root.querySelector('.epi-dialog-wrap:not(.epi-hidden)')) this.reopenStyleDialog();
+                this.rerenderKeepScroll();
+                break;
+            }
+            case 'note-style-del': {
+                const list = this.myNoteStyles().filter(m => m.id !== el.dataset.id);
+                this.hooks.getSettings().myNoteStyles = list;
+                this.hooks.saveSettings();
+                this.hooks.applyNoteVocab?.();
+                if (this.root.querySelector('.epi-dialog-wrap:not(.epi-hidden)')) this.reopenStyleDialog();
+                this.rerenderKeepScroll();
+                break;
+            }
+            case 'note-vocab-reset': this.setS('noteWords', ''); this.setS('noteWritten', ''); this.hooks.applyNoteVocab?.(); this.rerenderKeepScroll(); toastr?.success('已恢复默认的纸条词表'); break;
             case 'fill-open': this.fillOpen = !this.fillOpen; this.rerenderKeepScroll(); break;
             case 'fill-run': this.runFill(); break;
             case 'mem-clear-run': {
@@ -4082,12 +4181,17 @@ ${list}`;
             this.setS(key, v);
             if (key === 'editZoom') this.applyEditZoom();
             if (key === 'enabled' || key === 'useAI') { this.hooks.syncWorldBook?.(); this.rerenderKeepScroll(); }
+            if (key === 'memory.compact' || key === 'memory.rereadText') { this.hooks.syncWorldBook?.(); this.rerenderKeepScroll(); } // 世界书条目跟着重写
+            if (key === 'trimOldLetters') { const el = this.root.querySelector('.epi-token-stats'); if (el) el.outerHTML = this.tokenStatsHtml().split('<div class="epi-row epi-trim"')[0]; }
             if (e.type === 'change' && ['api.mode', 'mode', 'viewpointMode'].includes(key)) {
                 const y = this.body.scrollTop;
                 this.show('settings');
                 this.body.scrollTop = y;
             }
             if (key === 'onlineFonts' && v) this.hooks.loadFonts?.();
+            if (key === 'noteWords' || key === 'noteWritten') this.hooks.applyNoteVocab?.();
+            if (key === 'noteDetect') this.rerenderKeepScroll();
+            if (key === 'fab') { this.hooks.applyFab?.(); const d = document.getElementById('epi-fab'); if (d) d.checked = !!v; }
             if (key === 'jitter') this.closeReader();
             return;
         }
@@ -4136,6 +4240,19 @@ ${list}`;
             return;
         }
         const d = this.draft;
+        // 选了“我的样子”：套上存的那一套（自定义 + 写在什么上 + 叫它什么 + 看起来像）
+        if (t.dataset.f === 'appearance.noteStyle' && d && String(t.value).startsWith('my:')) {
+            if (e.type !== 'change') return;
+            const m = this.myNoteStyles().find(x => `my:${x.id}` === t.value);
+            if (m) Object.assign(d.appearance, { noteStyle: 'custom', noteDesc: m.desc, noteWord: m.word, noteBase: m.base });
+            this.fontTouched = true;
+            this.commitRaw(d);
+            this.setDirty();
+            if (t.closest('.epi-dialog')) this.reopenStyleDialog();
+            this.rerenderKeepScroll();
+            this.fitPage();
+            return;
+        }
         if (t.dataset.f && d) {
             if (HEAD_FIELDS.includes(t.dataset.f)) {
                 this.lhAuto?.delete(t.dataset.f);
@@ -4149,14 +4266,14 @@ ${list}`;
             } else if (path.length === 3) {
                 d[path[0]][path[1]] = { ...(d[path[0]][path[1]] || {}), [path[2]]: t.value };
             } else if (path.length === 2) {
-                d[path[0]][path[1]] = t.value;
+                d[path[0]][path[1]] = t.type === 'checkbox' ? t.checked : t.value;
                 if (path[0] === 'appearance' && d.appearance.mode?.[path[1]]) { const m = { ...d.appearance.mode }; delete m[path[1]]; d.appearance.mode = m; }
             } else d[path[0]] = t.value;
             if (path[0] === 'appearance') {
                 if (t.dataset.f === 'appearance.inkColor') d.appearance.ink = 'custom';
                 this.refreshPaper();
                 this.fontTouched = true; // 自己动过外观：换写信人时不再自动套 TA 的款式
-                if (t.dataset.f === 'appearance.orientation' || t.dataset.f === 'appearance.noteStyle') this.fitPage();
+                if (t.dataset.f === 'appearance.orientation' || t.dataset.f === 'appearance.noteStyle' || t.dataset.f === 'appearance.noteBase') this.fitPage();
                 if (t.dataset.f === 'appearance.noteStyle' && e.type === 'change' && !t.closest('.epi-dialog')) { this.commitRaw(d); this.rerenderKeepScroll(); this.fitPage(); }
                 // 外观对话框里改了选项：重绘对话框，让说明和对比度跟着变
                 if (e.type === 'change' && t.closest('.epi-dialog') && t.tagName === 'SELECT') this.reopenStyleDialog();
@@ -4168,6 +4285,7 @@ ${list}`;
                 }
             }
             if (t.dataset.f === 'body') { this.fitPage(); this.keepCaretVisible(); this.updateCount(); }
+            if (t.dataset.f === 'appearance.duplex' || t.dataset.f === 'appearance.size' || t.dataset.f === 'appearance.orientation' || t.dataset.f === 'appearance.noteStyle') this.updateCount();
             if (t.dataset.f === 'blurb') { d.blurbAuto = false; t.classList.remove('epi-lh-ai'); }
             if (t.dataset.f === 'author' && e.type === 'change' && !this.fontTouched) {
                 const before = d.appearance.font;

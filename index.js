@@ -4,6 +4,8 @@
 
 import { Store } from './src/store.js';
 import { UI } from './src/ui.js';
+import { Fab } from './src/fab.js';
+import { trimOldLetters } from './src/tokens.js';
 import { retrieve, DEFAULT_RETRIEVAL } from './src/retrieval.js';
 import { sameName, normalizeDate, findPerson, lettersByCode, unknownCodes, ensureCodes, createLetter, aiText, bodyHash, isNote, noteWord, normalizeLetter, nextCode } from './src/model.js';
 import {
@@ -18,7 +20,7 @@ import {
 import { lookFor } from './src/styles.js';
 import { whereNow, setWhere, suggestWhere, acceptSuggestion, dismissSuggestion, revokeWhere, whereText, whereForPerson, REREADABLE, deliveryText, deliveryState } from './src/whereabouts.js';
 import { playSeal, playOpen } from './src/envelope.js';
-import { detectInMessage, detectNotes, guessRecipient, guessAuthor, findDuplicate, isSalutation } from './src/importer.js';
+import { detectInMessage, detectNotes, guessRecipient, guessAuthor, findDuplicate, isSalutation, setNoteVocab, parseVocab, DEFAULT_NOTE_WORDS } from './src/importer.js';
 import { extractEnclosures } from './src/enclosures.js';
 import { findReadingScenes, sceneText } from './src/memoryscan.js';
 import { callAI, DEFAULT_API } from './src/api.js';
@@ -36,11 +38,21 @@ const DEFAULT_SETTINGS = {
     autoKeywords: true,      // 简单模式下，保存时自动让 AI 生成关键词
     autoFill: true,          // 写新信时让 AI 根据剧情填信头
     editZoom: 0.9,           // 写信页信纸上的字看起来多大（不改信本身的字号）
-    describeLook: true,
+    describeLook: true,      // 收信反应时，把信纸、墨水、字迹、字号、信封、封口告诉 AI
     codeMode: 'embed',       // 暗号：embed 把信的全文放进你的消息里（折叠显示，最稳）| inject 只在生成时注入
     sealIncoming: true,      // 角色回复里出现寄给你的信：先封起来，拆信动画以后才显示
-    detectArrival: true,     // 剧情里（包括 AI 的思考）写到收信人收到信、转交人动了信，就自动处理      // 收信反应时，把信纸、墨水、字迹、字号、信封、封口告诉 AI
+    noteDetect: true,        // 自动认出角色回复里写的纸条
+    noteWords: '',           // 纸条的叫法（空 = 默认）
+    noteWritten: '',         // “纸上写了字”的说法（空 = 默认）
+    detectArrival: true,     // 剧情里（包括 AI 的思考）写到收信人收到信、转交人动了信，就自动处理
     animations: true,        // 寄信封缄、收信拆信动画
+    fab: true,               // 屏幕上的悬浮按钮
+    myNoteStyles: [],        // 存下来的纸条样子 [{ id, desc, word, base }]
+    pageBreaks: true,        // 阅读页画分页线（第 1 张 · 背面……）
+    trimOldLetters: 6,       // 省 token：比最近这么多层更早的消息里的信，发给 AI 时只留一句话（0 = 不省）
+    pageCapZh: 0,            // 一面信纸大约写多少个中文字（0 = 自动）
+    pageCapLat: 0,           // 一面信纸大约写多少个外文词（0 = 自动）
+    fabPos: null,            // 悬浮按钮的位置 { right, bottom }
     jitter: true,            // 手写随机感
     onlineFonts: true,       // 在线加载中文书信字体（霞鹜文楷、思源宋体、马善政楷书）
     viewpointMode: 'auto',   // auto 跟随当前发言角色 | manual 手动指定 | omniscient 全知不过滤
@@ -65,6 +77,7 @@ const DEFAULT_SETTINGS = {
         worldbook: true,     // 记忆写进这个聊天绑定的世界书，角色以后提起这封信时会想起来
         depth: 4,            // 世界书条目插入的深度
         rereadText: true,    // 信还在某人手里：TA 说要拿出来重读时，世界书给出原文
+        compact: false,      // 省 token：世界书里的记忆只放一句话概括 + 几句原话 + 新知道的事
         trackEvents: true,   // 用暗号读到信的那一轮：让 AI 记下剧情里这封信发生了什么（写好、寄出、收到、读、转交），记进时间线
     },
 };
@@ -724,7 +737,7 @@ function desiredEntries() {
                 tag: `mem:${letter.id}:${memory.person}`,
                 key: memoryKeys(letter, aliases, { withAuthor: !many }),
                 comment: `书信簿｜${memory.person}读${author || '？'}来信的记忆（${letter.code || letter.id}）`,
-                content: memoryEntryContent(letter, memory, whereForPerson(letter, memory.person, same)),
+                content: memoryEntryContent(letter, memory, whereForPerson(letter, memory.person, same), { compact: settings().memory.compact === true }),
                 memories: [memory],
             });
         }
@@ -2203,8 +2216,16 @@ function notesInText(text) {
     return out;
 }
 
+// 认出来的纸条长什么样：叫法对得上“我的样子”就用存的那一套
+function noteLookFromHint(hint) {
+    if (!hint) return { noteStyle: 'scrap' };
+    const mine = (settings().myNoteStyles || []).find(m => m.word && m.word === hint.word);
+    if (mine) return { noteStyle: 'custom', noteDesc: mine.desc, noteWord: mine.word, noteBase: mine.base };
+    return { noteStyle: hint.style || 'scrap', ...(hint.style === 'custom' ? { noteDesc: hint.desc || '', noteWord: hint.word || '' } : {}) };
+}
+
 async function recordNotes(mesId) {
-    if (settings().sealIncoming === false || !hasChat() || store.mode === 'unloaded') return [];
+    if (settings().noteDetect === false || !hasChat() || store.mode === 'unloaded') return [];
     const c = ctx();
     const m = c.chat?.[mesId];
     if (!m || m.is_user || m.is_system || m.extra?.epistolary) return [];
@@ -2226,7 +2247,7 @@ async function recordNotes(mesId) {
             writtenAt: isSimple() ? '' : getStoryDate(),
             body: n.text,
             status: 'sent',
-            appearance: { ...look, noteStyle: n.hint?.style || 'scrap', ...(n.hint?.style === 'custom' ? { noteDesc: n.hint.desc || '', noteWord: n.hint.word || '' } : {}) },
+            appearance: { ...look, ...noteLookFromHint(n.hint) },
             source: { chatId: chatId(), mes: mesId },
             autoFrom: { chatId: chatId(), mes: mesId, swipe: m.swipe_id ?? 0 },
             ...scopeFields(),
@@ -2463,10 +2484,17 @@ function onStreamToken(text) {
 }
 
 // ---------- 生成前拦截：在这里计算要注入的信件内容 ----------
+// ---------- 省 token：旧消息里的信只留一句话 ----------
+// 用暗号交给 AI 的信会整封写进你的消息；这条消息留在聊天记录里，以后每一轮都会再发一遍。
+// 生成时（只改这一次发给 AI 的那份，不动聊天记录）把较早消息里的信换成一句话：
+// 那封信 AI 当时已经读过，读信人记得什么由世界书里的记忆负责。
+let lastTrimSaved = 0;
+
 globalThis.epistolaryInterceptor = async function (_chat, _contextSize, _abort, type) {
     const c = ctx();
     const s = settings();
     try {
+        lastTrimSaved = trimOldLetters(_chat, Number(s.trimOldLetters) || 0);
         if (!s.enabled || type === 'quiet' || store.mode === 'unloaded') {
             c.setExtensionPrompt(PROMPT_KEY, '', s.position, s.depth);
             c.setExtensionPrompt(REACTION_KEY, '', 1, 0);
@@ -2519,6 +2547,7 @@ function settingsHtml() {
                     <button class="menu_button" id="epi-open-settings">设置</button>
                 </div>
                 <label class="checkbox_label"><input type="checkbox" id="epi-enabled"> 生成时注入相关信件</label>
+                <label class="checkbox_label"><input type="checkbox" id="epi-fab"> 显示悬浮按钮</label>
                 <label>当前剧情日期（仅本聊天）</label>
                 <input class="text_pole" id="epi-storydate" placeholder="如 1890-11-20；留空则不按日期过滤">
                 <small id="epi-status" class="epi-muted"></small>
@@ -2556,6 +2585,8 @@ function bindSettings() {
     const $ = sel => document.querySelector(sel);
     $('#epi-enabled').checked = s.enabled;
     $('#epi-enabled').addEventListener('change', e => { settings().enabled = e.target.checked; saveSettings(); syncWorldBook(); ui?.refresh?.(); });
+    $('#epi-fab').checked = s.fab !== false;
+    $('#epi-fab').addEventListener('change', e => { settings().fab = e.target.checked; saveSettings(); applyFab(); if (ui?.tab === 'settings' && ui.isOpen()) ui.rerenderKeepScroll(); });
     $('#epi-storydate').addEventListener('input', e => { if (hasChat()) setStoryDate(e.target.value); });
     $('#epi-open').addEventListener('click', () => ui.open('list'));
     $('#epi-open-settings').addEventListener('click', () => ui.open('settings'));
@@ -2569,6 +2600,33 @@ function refreshChatFields() {
 function refreshStatus() {
     const el = document.querySelector('#epi-status');
     if (el) el.textContent = store.statusText();
+}
+
+// 设置里改过的纸条词表
+// 存下来的纸条样子（“火柴盒”“电车票”……）的叫法也算进去
+function applyNoteVocab() {
+    const words = parseVocab(settings().noteWords);
+    const mine = (settings().myNoteStyles || []).map(m => m.word).filter(Boolean);
+    setNoteVocab({ words: words.length || mine.length ? [...(words.length ? words : DEFAULT_NOTE_WORDS), ...mine] : [], written: parseVocab(settings().noteWritten) });
+}
+
+// ---------- 悬浮按钮 ----------
+let fab = null;
+function applyFab() {
+    if (settings().fab === false) { fab?.destroy(); fab = null; return; }
+    if (!fab) {
+        fab = new Fab({
+            onClick: () => (ui.isOpen() ? ui.close() : ui.open()),
+            getPos: () => settings().fabPos,
+            setPos: p => { settings().fabPos = p; saveSettings(); },
+        });
+    }
+    fab.setActive(ui?.isOpen?.());
+    // 面板不管从哪里关上（寄完信回到聊天、按 ✕……），按钮都跟着变
+    if (!applyFab.watching && ui?.root) {
+        applyFab.watching = true;
+        new MutationObserver(() => fab?.setActive(ui.isOpen())).observe(ui.root, { attributes: true, attributeFilter: ['class'] });
+    }
 }
 
 function addWandButton() {
@@ -2596,6 +2654,9 @@ jQuery(async () => {
         injectOn,
         setMode: mode => { settings().mode = mode; saveSettings(); ui?.renderPostbox(); },
         getSettings: settings,
+        onPanel: open => fab?.setActive(open),
+        applyFab: () => applyFab(),
+        applyNoteVocab: () => applyNoteVocab(),
         saveSettings,
         getViewer,
         getStoryDate,
@@ -2630,6 +2691,20 @@ jQuery(async () => {
         codeReadsInChat,
         saveMemoryEdit,
         saveMemoryMeta,
+        // 省 token：世界书条目有多大、聊天里整封的信有多少、上一轮省了多少
+        tokenStats: () => {
+            const entries = (() => { try { return desiredEntries(); } catch { return []; } })();
+            const chat = ctx().chat || [];
+            const keep = Number(settings().trimOldLetters) || 0;
+            let embedded = 0, old = 0;
+            chat.forEach((m, i) => {
+                for (const b of String(m?.mes || '').match(/【信件 [^｜\n]+?｜[^】\n]*】[\s\S]*?【信件完】/g) || []) {
+                    embedded += b.length;
+                    if (keep > 0 && i < chat.length - keep) old += b.length;
+                }
+            });
+            return { entries: entries.length, chars: entries.reduce((n, e) => n + String(e.content || '').length, 0), embedded, old, lastSaved: lastTrimSaved };
+        },
         fillCounts,
         fillOld,
         saveRecallKeys,
@@ -2670,6 +2745,8 @@ jQuery(async () => {
     ui.mount();
     bindSettings();
     addWandButton();
+    applyFab();
+    applyNoteVocab();
 
     store.onChange(refreshStatus);
     await store.load();

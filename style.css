@@ -1600,8 +1600,8 @@ details.epi-sec-card.epi-sec-off > :not(summary):not(.epi-off-note) { opacity: .
 
 /* 纸条：撕下来的一条，上下边是毛的 */
 .epi-paper.note-scrap {
-    clip-path: polygon(0% 3%, 4% 0%, 9% 2.5%, 15% .5%, 22% 3%, 30% 1%, 37% 2.8%, 45% .4%, 53% 2.6%, 61% .8%, 69% 3%, 77% 1%, 85% 2.7%, 92% .6%, 100% 2.4%,
-        100% 97%, 95% 100%, 88% 97.5%, 80% 99.6%, 72% 97.2%, 64% 99.4%, 56% 97%, 48% 99.7%, 40% 97.4%, 32% 99.5%, 24% 97.1%, 16% 99.6%, 8% 97.5%, 0% 99.8%);
+    /* 撕口的深度用像素算（最深 6px），纸条写得再长，毛边也只在最边上一点，不会咬进字里 */
+    clip-path: polygon(0% 6px, 4% 0px, 9% 5.0px, 15% 1.0px, 22% 6px, 30% 2px, 37% 5.6px, 45% 0.8px, 53% 5.2px, 61% 1.6px, 69% 6px, 77% 2px, 85% 5.4px, 92% 1.2px, 100% 4.8px, 100% calc(100% - 6px), 95% calc(100% - 0px), 88% calc(100% - 5.0px), 80% calc(100% - 0.8px), 72% calc(100% - 5.6px), 64% calc(100% - 1.2px), 56% calc(100% - 6px), 48% calc(100% - 0.6px), 40% calc(100% - 5.2px), 32% calc(100% - 1.0px), 24% calc(100% - 5.8px), 16% calc(100% - 0.8px), 8% calc(100% - 5.0px), 0% calc(100% - 0.4px));
     box-shadow: none; filter: drop-shadow(0 4px 10px rgba(0,0,0,.4));
 }
 /* 便签：方方正正的淡黄色小纸 */
@@ -1647,3 +1647,115 @@ details.epi-sec-card.epi-sec-off > :not(summary):not(.epi-off-note) { opacity: .
 .epi-know-about { font-size: .9em; opacity: .85; margin-bottom: 3px; }
 .epi-know-fact, .epi-know-row { line-height: 1.7; }
 .epi-know-fact .epi-chip { font-size: .75em; margin-right: 4px; }
+
+/* ---------- 悬浮按钮：深炭灰 × 香槟金，一道细环，扁平 ---------- */
+.epi-fab {
+    --fab-size: 54px;
+    --fab-ring: #cfc3a6;      /* 浅香槟金的细环 */
+    --fab-face: #2b2a28;      /* 按钮面 */
+    --fab-gap: #1f1e1d;       /* 环和按钮面之间那一圈深色 */
+    --fab-icon: #cbb991;      /* 图标 */
+    position: fixed;
+    right: 24px;
+    bottom: 120px;
+    z-index: 8990; /* 书信簿面板（9000）打开时在它下面 */
+    width: var(--fab-size);
+    height: var(--fab-size);
+    padding: 0;
+    margin: 0;
+    border: 1.5px solid var(--fab-ring);
+    border-radius: 50%;
+    cursor: pointer;
+    touch-action: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    background: var(--fab-gap);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, .35);
+    transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+.epi-fab[hidden] { display: none; }
+.epi-fab::before, .epi-fab::after { content: none; }
+
+/* 按钮面：平的，只比环里那圈深色亮一点 */
+.epi-fab-face {
+    position: absolute;
+    inset: 3px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--fab-face);
+    transition: background .15s ease;
+}
+.epi-fab-icon {
+    width: 62%;
+    height: auto;
+    overflow: visible;
+}
+/* 扁平图标：一种颜色，折线用按钮面的颜色刻出来 */
+.epi-fab-icon rect { fill: var(--fab-icon); }
+.epi-fab-icon path { stroke: var(--fab-face); opacity: 1; }
+.epi-fab-icon path + path { opacity: .55; }
+
+.epi-fab:hover { border-color: #e2d8bf; }
+.epi-fab:hover .epi-fab-face { background: #312f2c; }
+.epi-fab.pressed { transform: scale(.97); }
+.epi-fab.dragging { cursor: grabbing; transform: scale(1.04); transition: none; box-shadow: 0 8px 18px rgba(0, 0, 0, .45); }
+.epi-fab:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(207, 195, 166, .3), 0 4px 12px rgba(0, 0, 0, .35); }
+/* 面板打开时：环亮一点 */
+.epi-fab.active { border-color: #e8dcbc; }
+
+@media (max-width: 600px) {
+    .epi-fab { --fab-size: 48px; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .epi-fab, .epi-fab-face { transition: none; }
+}
+
+/* 纸条词表 */
+.epi-note-vocab { margin: 2px 0 10px 24px; display: flex; flex-direction: column; gap: 6px; }
+.epi-note-vocab label { display: flex; flex-direction: column; gap: 3px; }
+.epi-note-vocab label .epi-muted { font-size: .82em; }
+.epi-note-vocab textarea { resize: vertical; min-height: 2.6em; }
+
+/* ---------- 稿纸：蓝色横线，每一行字压在一道线上 ---------- */
+/* 行高固定 1.9em，横线画在每行底部；段落之间不留额外空隙，空一行正好空一道线 */
+.epi-paper.note-grid { --paper: #fbfaf5 !important; background-color: var(--paper) !important; }
+.note-grid .epi-paper-body,
+#epi-root .note-grid .epi-page {
+    line-height: 1.9 !important;
+    background-color: transparent !important;
+    background-image: repeating-linear-gradient(to bottom, transparent 0, transparent calc(1.9em - 1px), rgba(62, 104, 170, .45) calc(1.9em - 1px), rgba(62, 104, 170, .45) 1.9em) !important;
+    background-size: 100% 1.9em !important;
+    background-position: 0 0 !important;
+    background-origin: padding-box !important;
+    background-repeat: repeat !important;
+}
+.note-grid .epi-paper-body .epi-p,
+.note-grid .epi-l-dateline,
+.note-grid .epi-paper-body .epi-p:last-child { margin: 0 !important; }
+.note-grid .epi-paper-body .epi-p + .epi-p { margin-top: 1.9em !important; }
+.note-grid .epi-p-signoff, .note-grid .epi-p-ps { font-size: 1em !important; }
+.note-grid.flourish .epi-l-salutation,
+.note-grid.flourish .epi-p-signoff { font-size: 1em !important; line-height: inherit !important; }
+.note-grid .epi-pagebreak { margin: 0 !important; line-height: 1.9em !important; height: 1.9em; font-size: .72em !important; }
+
+/* ---------- 字数和换页 ---------- */
+#epi-root .epi-duplex { display: inline-flex !important; flex-direction: row !important; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; width: auto !important; }
+.epi-duplex input { margin: 0; }
+.epi-pagecap { flex-wrap: wrap; align-items: center; gap: 6px; }
+#epi-root .epi-pagecap input { width: 80px !important; }
+/* 阅读页的分页线：一道虚线，中间写“第 2 张 · 背面” */
+.epi-pagebreak {
+    display: flex; align-items: center; gap: .8em;
+    margin: .6em 0 .6em; color: var(--ink, #555); opacity: .45;
+    font: 400 .72em/1.4 system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif !important;
+    letter-spacing: .15em; background: none !important;
+    -webkit-user-select: none; user-select: none;
+}
+.epi-pagebreak::before, .epi-pagebreak::after { content: ''; flex: 1; border-top: 1px dashed currentColor; }
+.note-grid .epi-pagebreak { letter-spacing: .15em !important; }
+
+/* 省 token */
+.epi-token-stats { font-size: .85em; line-height: 1.6; margin: 4px 0 6px 24px; }
+.epi-trim { flex-wrap: wrap; align-items: center; gap: 6px; margin-left: 24px; }
+#epi-root .epi-trim input { width: 64px !important; }

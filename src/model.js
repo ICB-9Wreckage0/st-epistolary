@@ -19,6 +19,7 @@ export const NOTE_STYLES = {
     sticky: { label: '便签', desc: '方方正正的小便签纸，淡黄色', word: '便签' },
     card: { label: '小卡片', desc: '硬一点的小卡片，可以夹在书里、塞进门缝', word: '卡片' },
     folded: { label: '折起来的纸', desc: '一张纸对折两次，捏在手心里能藏住', word: '纸条' },
+    grid: { label: '稿纸', desc: '一页印着蓝色横线的稿纸', word: '稿纸' },
     custom: { label: '自定义…', desc: '', word: '纸条' },
 };
 export const isNote = l => l?.kind === 'note';
@@ -272,6 +273,8 @@ function normalizeAppearance(a = {}) {
         noteStyle: NOTE_STYLES[a.noteStyle] ? a.noteStyle : 'scrap', // 便条的样子（只对便条有用）
         noteDesc: String(a.noteDesc || '').replace(/\s+/g, ' ').trim().slice(0, 120), // 自定义：写在什么上，如“莫奈的名片背面”
         noteWord: String(a.noteWord || '').replace(/[\s【】]/g, '').slice(0, 8),        // 自定义：剧情里叫它什么，如“名片”
+        noteBase: NOTE_STYLES[a.noteBase] && a.noteBase !== 'custom' ? a.noteBase : 'card', // 自定义：看起来像哪种纸
+        duplex: a.duplex === true || a.duplex === 'true' || a.duplex === 'on', // 正反面都写
         // 每一项可以是：选好的样式 | follow 空着（跟随文中，不告诉 AI，由剧情决定）| custom 自定义（自己写描述，纸 / 信封 / 火漆 / 墨水还能选颜色）
         mode: cleanMap(a.mode, v => (v === 'follow' || v === 'custom' ? v : null)),
         custom: cleanMap(a.custom, v => String(v || '').trim().slice(0, 200) || null),
