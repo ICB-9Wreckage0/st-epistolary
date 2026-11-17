@@ -53,3 +53,18 @@ test('两种语言分开算；括号里的译文不占纸', () => {
     const long = 'Bonjour (' + '很长的译文'.repeat(200) + ').';
     assert.equal(paginate({ language: 'fr', appearance: {}, body: long }).sides, 1);
 });
+
+test('纸张大小：A4、八开按尺寸算；自定义按一面多少字', () => {
+    const body = Array.from({ length: 60 }, () => '今'.repeat(20)).join('\n'); // 1200 字
+    const a4 = paginate({ body, appearance: { sheet: 'a4' } });
+    assert.ok(a4.perSide > 500 && a4.perSide < 650);
+    assert.match(pagesText(a4), /张 A4/);
+    assert.ok(paginate({ body, appearance: { sheet: 'k8' } }).perSide > paginate({ body, appearance: { sheet: 'a5' } }).perSide * 3);
+    const c = paginate({ body, appearance: { sheet: 'custom', sheetCap: 400 } });
+    assert.equal(c.perSide, 400);
+    assert.equal(c.sides, 3);
+    assert.equal(pagesText(c), '1200 字 · 3 张纸（一面约 400 字，只写正面）');
+    // 横放：一行更长、行数更少
+    const l = paginate({ body, appearance: { sheet: 'a4', orientation: 'landscape' } });
+    assert.ok(l.perLine > a4.perLine && l.lines < a4.lines);
+});

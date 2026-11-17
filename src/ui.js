@@ -5,9 +5,9 @@
 
 import {
     KINDS, STATUSES, AUTHENTICITY, EVENT_TYPES, LEVEL_LABELS,
-    createLetter, normalizeLetter, normalizePerson, resegment, segmentPosition, knowledgeTable, normalizeCode, nextCode,
+    createLetter, normalizeLetter, normalizePerson, resegment, segmentPosition, knowledgeTable, normalizeCode, nextCode, pairFolder,
     parseTags, parseNames, splitSamples, findPerson, clone, normalizeDate,
-    folderList, lettersInFolder, addFolder, renameFolder, removeFolder, cleanFolderName, MARKS, stripMarks, bodyHash, IMPORTANCE, WEIGHT_LABELS, NOTE_STYLES, isNote, noteWord, noteLook,
+    folderList, lettersInFolder, addFolder, renameFolder, removeFolder, cleanFolderName, MARKS, stripMarks, bodyHash, IMPORTANCE, WEIGHT_LABELS, SHEETS, NOTE_STYLES, isNote, noteWord, noteLook,
 } from './model.js';
 import { allPresets, POSITIONS, LANGS } from './presets.js';
 import {
@@ -27,6 +27,7 @@ import { WHERE_STATES, whereNow, whereText, DELIVERY_STATES, deliveryState, deli
 import { correspondentPairs, buildTimeline, pairSummary, replyInfo, REPLY_STATES } from './timeline.js';
 import { knowledgePeople, knowledgeOf, letterLabel as knowLabel } from './knowledge.js';
 import { paginate, pagesText, sideLabel } from './pages.js';
+import { exportLetters, exportFileName } from './exporter.js';
 import { HANDS, ORIENTATIONS, handClasses, paperClasses, renderBody, analyze, scriptLang, renderOptions, WOBBLE_LABELS, WEAR_LABELS, paperLayer, ensureWearFilters, hashSeed, INKS, inkColor, inkContrast, paperStyle, SIZE_LABELS, CJK_SIZE_LABELS } from './render.js';
 
 const PAPERS = { plain: '素白', cream: '奶油棉纸', aged: '泛黄旧纸', lined: '横格信笺', redline: '红线信笺', blue: '淡蓝航空信纸' };
@@ -545,7 +546,9 @@ export class UI {
     renderNewLetterChooser() {
         const names = this.nameOptions();
         const me = this.hooks.getUserName?.() || '';
-        const nl = this.nl || (this.nl = { author: this.lastNew?.author ?? me, recipients: this.lastNew?.recipients ?? [], folder: this.folder || this.lastNew?.folder || '' }); // 收信人不默认填角色名，自己选
+        const nl = this.nl || (this.nl = { author: this.lastNew?.author ?? me, recipients: this.lastNew?.recipients ?? [], folder: this.folder || this.lastNew?.folder || '', baseFolder: this.folder || this.lastNew?.folder || '' }); // 收信人不默认填角色名，自己选
+        // 文件夹没自己挑过：跟这两人上一封信放一起（选了写信人和收信人以后自动换）
+        if (!nl.folderTouched) nl.folder = this.autoFolderFor({ kind: nl.kind, author: nl.author, recipients: nl.recipients }) || nl.baseFolder || '';
         const chip = (n, on, act) => `<button class="epi-pick ${on ? 'active' : ''}" data-act="${act}" data-name="${esc(n)}">${esc(n)}${n === me ? ' <span class="epi-muted">（你）</span>' : ''}</button>`;
         // 最近的通信组合：点一下直接开写
         const seen = new Map();
@@ -690,13 +693,13 @@ export class UI {
                         ${isNote(l) ? `<span class="epi-chip epi-note-chip" title="便条 / 纸条：没有信封">🗒 ${esc(noteWord(l))}</span>` : ''}
                         <b>${esc(l.author || '？')} → ${esc(l.recipients.join('、') || '？')}</b>
                         <span class="epi-muted">${esc(l.writtenAt || ((l.events || []).map(e => e.date).filter(Boolean).sort()[0] ? `剧情里 ${(l.events || []).map(e => e.date).filter(Boolean).sort()[0]}` : ''))}</span>
-                        ${isNote(l) ? '' : `<span class="epi-chip epi-dv-chip" title="寄送到哪一步">${esc(deliveryText(l))}</span>`}
+                        ${isNote(l) ? '' : this.quickDeliveryHtml(l)}
                         ${ex && l.delivery?.status === 'transit' ? `<span class="epi-chip epi-transit">📮 在途 · ${esc(this.etaText(l))}</span>` : ''}
                         ${ex && l.delivery?.status === 'arrived' ? `<span class="epi-chip epi-transit">📬 刚送到</span>` : ''}
                         ${ex ? this.viaChip(l) : ''}
                         ${l.shell ? '<span class="epi-chip epi-shell" title="剧情里已经有这封信了，正文还没写。点「编辑」写正文">📄 空壳 · 待写正文</span>' : ''}
                         ${l.inReplyTo ? `<span class="epi-chip">↩ 回信</span>` : ''}
-                        ${this.isAwaiting(l) ? `<span class="epi-chip epi-rp-wait" title="${l.replied ? '你标的' : '按信件推算的'}：还没收到回信">⏳ 等回信</span>` : (l.status !== 'draft' && deliveryState(l) === 'delivered' && l.replied ? `<span class="epi-chip" title="你标的">${esc(REPLY_STATES[l.replied].icon + ' ' + REPLY_STATES[l.replied].label)}</span>` : '')}
+                        ${this.quickReplyHtml(l)}
                         ${l.folder && fsel == null ? `<span class="epi-chip epi-folder-chip">📁 ${esc(l.folder)}</span>` : ''}
                         ${whereNow(l) ? `<span class="epi-chip epi-where-chip" title="信在谁手里">📍 ${esc(whereText(whereNow(l)).replace(/^\S+\s/, ''))}</span>` : ''}
                         ${l.whereabouts?.suggest ? '<span class="epi-chip" title="AI 从剧情里看出了信在哪，打开这封信确认">📍？待确认</span>' : ''}
@@ -741,6 +744,7 @@ export class UI {
             </div>` : ''}
             ${this.listResult ? `<div class="epi-tl-result"><button class="epi-tl-result-x" data-act="list-result-close" title="收起">✕</button>${this.listResult}</div>` : ''}`;
 
+        this.listIds = letters.map(l => l.id); // 导出“列表里现在显示的”用
         return `
             ${this.kindTabs()}
             <div class="epi-toolbar">
@@ -755,7 +759,9 @@ export class UI {
                 <button class="menu_button ${this.onlyPending ? 'epi-primary' : ''}" data-act="only-pending" title="只看还没送到的信：写好没寄、已寄出在路上、在转交人那里还没转交">📮 还没送到${(() => { const n = this.viewLetters().filter(l => this.isPending(l)).length; return n ? ` <span class="epi-badge">${n}</span>` : ''; })()}</button>
                 <button class="menu_button ${this.onlyAwaiting ? 'epi-primary' : ''}" data-act="only-awaiting" title="只看已经送到、还在等对方回信的信（回信状态可以在每封信的“↩ 回信”那一行自己改）">⏳ 等回信${(() => { const n = this.viewLetters().filter(l => this.isAwaiting(l)).length; return n ? ` <span class="epi-badge">${n}</span>` : ''; })()}</button>
                 <button class="menu_button ${this.selectMode ? 'epi-primary' : ''}" data-act="select-mode" title="勾选好几封信，一起移到文件夹">${this.selectMode ? '✓ 完成选择' : '☑ 批量选择'}</button>
+                <button class="menu_button ${this.exportOpen ? 'epi-primary' : ''}" data-act="export-open" title="把信导出成 .md 或 .txt 文件">⬇ 导出</button>
             </div>
+            ${this.exportOpen ? this.exportPanelHtml(letters) : ''}
             ${this.selectMode ? `<div class="epi-bulkbar">
                 <span>已选 <b>${this.selected?.size || 0}</b> 封</span>
                 <a href="#" data-act="select-all">全选这一页</a> · <a href="#" data-act="select-none">全不选</a>
@@ -769,7 +775,123 @@ export class UI {
             <div class="epi-muted epi-foot">${esc(this.store.statusText())}</div>`;
     }
 
+    // ---------- 信件列表里直接改：寄到哪一步、有没有收到回信 ----------
+    quickDeliveryHtml(l) {
+        const cur = deliveryState(l);
+        const opts = [['draft', '✎ 草稿'], ['unsent', '✉ 写好了，没寄'], ['transit', '📮 已寄出，在路上'], ['atVia', '🤝 在转交人那里'], ['delivered', '📬 已送到'], ['lost', '❓ 寄丢了']]
+            .filter(([k]) => k !== 'atVia' || cur === 'atVia' || this.expert);
+        return `<select class="epi-q epi-q-dv q-${cur}" data-act="q-dv" data-id="${esc(l.id)}" title="${esc(deliveryText(l))}（直接在这里改；详细的日期、转交人到信里改）">${opts.map(([k, v]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${v}</option>`).join('')}</select>`;
+    }
+
+    quickReplyHtml(l) {
+        // 送到了才谈得上回信；纸条没有回信
+        if (isNote(l) || l.status === 'draft' || deliveryState(l) !== 'delivered') return '';
+        const r = replyInfo(this.scopedArchive(), l);
+        const auto = r.state === 'yes' ? '↩ 已收到回信' : r.state === 'none' ? '— 不用回信' : '⏳ 等回信';
+        const opts = [['', `${auto}（自动）`], ['yes', '↩ 已收到回信'], ['no', '⏳ 等回信'], ['none', '— 不用回信']];
+        const cls = (l.replied || r.state) === 'no' ? 'q-wait' : '';
+        return `<select class="epi-q epi-q-rp ${cls}" data-act="q-rp" data-id="${esc(l.id)}" title="有没有收到回信（自动 = 按档案里的信推算）">${opts.map(([k, v]) => `<option value="${k}" ${k === (l.replied || '') ? 'selected' : ''}>${v}</option>`).join('')}</select>`;
+    }
+
+    // ---------- 导出 ----------
+    exportOpts() {
+        const e = this.hooks.getSettings().export || {};
+        return { format: e.format === 'txt' ? 'txt' : 'md', meta: e.meta !== false, memories: !!e.memories, story: !!e.story };
+    }
+    setExportOpt(k, v) {
+        const s = this.hooks.getSettings();
+        s.export = { ...(s.export || {}), [k]: v };
+        this.hooks.saveSettings();
+    }
+
+    exportPanelHtml(letters) {
+        const o = this.exportOpts();
+        const nSel = this.selectMode ? (this.selected?.size || 0) : 0;
+        const range = this.exportRange === 'sel' && nSel ? 'sel' : 'view';
+        return `<div class="epi-inline epi-export">
+            <div class="epi-row"><span>导出哪些：</span>
+                <label class="checkbox_label"><input type="radio" name="epi-exp-range" data-exp="range" value="view" ${range === 'view' ? 'checked' : ''}> 列表里现在显示的（${letters.length} 封）</label>
+                ${this.selectMode ? `<label class="checkbox_label"><input type="radio" name="epi-exp-range" data-exp="range" value="sel" ${range === 'sel' ? 'checked' : ''}> 勾选的（<span data-role="exp-sel-n">${nSel}</span> 封）</label>` : '<span class="epi-muted">（想挑几封：先点「☑ 批量选择」勾上）</span>'}
+            </div>
+            <div class="epi-row"><span>格式：</span>
+                <label class="checkbox_label"><input type="radio" name="epi-exp-fmt" data-exp="format" value="md" ${o.format === 'md' ? 'checked' : ''}> Markdown（.md，保留加粗、划掉这些格式）</label>
+                <label class="checkbox_label"><input type="radio" name="epi-exp-fmt" data-exp="format" value="txt" ${o.format === 'txt' ? 'checked' : ''}> 纯文本（.txt）</label>
+            </div>
+            <div class="epi-row"><span>附上：</span>
+                <label class="checkbox_label"><input type="checkbox" data-exp="meta" ${o.meta ? 'checked' : ''}> 信头信息（写信人、日期、暗号、篇幅……）</label>
+                <label class="checkbox_label"><input type="checkbox" data-exp="memories" ${o.memories ? 'checked' : ''}> 读后记忆</label>
+                <label class="checkbox_label"><input type="checkbox" data-exp="story" ${o.story ? 'checked' : ''}> 经过（寄出、收到、读了）</label>
+            </div>
+            <div class="epi-inline-actions"><span class="epi-muted">按日期排好，放进一个文件。</span><button class="menu_button" data-act="export-open">取消</button><button class="menu_button epi-primary" data-act="export-run">⬇ 导出</button></div>
+        </div>`;
+    }
+
+    // 把文字存成文件下载下来
+    download(name, text, format) {
+        const blob = new Blob([format === 'txt' ? `\ufeff${text}` : text], { type: format === 'txt' ? 'text/plain;charset=utf-8' : 'text/markdown;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+    }
+
+    exportLettersTo(letters, format, base) {
+        if (!letters.length) { toastr?.info('没有要导出的信'); return; }
+        const o = this.exportOpts();
+        const s = this.hooks.getSettings();
+        const text = exportLetters(letters, format, { title: base, meta: o.meta, memories: o.memories, story: o.story, pagesOpts: { capZh: s.pageCapZh, capLat: s.pageCapLat } });
+        const name = exportFileName(letters.length === 1 ? `${letters[0].code || ''}_${letters[0].author || ''}_${(letters[0].recipients || []).join('、')}` : base, format);
+        this.download(name, text, format);
+        toastr?.success(`已导出 ${letters.length} 封 → ${name}`);
+    }
+
     // ================= 写信页（文档式） =================
+
+    // 新信的暗号：接着这两个人上一次用的那一套（【电学4】→【电学5】），没往来过就【信N】/【条N】
+    autoCodeFor(d) {
+        const recipients = Array.isArray(d.recipients) ? d.recipients : parseNames(d.recipients);
+        return nextCode(this.archive, this.hooks.getScope?.()?.key ?? null, d.kind, { author: String(d.author || '').trim(), recipients });
+    }
+
+    // 这两人上一封信放在哪个文件夹（没有就 ''）
+    autoFolderFor(d) {
+        const recipients = Array.isArray(d.recipients) ? d.recipients : parseNames(d.recipients);
+        return pairFolder(this.archive, this.hooks.getScope?.()?.key ?? null, d.kind, { author: String(d.author || '').trim(), recipients });
+    }
+
+    // 新信放进哪个文件夹：同一写信人写给同一收信人的上一封在哪儿就放哪儿；否则用 base（比如正在看的文件夹）
+    setAutoFolder(d, base = '') {
+        this.baseFolder = base || '';
+        d.folder = this.autoFolderFor(d) || this.baseFolder;
+        this.autoFolder = d.folder;
+    }
+
+    // 改了写信人 / 收信人：文件夹还是自动选的（你没自己改过），就跟着换
+    refreshAutoFolder() {
+        const d = this.draft;
+        if (!d || !this.draftIsNew || this.autoFolder == null || (d.folder || '') !== this.autoFolder) return;
+        const next = this.autoFolderFor(d) || this.baseFolder || '';
+        if (next === d.folder) return;
+        d.folder = this.autoFolder = next;
+        const sel = this.body.querySelector('select[data-f="folder"]');
+        if (sel) sel.innerHTML = this.folderOptions(next);
+    }
+
+    // 改了写信人 / 收信人：暗号还是自动编的（你没自己改过），就跟着换
+    refreshAutoCode() {
+        this.refreshAutoFolder();
+        const d = this.draft;
+        if (!d || !this.draftIsNew || !this.autoCode || d.code !== this.autoCode) return;
+        const next = this.autoCodeFor(d);
+        if (next === d.code) return;
+        d.code = this.autoCode = next;
+        const inp = this.body.querySelector('.epi-code-input');
+        if (inp) inp.value = next;
+    }
 
     startEdit(id, opts = {}) {
         this.boundLook = '';
@@ -783,7 +905,6 @@ export class UI {
                 author: opts.author ?? (this.hooks.getUserName() || ''),
                 recipients: opts.recipients ?? [],
                 writtenAt: this.expert ? (this.hooks.getStoryDate() || '') : '',
-                code: nextCode(this.archive, this.hooks.getScope?.()?.key ?? null, opts.kind),
                 folder: opts.folder ?? (this.folder || ''),
                 kind: opts.kind === 'note' ? 'note' : 'letter',
                 ...(this.hooks.scopeFields?.() || {}),
@@ -792,6 +913,9 @@ export class UI {
             const g = guessHeadFromThread(this.archive, this.draft.author, this.draft.recipients[0]);
             for (const k of ['placeFrom', 'placeTo', 'language']) if (g[k]) this.draft[k] = g[k];
             this.applyAuthorHand(this.draft);
+            this.draft.code = this.autoCode = this.autoCodeFor(this.draft);
+            // 选择页里自己挑过文件夹就用挑的；否则跟这两人上一封信放一起
+            if (opts.folderPicked) { this.autoFolder = null; } else this.setAutoFolder(this.draft, opts.folder ?? (this.folder || ''));
             this.draftIsNew = true;
         }
         // 信头：哪些是自动填的（AI 可以覆盖），哪些是用户自己改过的（不动）
@@ -934,8 +1058,11 @@ export class UI {
             language: o.language,
             appearance: { ...o.appearance },
             inReplyTo: o.id,
+            ...(this.hooks.scopeFields?.() || {}),
         }, '');
         this.applyAuthorHand(this.draft);
+        this.draft.code = this.autoCode = this.autoCodeFor(this.draft); // 回信也接着两人之前那一套暗号
+        this.setAutoFolder(this.draft, o.folder || ''); // 跟上一封放一起（没有就放原信那个文件夹）
         this.fontTouched = false;
         this.draftIsNew = true;
         this.draftDirty = false;
@@ -1133,6 +1260,10 @@ export class UI {
             <div class="epi-docstatus">
                 <span>${esc(STATUSES[d.status])}${d.delivery?.status === 'transit' ? `（在途，${esc(this.etaText(d))}）` : ''}</span>
                 <span data-role="count">${this.countHtml(d)}</span>
+                <label class="epi-sheet" title="纸有多大：一面能写多少字跟着变。A4、八开这些按纸的实际尺寸和字号估；稿纸这种按格数算的，选“自定义”，直接填一面多少字">纸
+                    <select data-f="appearance.sheet">${Object.entries(SHEETS).map(([k, v]) => `<option value="${k}" ${k === (d.appearance.sheet || '') ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>
+                    ${d.appearance.sheet === 'custom' ? `<input type="number" min="1" step="10" data-f="appearance.sheetCap" value="${d.appearance.sheetCap || ''}" placeholder="400"> 字一面` : ''}
+                </label>
                 <label class="epi-duplex" title="正反面都写：两面算一张纸"><input type="checkbox" data-f="appearance.duplex" ${d.appearance.duplex ? 'checked' : ''}> 正反面</label>
                 ${ex ? `<span>${esc(d.id)}</span><span>${d.segments.length} 段</span>` : ''}
                 <span data-role="dirty" class="epi-dirty">${this.draftDirty ? '● 未保存' : ''}</span>
@@ -1230,7 +1361,9 @@ export class UI {
         const cs = getComputedStyle(paper);
         const padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
         const NOTE_RATIO = { scrap: 0.45, sticky: 0.95, card: 0.62, folded: 0.8, grid: 0.75 };
-        const ratio = isNote(this.draft) ? (NOTE_RATIO[this.draft.appearance?.noteStyle === 'custom' ? this.draft.appearance?.noteBase : this.draft.appearance?.noteStyle] || 0.5) : paper.classList.contains('orient-landscape') ? 0.707 : 1.414;
+        const sh = SHEETS[this.draft?.appearance?.sheet];
+        const sheetRatio = sh?.w ? (paper.classList.contains('orient-landscape') ? sh.w / sh.h : sh.h / sh.w) : 0;
+        const ratio = !isNote(this.draft) && sheetRatio ? sheetRatio : isNote(this.draft) ? (NOTE_RATIO[this.draft.appearance?.noteStyle === 'custom' ? this.draft.appearance?.noteBase : this.draft.appearance?.noteStyle] || 0.5) : paper.classList.contains('orient-landscape') ? 0.707 : 1.414;
         const minH = Math.max(isNote(this.draft) ? 120 : 260, paper.clientWidth * ratio - padV);
         // 量高度时会先把信纸缩回去，外面的滚动条会被顶回顶上 —— 先记住滚到哪了，量完放回去
         const scrollers = [];
@@ -1290,7 +1423,7 @@ export class UI {
         if (this.draftIsNew) {
             letter = createLetter(this.archive, { ...d, id: undefined });
         } else {
-            if (!d.code) d.code = nextCode(this.archive, d.scope || '', d.kind);
+            if (!d.code) d.code = nextCode(this.archive, d.scope || '', d.kind, { author: d.author, recipients: d.recipients });
             // 你在写的时候，后台 AI 刚写好了简介：别用草稿里的旧简介盖掉它
             const stored = this.archive.letters[d.id];
             if (stored?.blurbAuto && stored.blurb && (!d.blurb || d.blurbAuto) && stored.blurbHash && stored.blurbHash !== (d.blurbHash || '')) Object.assign(d, { blurb: stored.blurb, blurbAuto: true, blurbHash: stored.blurbHash });
@@ -1861,7 +1994,10 @@ ${list}`;
                 inReplyTo: l.id,
                 aiDraft: true,
                 body,
+                ...(this.hooks.scopeFields?.() || {}),
             }, '');
+            this.draft.code = this.autoCode = this.autoCodeFor(this.draft); // 接着两人之间那一套：你写的是【电学5】，这封回信就是【电学6】
+            this.setAutoFolder(this.draft, l.folder || '');
             resegment(this.draft);
             this.draftIsNew = true;
             this.draftDirty = true;
@@ -2819,6 +2955,7 @@ ${list}`;
                 <label>写信时的字号<select class="text_pole" data-s="editZoom">${[0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.3].map(z => `<option value="${z}" ${Math.abs(this.editZoom() - z) < 0.01 ? 'selected' : ''}>${Math.round(z * 100)}%${z === 0.9 ? '（默认）' : ''}</option>`).join('')}</select></label>
                 <label>模式<select class="text_pole" data-s="mode"><option value="simple" ${s.mode === 'simple' ? 'selected' : ''}>简单：存档信件 + 暗号</option><option value="expert" ${s.mode === 'expert' ? 'selected' : ''}>高级：寄送、转交、知情过滤、自动注入，以及段落、流转、注入预览</option></select></label>
                 ${chk('fab', '屏幕上的悬浮按钮（点一下打开书信簿，按住可以拖到别处）')}
+                ${chk('autoBlurb', '保存时自动让 AI 写一句话简介', '默认关。关着的时候简介空着就按“谁哪天写给谁的信”称呼；想要 AI 写，在信头点「✨ AI 概括」。')}
                 ${chk('pageBreaks', '阅读页里分页：在换页的地方画一道线，写着“第 1 张 · 背面”', '关掉以后正文连着显示，不画分页线；写信页下面的字数和张数照常显示。')}
                 <div class="epi-row epi-pagecap" title="写信页下面显示“几张信纸”、阅读页画分页线时，一面大约能写多少。空着就按字号、横竖版自动估（中文约 300 字、外文约 220 词）。">
                     <span>一面信纸大约写</span>
@@ -2941,11 +3078,19 @@ ${list}`;
             <details class="epi-sec-card" data-sec="set-archive" ${this.secOpen('set-archive')}>
                 <summary><h4>💾 档案与备份</h4><span class="epi-sec-sum">${esc(this.secSummary('archive'))}</span></summary>
                 <p class="epi-muted">${esc(this.store.statusText())}</p>
+                <h5>一键备份到电脑</h5>
                 <div class="epi-row">
-                    <button class="menu_button" data-act="export">导出档案</button>
-                    <button class="menu_button" data-act="import-file">导入档案</button>
-                    <input type="file" id="epi-import-file" accept=".json,application/json" hidden>
+                    <button class="menu_button" data-act="bk-all" title="全部角色卡的信件、纸条、读后记忆，加上书信簿的所有设置，存成一个文件">📦 备份全部（信件 + 设置）</button>
+                    <button class="menu_button" data-act="bk-archive" title="只要信件档案（全部角色卡）">只备份信件</button>
+                    <button class="menu_button" data-act="bk-settings" title="只要设置：外观偏好、纸条叫法、自己存的纸条样子、AI 接口、记忆规则……">只备份设置</button>
                 </div>
+                <label class="checkbox_label" title="自定义 API 的密钥。备份文件要发给别人的话别勾。"><input type="checkbox" id="epi-bk-key" ${this.bkKey ? 'checked' : ''}> 设置备份里带上 API 密钥</label>
+                <div class="epi-row">
+                    <button class="menu_button" data-act="import-file">📂 从备份文件恢复…</button>
+                    <input type="file" id="epi-import-file" accept=".json,application/json" hidden>
+                    <span class="epi-muted">选了文件先看里面有什么，再决定恢复哪几样。以前“导出档案”的文件也能读。</span>
+                </div>
+                ${this.restorePanelHtml()}
                 <h5>自动备份</h5>
                 <label>每天第一次打开酒馆时备份一份，保留最近<select class="text_pole" data-s="backup.keep">
                     ${[[0, '不自动备份'], [3, '3 份'], [7, '7 份（默认）'], [14, '14 份'], [30, '30 份']].map(([v, t]) => `<option value="${v}" ${Number(s.backup?.keep ?? 7) === v ? 'selected' : ''}>${t}</option>`).join('')}
@@ -2954,6 +3099,31 @@ ${list}`;
                 ${this.backupListHtml()}
             </details>
             </div>`;
+    }
+
+    // 选了备份文件以后：就地显示里面有什么、勾选要恢复的
+    restorePanelHtml() {
+        const r = this.restorePending;
+        const undo = this.hooks.canUndoSettings?.() ? '<div class="epi-row"><button class="menu_button epi-mini" data-act="bk-undo-settings">↩ 撤销刚才恢复的设置</button></div>' : '';
+        if (!r) return undo;
+        const when = r.exportedAt ? new Date(r.exportedAt).toLocaleString() : '';
+        const cur = Object.values(this.store.archive.letters || {}).filter(l => l.status !== 'draft').length;
+        return `<div class="epi-restore">
+            <div><b>${esc(r.fileName || '备份文件')}</b>${when ? ` <span class="epi-muted">· ${esc(when)} 备份${r.version ? ` · v${esc(r.version)}` : ''}</span>` : ''}</div>
+            ${r.archive ? `<label class="checkbox_label"><input type="checkbox" id="epi-rs-archive" checked> <span>恢复信件：${r.letters} 封（会<b>替换</b>现在的全部信件，现在有 ${cur} 封；替换前会自动存一份“恢复前的快照”，在下面的备份列表里能找回）</span></label>` : '<div class="epi-muted">这个文件里没有信件。</div>'}
+            ${r.settings ? `<label class="checkbox_label"><input type="checkbox" id="epi-rs-settings" checked> <span>恢复设置${r.hasKey ? '（带着 API 密钥）' : '（没带 API 密钥，会保留你现在填的）'}</span></label>` : '<div class="epi-muted">这个文件里没有设置。</div>'}
+            <div class="epi-row">
+                <button class="menu_button" data-act="bk-restore">恢复</button>
+                <button class="menu_button" data-act="bk-cancel">取消</button>
+            </div>
+        </div>${undo}`;
+    }
+
+    showRestore(pack) {
+        if (!pack) return;
+        this.restorePending = pack;
+        this.openSections.add('set-archive');
+        if (this.tab !== 'settings') this.show('settings'); else this.rerenderKeepScroll();
     }
 
     backupListHtml() {
@@ -3142,6 +3312,8 @@ ${list}`;
                         <button class="menu_button epi-primary" data-act="reader-close">继续写</button>` : `
                         ${l.code ? `<button class="menu_button epi-code" data-act="copy-code" data-code="${esc(l.code)}" title="在聊天里写上这个暗号，那一轮 AI 就会读到这封信。点一下复制">暗号 ${esc(l.code)}</button>` : ''}
                         <button class="menu_button" data-act="copy-text" data-id="${esc(l.id)}" title="把信的正文复制下来（不带加粗、划掉这些记号）">📋 复制全文</button>
+                        <button class="menu_button" data-act="export-one" data-id="${esc(l.id)}" data-format="md" title="导出成 Markdown 文件（.md，保留格式）。附带哪些信息跟信件列表里「⬇ 导出」的勾选一样">⬇ .md</button>
+                        <button class="menu_button" data-act="export-one" data-id="${esc(l.id)}" data-format="txt" title="导出成纯文本文件（.txt）">⬇ .txt</button>
                         <button class="menu_button" data-act="user-reply" data-id="${esc(l.id)}" title="以 ${esc(recipient || '收件人')} 的身份写回信">✎ 回复这封信</button>
                         ${recipient ? `<button class="menu_button" data-act="reply-open-for" data-id="${esc(l.id)}">↩ 让 ${esc(recipient)} 回信</button>` : ''}
                         ${scriptLang(l.language) === 'lat' ? `<button class="menu_button" data-act="reader-translate" data-id="${esc(l.id)}" title="用 AI 翻译成中文看（只是给你看，不改原信）">🌐 中文译文</button>` : ''}
@@ -3508,15 +3680,14 @@ ${list}`;
             }
             case 'nl-pair':
                 this.nlSync();
-                this.lastNew = { author: el.dataset.a, recipients: parseNames(el.dataset.r), folder: this.nl.folder, kind: this.nl.kind };
-                this.nl = null;
-                this.startEdit(null, this.lastNew);
+                this.lastNew = { author: el.dataset.a, recipients: parseNames(el.dataset.r), folder: this.nl.folderTouched ? this.nl.folder : this.nl.baseFolder, kind: this.nl.kind };
+                { const picked = !!this.nl.folderTouched; this.nl = null; this.startEdit(null, { ...this.lastNew, folderPicked: picked }); }
                 break;
             case 'nl-go': {
                 this.nlSync();
                 if (!this.nl.author) { toastr?.info('选一下以谁的身份写'); break; }
                 this.lastNew = { ...this.nl };
-                const o = { ...this.nl };
+                const o = { ...this.nl, folderPicked: !!this.nl.folderTouched, folder: this.nl.folderTouched ? this.nl.folder : this.nl.baseFolder };
                 this.nl = null;
                 this.startEdit(null, o);
                 break;
@@ -3531,7 +3702,7 @@ ${list}`;
                 this.commitRaw(d);
                 d.kind = el.dataset.kind === 'note' ? 'note' : 'letter';
                 // 还没存过、暗号是自动编的：换成对应的编号（【信N】↔【条N】）
-                if (this.draftIsNew && /^【[信条]\d+】$/.test(d.code || '')) d.code = nextCode(this.archive, this.hooks.getScope?.()?.key ?? null, d.kind);
+                if (this.draftIsNew && d.code === this.autoCode) d.code = this.autoCode = this.autoCodeFor(d);
                 this.setDirty();
                 this.rerenderKeepScroll();
                 this.fitPage();
@@ -3844,6 +4015,17 @@ ${list}`;
                 toastr?.success('保存了');
                 break;
             }
+            case 'export-open': this.exportOpen = !this.exportOpen; this.rerenderKeepScroll(); break;
+            case 'export-run': {
+                const o = this.exportOpts();
+                const range = this.root.querySelector('[data-exp="range"]:checked')?.value || 'view';
+                const ids = range === 'sel' ? [...(this.selected || [])] : (this.listIds || []);
+                if (range === 'sel' && !ids.length) { toastr?.info('还没有勾选信'); break; }
+                const scope = this.hooks.getScope?.()?.name || '';
+                this.exportLettersTo(ids.map(i => this.archive.letters[i]).filter(Boolean), o.format, `书信簿${scope ? `_${scope}` : ''}_${new Date().toISOString().slice(0, 10)}`);
+                break;
+            }
+            case 'export-one': { const l = this.archive.letters[id]; if (l) this.exportLettersTo([l], el.dataset.format === 'txt' ? 'txt' : 'md', l.code || l.author || '书信'); break; }
             case 'copy-text': this.copyLetterText(id ? this.archive.letters[id] : this.draft); break;
             case 'mem-fact-del': await this.hooks.saveMemoryMeta(id, parseInt(el.dataset.mi, 10), { dropFact: parseInt(el.dataset.i, 10) }); this.rerenderHere(id); break;
             case 'copy-code': this.copyCode(el.closest('.epi-lh-code') ? normalizeCode(this.draft?.code) : el.dataset.code); break;
@@ -3913,6 +4095,36 @@ ${list}`;
                 });
                 break;
             case 'export': this.hooks.exportArchive(); break;
+            case 'bk-all': case 'bk-archive': case 'bk-settings': {
+                const what = act.slice(3);
+                const key = !!this.root.querySelector('#epi-bk-key')?.checked;
+                try {
+                    const pack = this.hooks.exportBackup(what, { includeKey: key });
+                    const n = pack.archive ? Object.values(pack.archive.letters || {}).filter(l => l.status !== 'draft').length : 0;
+                    toastr?.success(what === 'settings' ? '设置已存到下载文件夹' : `${n} 封信${what === 'all' ? '和设置' : ''}已存到下载文件夹`, '已备份');
+                } catch (err) { toastr?.error(String(err?.message || err), '备份失败'); }
+                break;
+            }
+            case 'bk-cancel': this.restorePending = null; this.rerenderKeepScroll(); break;
+            case 'bk-restore': {
+                const r = this.restorePending;
+                if (!r) break;
+                const archive = !!this.root.querySelector('#epi-rs-archive')?.checked;
+                const sets = !!this.root.querySelector('#epi-rs-settings')?.checked;
+                if (!archive && !sets) { toastr?.info('至少勾一样'); break; }
+                el.disabled = true; el.textContent = '恢复中…';
+                try {
+                    const done = await this.hooks.applyBackup(r, { archive, settings: sets });
+                    this.restorePending = null;
+                    toastr?.success(`已恢复：${done.join('、')}`);
+                } catch (err) { toastr?.error(String(err?.message || err), '恢复失败'); }
+                this.hooks.loadBackups?.().finally(() => this.rerenderKeepScroll());
+                break;
+            }
+            case 'bk-undo-settings':
+                if (this.hooks.undoSettingsRestore?.()) toastr?.success('设置已改回恢复之前的样子');
+                this.rerenderKeepScroll();
+                break;
             case 'backup-now':
                 try { const n = await this.hooks.backupNow(); toastr?.success(`已备份：${n}`); } catch (err) { toastr?.error(String(err?.message || err), '备份失败'); }
                 this.rerenderKeepScroll();
@@ -4133,6 +4345,7 @@ ${list}`;
         }
         if (t.id === 'epi-nl-folder' && e.type === 'change') {
             this.nlSync();
+            if (this.nl) this.nl.folderTouched = true;
             if (t.value === '__new__') { const f = this.askFolderName(); if (this.nl) this.nl.folder = f || this.nl.folder || ''; this.store.save(); this.show('edit'); }
             return;
         }
@@ -4141,6 +4354,8 @@ ${list}`;
             if (t.checked) this.selected.add(t.dataset.id); else this.selected.delete(t.dataset.id);
             const c = this.root.querySelector('.epi-bulkbar b');
             if (c) c.textContent = String(this.selected.size);
+            const x = this.root.querySelector('[data-role="exp-sel-n"]');
+            if (x) x.textContent = String(this.selected.size);
             return;
         }
         if (t.name === 'epi-st-mode' || /^epi-st-(after|recent|from|to)$/.test(t.id || '')) {
@@ -4153,6 +4368,23 @@ ${list}`;
         if (act === 'list-sort') { if (e.type === 'change') { this.hooks.getSettings().listSort = t.value; this.hooks.saveSettings(); this.rerenderKeepScroll(); } return; }
         if (act === 'tl-folder') { if (e.type === 'change') { this.tlFolder = t.value === '*' ? null : t.value; this.show('timeline'); } return; }
         if (act === 'tl-pair') { if (e.type === 'change') { this.tlPair = t.value; this.show('timeline'); } return; }
+        if (act === 'q-dv' || act === 'q-rp') {
+            if (e.type !== 'change') return;
+            const id = t.dataset.id;
+            const l = this.archive.letters[id];
+            if (!l) return;
+            const done = act === 'q-dv'
+                ? this.hooks.saveDelivery(id, { state: t.value, via: l.delivery?.via || '', reader: l.delivery?.reader || '' })
+                : Promise.resolve(this.hooks.saveReplied?.(id, t.value));
+            Promise.resolve(done).then(() => this.rerenderKeepScroll());
+            return;
+        }
+        if (t.dataset.exp) {
+            if (e.type !== 'change') return;
+            if (t.dataset.exp === 'range') { this.exportRange = t.value; return; }
+            this.setExportOpt(t.dataset.exp, t.type === 'checkbox' ? t.checked : t.value);
+            return;
+        }
         if (act === 'mem-weight') {
             if (e.type === 'change') { this.hooks.saveMemoryMeta(t.dataset.id, parseInt(t.dataset.mi, 10), { weight: t.value }).then(() => this.rerenderHere(t.dataset.id)); }
             return;
@@ -4199,6 +4431,7 @@ ${list}`;
             if (e.type === 'input') this.hooks.setStoryDate(t.value.trim());
             return;
         }
+        if (t.id === 'epi-bk-key') { this.bkKey = t.checked; return; }
         if (t.id === 'epi-import-file') {
             if (e.type === 'change') this.hooks.importFile(t);
             return;
@@ -4254,6 +4487,7 @@ ${list}`;
             return;
         }
         if (t.dataset.f && d) {
+            if ((t.dataset.f === 'author' || t.dataset.f === 'recipients') && e.type === 'change') setTimeout(() => this.refreshAutoCode(), 0);
             if (HEAD_FIELDS.includes(t.dataset.f)) {
                 this.lhAuto?.delete(t.dataset.f);
                 this.lhAI?.delete(t.dataset.f);
@@ -4285,7 +4519,9 @@ ${list}`;
                 }
             }
             if (t.dataset.f === 'body') { this.fitPage(); this.keepCaretVisible(); this.updateCount(); }
-            if (t.dataset.f === 'appearance.duplex' || t.dataset.f === 'appearance.size' || t.dataset.f === 'appearance.orientation' || t.dataset.f === 'appearance.noteStyle') this.updateCount();
+            if (['appearance.duplex', 'appearance.size', 'appearance.orientation', 'appearance.noteStyle', 'appearance.sheet', 'appearance.sheetCap'].includes(t.dataset.f)) this.updateCount();
+            // 换了纸张：自定义要多一个填字数的格子；纸的长宽比也跟着变
+            if (t.dataset.f === 'appearance.sheet' && e.type === 'change') { this.commitRaw(d); this.rerenderKeepScroll(); this.fitPage(); }
             if (t.dataset.f === 'blurb') { d.blurbAuto = false; t.classList.remove('epi-lh-ai'); }
             if (t.dataset.f === 'author' && e.type === 'change' && !this.fontTouched) {
                 const before = d.appearance.font;

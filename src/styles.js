@@ -5,7 +5,7 @@
 
 import { findPerson } from './model.js';
 
-export const STYLE_KEYS = ['paper', 'ink', 'font', 'orientation', 'envelope', 'wax', 'wear', 'wobble', 'flourish', 'inkColor', 'mode', 'custom', 'customColor'];
+export const STYLE_KEYS = ['paper', 'ink', 'font', 'orientation', 'sheet', 'sheetCap', 'envelope', 'wax', 'wear', 'wobble', 'flourish', 'inkColor', 'mode', 'custom', 'customColor'];
 
 export const STYLE_PACKS = [
     {

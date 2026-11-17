@@ -1759,3 +1759,30 @@ details.epi-sec-card.epi-sec-off > :not(summary):not(.epi-off-note) { opacity: .
 .epi-token-stats { font-size: .85em; line-height: 1.6; margin: 4px 0 6px 24px; }
 .epi-trim { flex-wrap: wrap; align-items: center; gap: 6px; margin-left: 24px; }
 #epi-root .epi-trim input { width: 64px !important; }
+
+/* 纸张大小 */
+#epi-root .epi-sheet { display: inline-flex !important; flex-direction: row !important; align-items: center; gap: 4px; white-space: nowrap; width: auto !important; }
+#epi-root .epi-sheet select { width: auto !important; padding: 1px 4px; font-size: inherit; }
+#epi-root .epi-sheet input[type="number"] { width: 64px !important; padding: 1px 4px; }
+
+/* 导出 */
+.epi-export .epi-row { flex-wrap: wrap; gap: 4px 14px; align-items: center; }
+.epi-export .checkbox_label { margin: 0; }
+
+/* 信件列表里直接改的两个小下拉：长得像标签 */
+#epi-root select.epi-q {
+    width: auto !important; min-width: 0; max-width: 16em;
+    margin: 0; padding: 0 1.4em 0 .6em; height: 1.75em; line-height: 1.6;
+    font-size: .8em; border-radius: 10px; cursor: pointer;
+    background-color: transparent; color: inherit;
+    border: 1px solid var(--epi-border, rgba(128,128,128,.4));
+}
+#epi-root select.epi-q:hover { border-color: rgba(214, 170, 90, .8); }
+#epi-root select.epi-q.q-transit, #epi-root select.epi-q.q-atVia { border-color: rgba(120, 160, 220, .7); }
+#epi-root select.epi-q.q-lost { border-color: rgba(200, 110, 100, .7); }
+#epi-root select.epi-q.q-wait { border-color: rgba(214, 170, 90, .7); }
+#epi-root select.epi-q option { color: initial; }
+
+/* 从备份恢复：就地显示的小面板 */
+.epi-restore { border: 1px solid var(--SmartThemeBorderColor, #8884); border-radius: 8px; padding: 8px 10px; margin: 6px 0; display: flex; flex-direction: column; gap: 6px; background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #0000) 60%, transparent); }
+.epi-restore .checkbox_label { align-items: flex-start; }

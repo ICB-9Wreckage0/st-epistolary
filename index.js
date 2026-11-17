@@ -5,6 +5,7 @@
 import { Store } from './src/store.js';
 import { UI } from './src/ui.js';
 import { Fab } from './src/fab.js';
+import { buildBackup, parseBackup, mergeSettings, backupFileName } from './src/backup.js';
 import { trimOldLetters } from './src/tokens.js';
 import { retrieve, DEFAULT_RETRIEVAL } from './src/retrieval.js';
 import { sameName, normalizeDate, findPerson, lettersByCode, unknownCodes, ensureCodes, createLetter, aiText, bodyHash, isNote, noteWord, normalizeLetter, nextCode } from './src/model.js';
@@ -48,6 +49,7 @@ const DEFAULT_SETTINGS = {
     animations: true,        // 寄信封缄、收信拆信动画
     fab: true,               // 屏幕上的悬浮按钮
     myNoteStyles: [],        // 存下来的纸条样子 [{ id, desc, word, base }]
+    autoBlurb: false,        // 保存时让 AI 自动写一句话简介（默认关；手动点“AI 写一句”照常能用）
     pageBreaks: true,        // 阅读页画分页线（第 1 张 · 背面……）
     trimOldLetters: 6,       // 省 token：比最近这么多层更早的消息里的信，发给 AI 时只留一句话（0 = 不省）
     pageCapZh: 0,            // 一面信纸大约写多少个中文字（0 = 自动）
@@ -523,7 +525,8 @@ function ai(system, prompt, meta) {
 // ---------- 一句话简介：剧情里怎么称呼这封信 ----------
 // 没写简介的信，让 AI 概括一句；AI 写的简介在正文改了以后会重写，你自己写的不动
 const blurbBusy = new Set();
-async function autoBlurb(letterId, { force = false } = {}) {
+async function autoBlurb(letterId, { force = false, manual = false } = {}) {
+    if (!force && !manual && !settings().autoBlurb) return ''; // 设置里没开“自动写简介”
     const l = store.archive.letters[letterId];
     if (!l || l.shell || !String(l.body || '').trim() || !aiOn() || blurbBusy.has(letterId)) return '';
     if (!force && l.blurb && (!l.blurbAuto || l.blurbHash === bodyHash(l))) return '';
@@ -1187,7 +1190,7 @@ async function fillOld({ blurbs = true, memories = true, renumber = false } = {}
     let done = 0;
     if (blurbs && aiOn()) for (const l of p.blurbs) {
         onStep(++done, total, `简介：${l.author} → ${l.recipients.join('、')}`);
-        if (await autoBlurb(l.id)) out.blurbs++; else out.failed++;
+        if (await autoBlurb(l.id, { manual: true })) out.blurbs++; else out.failed++;
     }
     if (memories && aiOn()) for (const l of p.memories) {
         onStep(++done, total, `记忆：${l.author} → ${l.recipients.join('、')}`);
@@ -2556,28 +2559,73 @@ function settingsHtml() {
     </div>`;
 }
 
-function exportArchive() {
-    const blob = new Blob([store.exportJson()], { type: 'application/json' });
+function downloadText(name, text) {
+    const blob = new Blob([text], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `书信簿备份_${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = name;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-async function importFile(input) {
+// 一键备份：what = 'all'（信件 + 设置）| 'archive'（只要信件）| 'settings'（只要设置）
+function exportBackup(what = 'all', { includeKey = false } = {}) {
+    const pack = buildBackup({ archive: store.archive, settings: settings(), what, includeKey, version: '0.54.0' });
+    downloadText(backupFileName(what), JSON.stringify(pack, null, 2));
+    return pack;
+}
+const exportArchive = () => exportBackup('archive');
+
+// 读选中的备份文件，先不动任何东西，交给界面问要恢复哪几样
+async function readBackupFile(input) {
     const file = input.files?.[0];
-    if (!file) return;
-    if (!confirm('导入会用这个文件替换当前整个档案（当前档案在本次会话开始时已自动备份）。继续？')) { input.value = ''; return; }
-    try {
-        store.importJson(await file.text());
-        toastr.success('已导入');
-        ui.refresh();
-        ui.renderPostbox();
-    } catch (err) {
-        toastr.error('导入失败：' + (err.message || err));
-    }
     input.value = '';
+    if (!file) return null;
+    return { ...parseBackup(await file.text()), fileName: file.name };
+}
+
+// 恢复：信件先存一份“恢复前的快照”再替换；设置合进去（备份里没带密钥就留着现在的）
+let settingsBeforeRestore = null;
+async function applyBackup(pack, { archive = true, settings: doSettings = true } = {}) {
+    const done = [];
+    if (archive && pack.archive) {
+        try { await store.backupNow({ note: '恢复前的快照' }); } catch (e) { console.warn('[书信簿] 恢复前快照失败', e); }
+        store.importJson(JSON.stringify(pack.archive));
+        ensureCodes(store.archive);
+        await store.saveNow();
+        done.push('信件');
+    }
+    if (doSettings && pack.settings) {
+        settingsBeforeRestore = JSON.parse(JSON.stringify(settings()));
+        ctx().extensionSettings[MODULE] = mergeSettings(settingsBeforeRestore, pack.settings);
+        saveSettings();
+        applyNoteVocab();
+        applyFab();
+        if (settings().onlineFonts) loadCjkFonts();
+        done.push('设置');
+    }
+    ui.refresh();
+    ui.renderPostbox();
+    await syncWorldBook();
+    return done;
+}
+
+// 撤销刚才的设置恢复
+function undoSettingsRestore() {
+    if (!settingsBeforeRestore) return false;
+    ctx().extensionSettings[MODULE] = settingsBeforeRestore;
+    settingsBeforeRestore = null;
+    saveSettings();
+    applyNoteVocab();
+    applyFab();
+    ui.refresh();
+    return true;
+}
+
+// 旧的导入入口：选了文件就交给界面里的恢复面板
+async function importFile(input) {
+    try { ui.showRestore(await readBackupFile(input)); }
+    catch (err) { toastr.error('读不了这个文件：' + (err.message || err)); }
 }
 
 function bindSettings() {
@@ -2738,6 +2786,10 @@ jQuery(async () => {
         deliverNow,
         inferStoryDate,
         exportArchive,
+        exportBackup,
+        applyBackup,
+        undoSettingsRestore,
+        canUndoSettings: () => !!settingsBeforeRestore,
         importFile,
         loadFonts: loadCjkFonts,
         runPreview: runRetrieval,

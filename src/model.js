@@ -22,6 +22,18 @@ export const NOTE_STYLES = {
     grid: { label: '稿纸', desc: '一页印着蓝色横线的稿纸', word: '稿纸' },
     custom: { label: '自定义…', desc: '', word: '纸条' },
 };
+// 纸张大小（毫米，竖着放的宽 × 高）；'' = 默认信纸，custom = 自己填一面写多少字
+export const SHEETS = {
+    '': { label: '信纸（默认）' },
+    a4: { label: 'A4', w: 210, h: 297 },
+    a5: { label: 'A5', w: 148, h: 210 },
+    b5: { label: 'B5', w: 176, h: 250 },
+    k16: { label: '十六开', w: 195, h: 270 },
+    k8: { label: '八开', w: 270, h: 390 },
+    usletter: { label: 'Letter（美式信纸）', w: 216, h: 279 },
+    custom: { label: '自定义：一面写多少字…' },
+};
+
 export const isNote = l => l?.kind === 'note';
 // 称呼这张纸：信 / 纸条 / 便签 / 卡片
 export const noteWord = l => {
@@ -275,6 +287,8 @@ function normalizeAppearance(a = {}) {
         noteWord: String(a.noteWord || '').replace(/[\s【】]/g, '').slice(0, 8),        // 自定义：剧情里叫它什么，如“名片”
         noteBase: NOTE_STYLES[a.noteBase] && a.noteBase !== 'custom' ? a.noteBase : 'card', // 自定义：看起来像哪种纸
         duplex: a.duplex === true || a.duplex === 'true' || a.duplex === 'on', // 正反面都写
+        sheet: SHEETS[a.sheet] ? a.sheet : '',   // 纸张大小（见 SHEETS）
+        sheetCap: Math.max(0, Math.min(20000, Math.round(Number(a.sheetCap) || 0))), // 自定义：一面大约写多少字（外文信按词）
         // 每一项可以是：选好的样式 | follow 空着（跟随文中，不告诉 AI，由剧情决定）| custom 自定义（自己写描述，纸 / 信封 / 火漆 / 墨水还能选颜色）
         mode: cleanMap(a.mode, v => (v === 'follow' || v === 'custom' ? v : null)),
         custom: cleanMap(a.custom, v => String(v || '').trim().slice(0, 200) || null),
@@ -430,8 +444,55 @@ export function normalizeCode(code) {
 
 // 下一个没被用过的暗号：【信1】【信2】……
 // scope：只看同一张角色卡的信（不同角色卡可以各自从【信1】编起）
-export function nextCode(archive, scope = null, kind = 'letter') {
-    const used = new Set(Object.values(archive.letters).filter(l => scope == null || (l.scope || '') === scope).map(l => l.code));
+// 暗号拆成“前缀 + 编号”：【电学4】→ { prefix: '电学', n: 4 }
+export function codeSeries(code) {
+    const m = String(code || '').trim().match(/^【(.*?)(\d+)】$/);
+    return m ? { prefix: m[1], n: Number(m[2]) } : null;
+}
+
+// 这两个人之间（谁写给谁都算）上一封信用的暗号前缀；没有就是 null
+export function pairPrefix(archive, scope = null, kind = 'letter', { author = '', recipients = [] } = {}) {
+    const rs = (recipients || []).map(r => String(r || '').trim()).filter(Boolean);
+    if (!String(author || '').trim() || !rs.length) return null;
+    const same = (a, b) => sameName(archive, a, b);
+    const inPair = l => (same(l.author, author) && (l.recipients || []).some(r => rs.some(x => same(r, x))))
+        || ((l.recipients || []).some(r => same(r, author)) && rs.some(x => same(l.author, x)));
+    const last = Object.values(archive.letters || {})
+        .filter(l => (scope == null || (l.scope || '') === scope) && (l.kind === 'note') === (kind === 'note') && codeSeries(l.code) && inPair(l))
+        .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0];
+    return last ? codeSeries(last.code).prefix : null;
+}
+
+// 同一个写信人写给同一个收信人的上一封信在哪个文件夹：新信也放那儿。
+// 先找同一方向（A 写给 B）；没有的话再看反方向（B 写给 A，比如回信）。同类（信 / 纸条）优先。
+// 返回文件夹名；上一封没放文件夹、或者两人没通过信，返回 ''。
+export function pairFolder(archive, scope = null, kind = 'letter', { author = '', recipients = [] } = {}, { skipId = '' } = {}) {
+    const rs = (recipients || []).map(r => String(r || '').trim()).filter(Boolean);
+    if (!String(author || '').trim() || !rs.length) return '';
+    const same = (a, b) => sameName(archive, a, b);
+    const pool = Object.values(archive.letters || {}).filter(l => l.id !== skipId && (scope == null || (l.scope || '') === scope));
+    const fwd = l => same(l.author, author) && (l.recipients || []).some(r => rs.some(x => same(r, x)));
+    const back = l => (l.recipients || []).some(r => same(r, author)) && rs.some(x => same(l.author, x));
+    const isN = l => (l.kind === 'note') === (kind === 'note');
+    const newest = list => list.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')) || String(b.id).localeCompare(String(a.id), undefined, { numeric: true }))[0];
+    for (const test of [fwd, back]) {
+        const hit = newest(pool.filter(l => test(l) && isN(l))) || newest(pool.filter(test));
+        if (hit) return hit.folder || '';
+    }
+    return '';
+}
+
+// 下一个暗号。给了写信人和收信人（pair）：延续这两个人上一次用的那一套（【电学4】之后是【电学5】）；
+// 没有往来过就用默认的【信N】/【条N】
+export function nextCode(archive, scope = null, kind = 'letter', pair = null) {
+    const inScope = Object.values(archive.letters || {}).filter(l => scope == null || (l.scope || '') === scope);
+    const used = new Set(inScope.map(l => l.code));
+    const own = pair ? pairPrefix(archive, scope, kind, pair) : null;
+    if (own != null) {
+        // 接在这一套里最大的编号后面
+        const max = Math.max(0, ...inScope.map(l => codeSeries(l.code)).filter(c => c && c.prefix === own).map(c => c.n));
+        for (let n = max + 1; ; n++) if (!used.has(`【${own}${n}】`)) return `【${own}${n}】`;
+    }
     const p = codePrefix(kind);
     for (let n = 1; ; n++) if (!used.has(`【${p}${n}】`)) return `【${p}${n}】`;
 }
@@ -464,14 +525,17 @@ export function unknownCodes(archive, text) {
 export function ensureCodes(archive) {
     let changed = false;
     for (const l of Object.values(archive.letters).sort((a, b) => a.id.localeCompare(b.id))) {
-        if (!l.code) { l.code = nextCode(archive, l.scope || '', l.kind); changed = true; }
+        if (!l.code) { l.code = nextCode(archive, l.scope || '', l.kind, { author: l.author, recipients: l.recipients }); changed = true; }
     }
     return changed;
 }
 
 export function createLetter(archive, partial = {}) {
     const id = nextId(archive, 'letter');
-    const letter = normalizeLetter({ ...partial, id, code: partial.code || nextCode(archive, partial.scope ?? null, partial.kind) }, id);
+    const pair = { author: partial.author, recipients: partial.recipients };
+    // 没指定文件夹：跟这两人上一封信放在一起
+    const folder = partial.folder === undefined ? pairFolder(archive, partial.scope ?? null, partial.kind, pair) : partial.folder;
+    const letter = normalizeLetter({ ...partial, folder, id, code: partial.code || nextCode(archive, partial.scope ?? null, partial.kind, pair) }, id);
     resegment(letter);
     archive.letters[id] = letter;
     return letter;

@@ -3,7 +3,7 @@
 // 以及每一面从哪一行开始（阅读页用来画“第 2 张 · 背面”这样的分页线）。
 // 按“行”来排：一行能写几个字、一面能写几行；称呼、署名这种短行也占一整行，段落之间空一行。
 
-import { stripMarks } from './model.js';
+import { stripMarks, SHEETS } from './model.js';
 import { analyze, SIZES } from './render.js';
 
 const CJK = /[㐀-鿿豈-﫿　-〿＀-￯“”‘’…—·]/g;
@@ -74,11 +74,25 @@ export function letterScript(letter) {
     return mainScript(outside.trim() ? outside : letter.body);
 }
 
+// 按纸的实际大小排：中文一个字约 7.5 毫米宽、一行约 10 毫米高；外文一个词约 16 毫米宽、一行约 8.5 毫米；四边留白
+const CELL = { zh: [7.5, 10], lat: [16, 8.5] };
+const MARGIN = [18, 20]; // 左右各 18 毫米，上下各 20 毫米
+function sheetBase(sheet, landscape, script) {
+    let { w, h } = sheet;
+    if (landscape) [w, h] = [h, w];
+    const [cw, ch] = CELL[script];
+    return [Math.floor((w - MARGIN[0] * 2) / cw), Math.floor((h - MARGIN[1] * 2) / ch)];
+}
+
 export function pageLayout(letter, { capZh = 0, capLat = 0 } = {}) {
     const a = letter.appearance || {};
     const script = letterScript(letter);
+    const sheet = SHEETS[a.sheet] || SHEETS[''];
     let base;
-    if (letter.kind === 'note') {
+    if (sheet.w) {
+        // 选了纸张大小（A4、八开……）：按纸的尺寸算，信和纸条都一样
+        base = sheetBase(sheet, a.orientation === 'landscape', script);
+    } else if (letter.kind === 'note') {
         const style = a.noteStyle === 'custom' ? a.noteBase || 'card' : a.noteStyle || 'scrap';
         base = (LAYOUT[style] || LAYOUT.scrap)[script];
     } else {
@@ -89,9 +103,11 @@ export function pageLayout(letter, { capZh = 0, capLat = 0 } = {}) {
     const perLine = Math.max(2, Math.round(base[0] / scale));
     let lines = Math.max(2, Math.round(base[1] / scale));
     // 设置里自己填了“一面大约多少字 / 词”：按它算行数
-    const cap = Number(script === 'zh' ? capZh : capLat) || 0;
+    // 这封信自己填了“一面写多少字”（比如 400 字一张的稿纸）优先；没有再看设置里的通用值（只对默认信纸）
+    const own = a.sheet === 'custom' ? Number(a.sheetCap) || 0 : 0;
+    const cap = own || (!sheet.w ? Number(script === 'zh' ? capZh : capLat) || 0 : 0);
     if (cap > 0) lines = Math.max(1, Math.round(cap / perLine));
-    return { script, perLine, lines, perSide: perLine * lines };
+    return { script, perLine, lines, perSide: perLine * lines, sheet: a.sheet || '', sheetLabel: a.sheet === 'custom' && own ? `${own} ${script === 'zh' ? '字' : '词'}一面的纸` : sheet.w ? sheet.label : '' };
 }
 
 // 排一遍：返回字数、几面、几张，以及每一面从哪一行开始
@@ -148,9 +164,13 @@ export function countText(pg) {
 
 export function pagesText(pg, { note = false } = {}) {
     if (!pg.units) return '';
-    const paper = note ? '张' : '张信纸';
+    // 选了纸张大小就说“张 A4 / 张八开”；自定义字数说“张纸”，括号里写一面约多少字
+    const custom = pg.sheet === 'custom' && pg.sheetLabel;
+    const paper = custom ? '张纸' : pg.sheetLabel ? `张 ${pg.sheetLabel}` : note ? '张' : '张信纸';
+    const notes = custom ? [`一面约 ${pg.perSide} ${pg.unitName}`] : [];
     const count = countText(pg);
-    if (pg.sides <= 1) return `${count} · 一${note ? '张' : '张信纸'}${pg.duplex ? '（只写了正面）' : ''}`;
-    if (pg.duplex) return `${count} · ${pg.sheets} ${paper}，正反面写了 ${pg.sides} 面`;
-    return `${count} · ${pg.sheets} ${paper}（只写正面）`;
+    const tail = extra => { const all = [...notes, ...extra]; return all.length ? `（${all.join('，')}）` : ''; };
+    if (pg.sides <= 1) return `${count} · 一${paper}${tail(pg.duplex ? ['只写了正面'] : [])}`;
+    if (pg.duplex) return `${count} · ${pg.sheets} ${paper}，正反面写了 ${pg.sides} 面${tail([])}`;
+    return `${count} · ${pg.sheets} ${paper}${tail(['只写正面'])}`;
 }

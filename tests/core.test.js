@@ -197,3 +197,20 @@ test('款式绑定给人：新信套上 TA 的款式；款式被删了就只用�
     archive.styles = [];
     assert.equal(lookFor(archive, '甲', { paper: 'cream' }).appearance.paper, 'cream');
 });
+
+test('暗号延续两人之间上一次用的那一套', async () => {
+    const m = await import('../src/model.js');
+    const A = { counters: { letter: 10 }, people: [{ name: '尼古拉·特斯拉', aliases: ['特斯拉'] }], letters: {
+        a: { id: 'a', author: 'User', recipients: ['特斯拉'], code: '【电学3】', createdAt: '1' },
+        b: { id: 'b', author: '尼古拉·特斯拉', recipients: ['User'], code: '【电学4】', createdAt: '2' },
+        c: { id: 'c', author: 'User', recipients: ['爱迪生'], code: '【信1】', createdAt: '3' },
+        n: { id: 'n', kind: 'note', author: 'User', recipients: ['特斯拉'], code: '【条1】', createdAt: '4' },
+    } };
+    assert.equal(m.nextCode(A, null, 'letter', { author: 'User', recipients: ['尼古拉·特斯拉'] }), '【电学5】');
+    assert.equal(m.nextCode(A, null, 'letter', { author: '特斯拉', recipients: ['User'] }), '【电学5】'); // 回信也接着
+    assert.equal(m.nextCode(A, null, 'letter', { author: 'User', recipients: ['居里'] }), '【信2】');  // 没往来过：默认
+    assert.equal(m.nextCode(A, null, 'note', { author: 'User', recipients: ['特斯拉'] }), '【条2】');   // 纸条按纸条那一套
+    const l = m.createLetter(A, { author: '特斯拉', recipients: ['User'] });
+    assert.equal(l.code, '【电学5】');
+    assert.deepEqual(m.codeSeries('【电学12】'), { prefix: '电学', n: 12 });
+});
