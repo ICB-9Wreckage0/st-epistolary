@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { paginate, countUnits, mainScript, sideLabel, pagesText } from '../src/pages.js';
+import { paginate, countUnits, mainScript, sideLabel, pagesText, countText } from '../src/pages.js';
 
 const zh = n => '今'.repeat(n);
 
@@ -12,22 +12,22 @@ test('只算主要语言：中文按字，外文按词', () => {
 });
 
 test('几面、几张：单面 / 正反面', () => {
-    // 竖版中文：一行 20 字、一面 15 行 = 300 字
-    const body = Array.from({ length: 40 }, () => zh(20)).join('\n'); // 40 行 → 3 面
+    // 竖版中文：一行 20 字、一面 20 行 = 400 字
+    const body = Array.from({ length: 50 }, () => zh(20)).join('\n'); // 50 行 → 3 面
     const one = paginate({ body, appearance: {} });
-    assert.equal(one.units, 800);
+    assert.equal(one.units, 1000);
     assert.equal(one.sides, 3);
     assert.equal(one.sheets, 3);
-    assert.deepEqual(one.breaks.map(b => [b.p, b.l, b.side]), [[0, 15, 2], [0, 30, 3]]);
+    assert.deepEqual(one.breaks.map(b => [b.p, b.l, b.side]), [[0, 20, 2], [0, 40, 3]]);
     const two = paginate({ body, appearance: { duplex: true } });
     assert.equal(two.sheets, 2);
     assert.equal(sideLabel(2, true), '第 1 张 · 背面');
     assert.equal(sideLabel(3, true), '第 2 张 · 正面');
-    assert.match(pagesText(two), /800 字 · 2 张信纸，正反面写了 3 面/);
+    assert.match(pagesText(two), /1000 字 · 2 张信纸，正反面写了 3 面/);
     // 字写得大：一面写得少
     assert.ok(paginate({ body, appearance: { size: 'xl' } }).sides > 3);
     // 设置里填了一面 100 字：一行 20 字 → 5 行一面
-    assert.equal(paginate({ body, appearance: {} }, { capZh: 100 }).sides, 8);
+    assert.equal(paginate({ body, appearance: {} }, { capZh: 100 }).sides, 10);
 });
 
 test('短行、空行也占一行；便签很小', () => {
@@ -67,4 +67,22 @@ test('纸张大小：A4、八开按尺寸算；自定义按一面多少字', () 
     // 横放：一行更长、行数更少
     const l = paginate({ body, appearance: { sheet: 'a4', orientation: 'landscape' } });
     assert.ok(l.perLine > a4.perLine && l.lines < a4.lines);
+});
+
+test('外文信：中文译文不占纸；长段落不会整段挪到下一面', () => {
+    const fr = n => Array.from({ length: n }, () => 'mot').join(' ') + '.';
+    const body = Array.from({ length: 20 }, () => `${fr(105)}\n\n${zh(189)}`).join('\n\n');
+    const pg = paginate({ body, language: '法语（中文显示）', appearance: {} });
+    assert.equal(pg.script, 'lat');
+    assert.ok(pg.sides <= 10, `sides ${pg.sides}`); // 2100 词，一面约 264 词
+    assert.match(countText(pg), /^法语 2100 词 · 中文 \d+ 字$/);
+});
+
+test('法文一句、中文译文一句交替：译文不占纸，不因换行多算张数', async () => {
+    const { paginate } = await import('../src/pages.js');
+    const s1 = 'Ma chère Maria, je vous écris ce soir depuis la petite chambre.', z1 = '（我亲爱的玛丽亚，今晚我在那间小房间里给你写信。）';
+    const mk = body => ({ kind: 'letter', language: '法语', body, appearance: {} });
+    const inter = paginate(mk(Array.from({ length: 200 }, () => `${s1}\n${z1}`).join('\n')));
+    const plain = paginate(mk(Array.from({ length: 200 }, () => s1).join(' ')));
+    assert.equal(inter.sheets, plain.sheets);
 });

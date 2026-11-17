@@ -530,6 +530,42 @@ export function ensureCodes(archive) {
     return changed;
 }
 
+// 转交人不能是写信人自己、也不能是收信人 / 读信人（“已送到玛丽亚（经玛丽亚转交）”这种）。
+// 是的话就当没有转交人：
+//   · 转交人 = 收信人 / 读信人，信“在转交人那里”→ 其实已经到收信人手里了
+//   · 转交人 = 写信人，信“在转交人那里”→ 其实还没送出去，算在路上
+// 读信人写成了写信人自己的，也改回收信人。改了就返回 true。
+export function fixSelfVia(archive, letter) {
+    const d = letter?.delivery;
+    if (!d) return false;
+    const same = (a, b) => !!String(a || '').trim() && !!String(b || '').trim() && sameName(archive, a, b);
+    let changed = false;
+    if (d.reader && same(d.reader, letter.author) && !(letter.recipients || []).some(r => same(r, letter.author))) {
+        d.reader = letter.recipients?.[0] || '';
+        changed = true;
+    }
+    const via = d.via;
+    if (!via) return changed;
+    const isAuthor = same(via, letter.author);
+    const isReader = same(via, d.reader) || (letter.recipients || []).some(r => same(r, via));
+    if (!isAuthor && !isReader) return changed;
+    const atVia = ['atVia', 'held', 'withheld'].includes(d.status);
+    const viaArrived = d.viaArrivedAt || '';
+    for (const k of ['via', 'viaNote', 'viaDeadline', 'viaArrivedAt', 'openly', 'tampered']) delete d[k];
+    if (d.stage) d.stage = '';
+    if (atVia) {
+        if (isReader) { d.status = 'viewed'; d.arrivedAt = d.arrivedAt || viaArrived; d.reader = d.reader || via; }
+        else d.status = 'transit';
+    }
+    return true;
+}
+
+export function fixSelfViaAll(archive) {
+    let changed = false;
+    for (const l of Object.values(archive.letters || {})) if (fixSelfVia(archive, l)) changed = true;
+    return changed;
+}
+
 export function createLetter(archive, partial = {}) {
     const id = nextId(archive, 'letter');
     const pair = { author: partial.author, recipients: partial.recipients };

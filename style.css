@@ -1786,3 +1786,12 @@ details.epi-sec-card.epi-sec-off > :not(summary):not(.epi-off-note) { opacity: .
 /* 从备份恢复：就地显示的小面板 */
 .epi-restore { border: 1px solid var(--SmartThemeBorderColor, #8884); border-radius: 8px; padding: 8px 10px; margin: 6px 0; display: flex; flex-direction: column; gap: 6px; background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #0000) 60%, transparent); }
 .epi-restore .checkbox_label { align-items: flex-start; }
+
+/* 阅读页：点张数就地改纸张 */
+.epi-pages-btn { cursor: pointer; border: 1px solid transparent; font: inherit; }
+.epi-pages-btn:hover { border-color: var(--SmartThemeBorderColor, #8886); }
+.epi-paper-panel { background: var(--SmartThemeBlurTintColor, #1e1e1e); position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 6px 0 8px; padding: 6px 10px; border: 1px dashed var(--SmartThemeBorderColor, #8886); border-radius: 8px; font-size: .92em; }
+.epi-paper-panel select.text_pole { width: auto; max-width: 14em; display: inline-block; margin: 0 0 0 4px; }
+.epi-paper-panel .epi-pp-num { width: 5.5em; display: inline-block; margin: 0 4px; }
+.epi-paper-panel .checkbox_label { margin: 0; }
+.epi-paper-panel .epi-pp-tip { flex-basis: 100%; }

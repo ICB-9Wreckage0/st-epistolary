@@ -813,7 +813,7 @@ function _buildMemoryPrompt(letter, scene, { existing = [], storyDate = '', user
 另外每人写一句 gist：不超过 40 字，这个人会怎么一句话概括这封信（比如“勒鲁说每月寄一封信，托我按时转交”）。
 只写剧情和信里确实有的，不要补充、不要编。记忆和 gist 里提到这封信时，用“${letterCallName(letter)}”这类说法，不要写【信1】【条1】这种暗号（剧情里的人不知道暗号）。剧情里没读这封信的人不要写；写信人自己不算读者，除非剧情里 TA 重读了这封信。
 
-再看**这封信本身**在这段剧情里发生了什么（events，按先后）：type 是 written 写好 | sent 寄出 / 交给信差 / 托人带走 | received 收到 | read 读了 | forwarded 转交给别人 | kept 收起来 | mentioned 只是提到；who 是谁做的；to 是寄给 / 交给谁（sent、forwarded 时写）；date 是剧情里的日期（YYYY-MM-DD，看得出来才写）；place 是在哪（城市或地方，看得出来才写）；mes 是第几层（剧情前面标着楼层号就写）。分清楚：**写信人寄出**是 sent，**收信人拿到**是 received，拿到以后打开看是 read。剧情里没发生的不要写。
+再看**这封信本身**在这段剧情里发生了什么（events，按先后）：type 是 written 写好 | sent 寄出 / 交给信差 / 托人带走 | received 收到 | read 读了 | forwarded 转交给别人 | kept 收起来 | mentioned 只是提到；who 是谁做的；to 是寄给 / 交给谁（sent、forwarded 时写）；date 是剧情里的日期（YYYY-MM-DD，看得出来才写）；place 是在哪（城市或地方，看得出来才写）；mes 是第几层（剧情前面标着楼层号就写）。分清楚：**写信人寄出**是 sent，**收信人拿到**是 received，拿到以后打开看是 read。写信人自己把信交出去永远是 sent，不是 forwarded；forwarded 和“转交人收到”只用于写信人、收信人以外的第三个人。剧情里没发生的不要写。
 storyDate：这段剧情发生在哪天（YYYY-MM-DD），看不出来就写空字符串。
 
 最后看这段剧情结束时，**这封信本身**在哪里：在谁手里（holder）、放在什么地方（place，比如“书桌左边的抽屉”）、状态（state）：kept 收着 | carried 随身带着 | given 交给了别人 | burned 烧了或毁了 | lost 丢了。剧情里没写到信最后放哪，letter 就写 null，不要猜。

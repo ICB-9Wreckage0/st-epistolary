@@ -11,7 +11,8 @@ const WORD = /[A-Za-zÀ-ɏЀ-ӿ]+(?:['’-][A-Za-zÀ-ɏЀ-ӿ]+)*/g;
 
 // 一面纸的格局：每行几个字（中文）/ 几个词（外文），一面几行
 const LAYOUT = {
-    letter: { portrait: { zh: [20, 15], lat: [10, 22] }, landscape: { zh: [26, 11], lat: [13, 16] } },
+    // 默认信纸：差不多一张手写的 A4（中文一面约 400 字、外文约 260 词）
+    letter: { portrait: { zh: [20, 20], lat: [11, 24] }, landscape: { zh: [27, 15], lat: [14, 18] } },
     scrap: { zh: [16, 4], lat: [8, 4] },
     sticky: { zh: [8, 8], lat: [4, 8] },
     card: { zh: [12, 7], lat: [6, 8] },
@@ -62,14 +63,17 @@ function lineUnits(text, script) {
     const zh = (t.match(CJK) || []).length;
     const words = (t.match(WORD) || []).length;
     const digits = (t.match(/[0-9]+/g) || []).length;
-    return script === 'zh' ? zh + Math.ceil(words * 2) + digits : words + digits + Math.ceil(zh / 2);
+    return script === 'zh' ? zh + Math.ceil(words * 2) + digits : words + digits; // 外文信里夹的中文是译文 / 注释，不占纸
 }
 
 // 这封信用的纸：每行几格、一面几行
 // 这封信的主要语言：信上填了外语就按外文；没填就看括号外面的字（括号里多是译文）
 export function letterScript(letter) {
     const lang = String(letter.language || '').toLowerCase();
-    if (lang && !/中文显示|拟译|中文|汉/.test(lang) && /法|fr|英|en|德|de|意|ital|西班牙|esp|spa|俄|rus|拉丁|latin/.test(lang)) return 'lat';
+    const foreign = /法|fr|英|en|德|de|意|ital|西班牙|esp|spa|俄|rus|拉丁|latin/.test(lang);
+    if (lang && foreign && !/中文显示|拟译|中文|汉/.test(lang)) return 'lat';
+    // “法语（中文显示）”：正文里真有一段段外文（原文 + 中文译文），纸上写的是外文；只有中文就按中文算
+    if (foreign && countUnits(letter.body, 'lat') >= 20) return 'lat';
     const outside = String(letter.body || '').replace(/[（(][^（）()\n]{1,4000}[）)]/g, '');
     return mainScript(outside.trim() ? outside : letter.body);
 }
@@ -107,40 +111,68 @@ export function pageLayout(letter, { capZh = 0, capLat = 0 } = {}) {
     const own = a.sheet === 'custom' ? Number(a.sheetCap) || 0 : 0;
     const cap = own || (!sheet.w ? Number(script === 'zh' ? capZh : capLat) || 0 : 0);
     if (cap > 0) lines = Math.max(1, Math.round(cap / perLine));
-    return { script, perLine, lines, perSide: perLine * lines, sheet: a.sheet || '', sheetLabel: a.sheet === 'custom' && own ? `${own} ${script === 'zh' ? '字' : '词'}一面的纸` : sheet.w ? sheet.label : '' };
+    return { script, perLine, lines, perSide: perLine * lines, ownCap: own || cap || 0, sheet: a.sheet || '', sheetLabel: a.sheet === 'custom' && own ? `${own} ${script === 'zh' ? '字' : '词'}一面的纸` : sheet.w ? sheet.label : '' };
+}
+
+// 一行是不是“译文 / 注释”：去掉括号里的另一种语言后，剩下的主要是另一种语言（或者什么都不剩）
+function isGloss(raw, script) {
+    const kept = dropGlosses(raw, script);
+    const t = stripMarks(kept).trim();
+    if (!t) return !!stripMarks(String(raw || '')).trim(); // 整行就是括号里的译文
+    return mainScript(t) !== script && countUnits(t, mainScript(t)) > 0;
 }
 
 // 排一遍：返回字数、几面、几张，以及每一面从哪一行开始
+// 按“格”连续往下排：主要语言的一行写满就换行；
+// 中间夹着译文（“法文一句 / 中文译文一句”交替这种），译文不占纸，前后两句外文接着写在同一行，不另起一行、也不算新段落。
 export function paginate(letter, opts = {}) {
     const layout = pageLayout(letter, opts);
+    const { perLine, lines: rowsPerSide, script } = layout;
+    const cap = perLine * rowsPerSide;
     const duplex = !!letter.appearance?.duplex;
-    const paras = analyze(dropGlosses(letter.body || '', layout.script));
+    const paras = analyze(letter.body || ''); // 用原文分段，分页线才对得上阅读页
     const breaks = []; // [{ p, l, side }]：第 side 面从第 p 段第 l 行开始
-    let row = 0, side = 1;
+    let pos = 0, side = 1, sideStart = 0; // pos：从第一面开头算起写到第几格
+    let soft = false;     // 上一句外文后面跟的是译文：下一句接着写
+    let lastPara = null;  // 上一行外文在第几段
+    let any = false;
+    const rowUp = () => { const r = pos - sideStart; if (r % perLine) pos += perLine - (r % perLine); };
     paras.forEach((para, pi) => {
-        if (pi > 0) row += 1; // 段落之间空一行
         para.lines.forEach((line, li) => {
-            let need = Math.max(1, Math.ceil(lineUnits(line.raw ?? line.text, layout.script) / layout.perLine));
-            // 这一行在这一面写不下、换到下一面又写得下：整行挪到下一面（分页线画在这一行前面）
-            if (row > 0 && row + need > layout.lines && need <= layout.lines) {
-                side++;
+            const raw = line.raw ?? line.text;
+            if (!stripMarks(String(raw || '')).trim()) return; // 空行
+            if (isGloss(raw, script)) { if (any) soft = true; return; }
+            const units = Math.max(1, lineUnits(dropGlosses(raw, script), script));
+            if (any && !soft) {
+                rowUp(); // 换行
+                if (pi !== lastPara && pos > sideStart) pos += perLine; // 新段落前空一行（一面的开头不空）
+            }
+            // 到了这一面的底：下一面
+            if (pos >= sideStart + cap) {
+                side++; sideStart += cap; pos = sideStart;
                 breaks.push({ p: pi, l: li, side });
-                row = 0;
+            } else if (!soft || !any) {
+                // 新起的一行写不下、换到下一面又写得下：整行挪过去
+                const used = (pos - sideStart) / perLine;
+                const need = Math.ceil(units / perLine);
+                if (used > 0 && used + need > rowsPerSide && need <= rowsPerSide) {
+                    side++; sideStart += cap; pos = sideStart;
+                    breaks.push({ p: pi, l: li, side });
+                }
             }
-            // 一段长到一面都写不下：接着写到下一面（分页线没法画在一行中间，只算面数）
-            while (row + need > layout.lines) {
-                need -= layout.lines - row;
-                side++;
-                row = 0;
-            }
-            row += need;
+            pos += units;
+            // 一段长到写过了这一面：接着写到下一面（分页线没法画在一行中间，只算面数）
+            while (pos > sideStart + cap) { side++; sideStart += cap; }
+            soft = false;
+            lastPara = pi;
+            any = true;
         });
     });
     const counts = countByScript(letter.body);
-    const units = counts[layout.script];
-    const sides = units ? side : 0;
+    const units = counts[script];
+    const sides = units && any ? side : 0;
     const sheets = duplex ? Math.ceil(sides / 2) : sides;
-    return { ...layout, duplex, units, counts, latName: latName(letter.language), sides, sheets, breaks, unitName: layout.script === 'zh' ? '字' : '词' };
+    return { ...layout, duplex, units, counts, latName: latName(letter.language), sides, sheets, breaks, unitName: script === 'zh' ? '字' : '词' };
 }
 
 // 第几面 → “第 2 张 · 背面”
@@ -167,7 +199,7 @@ export function pagesText(pg, { note = false } = {}) {
     // 选了纸张大小就说“张 A4 / 张八开”；自定义字数说“张纸”，括号里写一面约多少字
     const custom = pg.sheet === 'custom' && pg.sheetLabel;
     const paper = custom ? '张纸' : pg.sheetLabel ? `张 ${pg.sheetLabel}` : note ? '张' : '张信纸';
-    const notes = custom ? [`一面约 ${pg.perSide} ${pg.unitName}`] : [];
+    const notes = custom ? [`一面约 ${pg.ownCap || pg.perSide} ${pg.unitName}`] : [];
     const count = countText(pg);
     const tail = extra => { const all = [...notes, ...extra]; return all.length ? `（${all.join('，')}）` : ''; };
     if (pg.sides <= 1) return `${count} · 一${paper}${tail(pg.duplex ? ['只写了正面'] : [])}`;

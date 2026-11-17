@@ -26,7 +26,7 @@ import { ENCLOSURE_KINDS, normalizeEnclosure, extractEnclosures, enclosureText }
 import { WHERE_STATES, whereNow, whereText, DELIVERY_STATES, deliveryState, deliveryText } from './whereabouts.js';
 import { correspondentPairs, buildTimeline, pairSummary, replyInfo, REPLY_STATES } from './timeline.js';
 import { knowledgePeople, knowledgeOf, letterLabel as knowLabel } from './knowledge.js';
-import { paginate, pagesText, sideLabel } from './pages.js';
+import { paginate, pagesText, sideLabel, pageLayout } from './pages.js';
 import { exportLetters, exportFileName } from './exporter.js';
 import { HANDS, ORIENTATIONS, handClasses, paperClasses, renderBody, analyze, scriptLang, renderOptions, WOBBLE_LABELS, WEAR_LABELS, paperLayer, ensureWearFilters, hashSeed, INKS, inkColor, inkContrast, paperStyle, SIZE_LABELS, CJK_SIZE_LABELS } from './render.js';
 
@@ -1022,8 +1022,53 @@ export class UI {
     countHtml(d) {
         const pg = this.pages(d);
         const n = charCount(d.body);
-        const tip = `中文按字（含中文标点）、外文按词，两种语言分开算。张数只按这封信的主要语言（${pg.script === 'zh' ? '中文' : pg.latName}）估：括号里的另一种语言（比如外文信里的中文译文）当作注释，不占纸。一行约 ${pg.perLine} ${pg.unitName}、一面约 ${pg.lines} 行（字号、横竖版、纸条样子都会影响）；称呼、署名这种短行也占一整行。一面能写多少可以在设置 →「显示」里改。`;
+        const tip = `中文按字（含中文标点）、外文按词，两种语言分开算。张数只按这封信的主要语言（${pg.script === 'zh' ? '中文' : pg.latName}）估：括号里的另一种语言（比如外文信里的中文译文）当作注释，不占纸。一行约 ${pg.perLine} ${pg.unitName}、一面约 ${pg.lines} 行（字号、横竖版、纸条样子都会影响）；称呼、署名这种短行也占一整行。一面能写多少就在旁边「纸」那里改。`;
         return `<span title="${esc(tip)}">${pg.units ? esc(pagesText(pg, { note: isNote(d) })) : `${n} 字`}</span>`;
+    }
+
+    // 「纸」旁边：一面写多少。默认信纸改的是所有信的默认值；“自定义”改的是这一封
+    capHtml(d) {
+        const a = d.appearance || {};
+        const lay = pageLayout(d);
+        const unit = lay.script === 'zh' ? '字' : '词';
+        if (a.sheet === 'custom') return `一面 <input type="number" min="1" step="10" data-f="appearance.sheetCap" value="${a.sheetCap || ''}" placeholder="${lay.perSide}"> ${unit}`;
+        if (a.sheet) return `<span class="epi-muted">一面约 ${lay.perSide} ${unit}</span>`;
+        if (isNote(d)) return '';
+        const s = this.hooks.getSettings();
+        const key = lay.script === 'zh' ? 'pageCapZh' : 'pageCapLat';
+        const auto = pageLayout(d, {}).perSide;
+        return `<span title="所有用默认信纸的信都按这个算（${lay.script === 'zh' ? '中文信' : '外文信'}）。空着就按字号、横竖版自动估，现在约 ${auto} ${unit}。只想改这一封，在「纸」里选“自定义”。">一面约 <input type="number" min="0" step="10" class="epi-cap-def" data-capkey="${key}" value="${Number(s[key]) || ''}" placeholder="${auto}"> ${unit}</span>`;
+    }
+
+    // 阅读页：点张数，就地改纸张（不用进写信页）
+    // 重新画阅读页，滚动位置不变
+    reopenReader(id) {
+        const box = this.root.querySelector('.epi-reader-wrap');
+        const sc = box?.scrollTop || 0;
+        this.openReader(id);
+        const b2 = this.root.querySelector('.epi-reader-wrap');
+        if (b2) b2.scrollTop = sc;
+    }
+
+    paperPanelHtml(l) {
+        const a = l.appearance || {};
+        const lay = this.pages(l);
+        const unit = lay.script === 'zh' ? '字' : '词';
+        const s = this.hooks.getSettings();
+        const key = lay.script === 'zh' ? 'pageCapZh' : 'pageCapLat';
+        const auto = pageLayout(l, {}).perSide;
+        let cap;
+        if (a.sheet === 'custom') cap = `<label title="只改这一封">这封信一面写 <input type="number" min="1" step="10" class="text_pole epi-pp-num" data-pp="sheetCap" data-id="${esc(l.id)}" value="${a.sheetCap || ''}" placeholder="${lay.perSide}"> ${unit}</label>`;
+        else if (a.sheet) cap = `<span class="epi-muted">一面约 ${lay.perSide} ${unit}（按${esc(SHEETS[a.sheet]?.label || '')}的尺寸估）</span>`;
+        else if (!isNote(l)) cap = `<label title="所有用默认信纸的${lay.script === 'zh' ? '中文' : '外文'}信都按这个算；空着就自动估（现在约 ${auto} ${unit}）。只想改这一封，在左边选“自定义”">默认信纸一面写 <input type="number" min="0" step="10" class="text_pole epi-pp-num" data-pp="cap" data-capkey="${key}" data-id="${esc(l.id)}" value="${Number(s[key]) || ''}" placeholder="${auto}"> ${unit}</label>`;
+        else cap = `<span class="epi-muted">一面约 ${lay.perSide} ${unit}（按纸条样子估）</span>`;
+        return `<div class="epi-paper-panel">
+            <label>纸 <select class="text_pole" data-pp="sheet" data-id="${esc(l.id)}">${Object.entries(SHEETS).map(([k, v]) => `<option value="${k}" ${k === (a.sheet || '') ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select></label>
+            ${cap}
+            <label class="checkbox_label"><input type="checkbox" data-pp="duplex" data-id="${esc(l.id)}" ${a.duplex ? 'checked' : ''}> 正反面</label>
+            <span class="epi-muted epi-pp-tip">一行约 ${lay.perLine} ${unit}、一面约 ${lay.lines} 行。夹在中间的译文不占纸。</span>
+            <button class="menu_button epi-mini" data-act="paper-toggle" data-id="${esc(l.id)}">收起</button>
+        </div>`;
     }
 
     renderOpts(letter) {
@@ -1262,8 +1307,8 @@ export class UI {
                 <span data-role="count">${this.countHtml(d)}</span>
                 <label class="epi-sheet" title="纸有多大：一面能写多少字跟着变。A4、八开这些按纸的实际尺寸和字号估；稿纸这种按格数算的，选“自定义”，直接填一面多少字">纸
                     <select data-f="appearance.sheet">${Object.entries(SHEETS).map(([k, v]) => `<option value="${k}" ${k === (d.appearance.sheet || '') ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>
-                    ${d.appearance.sheet === 'custom' ? `<input type="number" min="1" step="10" data-f="appearance.sheetCap" value="${d.appearance.sheetCap || ''}" placeholder="400"> 字一面` : ''}
                 </label>
+                <span class="epi-sheet" data-role="cap">${this.capHtml(d)}</span>
                 <label class="epi-duplex" title="正反面都写：两面算一张纸"><input type="checkbox" data-f="appearance.duplex" ${d.appearance.duplex ? 'checked' : ''}> 正反面</label>
                 ${ex ? `<span>${esc(d.id)}</span><span>${d.segments.length} 段</span>` : ''}
                 <span data-role="dirty" class="epi-dirty">${this.draftDirty ? '● 未保存' : ''}</span>
@@ -1667,9 +1712,11 @@ ${list}`;
         this.setDirty();
     }
 
-    updateCount() {
+    updateCount({ cap = true } = {}) {
         const el = this.body.querySelector('[data-role="count"]');
         if (el) el.innerHTML = this.countHtml(this.draft);
+        const c = cap && this.body.querySelector('[data-role="cap"]');
+        if (c && !c.contains(document.activeElement)) c.innerHTML = this.capHtml(this.draft);
     }
 
     // ================= 寄出 =================
@@ -2957,7 +3004,7 @@ ${list}`;
                 ${chk('fab', '屏幕上的悬浮按钮（点一下打开书信簿，按住可以拖到别处）')}
                 ${chk('autoBlurb', '保存时自动让 AI 写一句话简介', '默认关。关着的时候简介空着就按“谁哪天写给谁的信”称呼；想要 AI 写，在信头点「✨ AI 概括」。')}
                 ${chk('pageBreaks', '阅读页里分页：在换页的地方画一道线，写着“第 1 张 · 背面”', '关掉以后正文连着显示，不画分页线；写信页下面的字数和张数照常显示。')}
-                <div class="epi-row epi-pagecap" title="写信页下面显示“几张信纸”、阅读页画分页线时，一面大约能写多少。空着就按字号、横竖版自动估（中文约 300 字、外文约 220 词）。">
+                <div class="epi-row epi-pagecap" title="写信页下面显示“几张信纸”、阅读页画分页线时，一面大约能写多少。空着就按字号、横竖版自动估（中文约 400 字、外文约 260 词）。写信页下面「纸」旁边也能直接改。">
                     <span>一面信纸大约写</span>
                     <input class="text_pole" type="number" min="0" step="10" data-s="pageCapZh" value="${Number(s.pageCapZh) || ''}" placeholder="自动"><span>个中文字</span>
                     <input class="text_pole" type="number" min="0" step="10" data-s="pageCapLat" value="${Number(s.pageCapLat) || ''}" placeholder="自动"><span>个外文词</span>
@@ -3304,7 +3351,7 @@ ${list}`;
                     <span><b>${esc(l.author)}</b> → ${esc(l.recipients.join('、'))}
                         ${l.status !== 'sent' ? `<span class="epi-chip">${esc(STATUSES[l.status])}</span>` : ''}
                         ${l.authenticity !== 'original' ? `<span class="epi-chip">${esc(AUTHENTICITY[l.authenticity])}</span>` : ''}
-                        ${!l.shell && this.pages(l).units ? `<span class="epi-chip epi-pages-chip" title="只算主要语言；按字号、横竖版估的">${esc(pagesText(this.pages(l), { note: isNote(l) }))}</span>` : ''}</span>
+                        ${!l.shell && this.pages(l).units ? (preview ? `<span class="epi-chip epi-pages-chip">${esc(pagesText(this.pages(l), { note: isNote(l) }))}</span>` : `<button class="epi-chip epi-pages-chip epi-pages-btn" data-act="paper-toggle" data-id="${esc(l.id)}" title="点一下改纸张：多大的纸、一面写多少字 / 词、正反面">${esc(pagesText(this.pages(l), { note: isNote(l) }))} ✎</button>`) : ''}</span>
                     <span class="epi-reader-actions">
                         ${preview ? `<span class="epi-chip">👁 预览 · 还没保存</span>
                         ${isNote(l) ? '' : `<button class="menu_button" data-act="preview-seal" title="回放寄信时的封缄动画：信纸折好装进信封、封口、飞走">▶ 封缄动画</button>
@@ -3321,6 +3368,7 @@ ${list}`;
                         <button class="menu_button" data-act="reader-close">关闭</button>`}
                     </span>
                 </div>
+                ${!preview && this.paperOpen === l.id ? this.paperPanelHtml(l) : ''}
                 ${orig ? `<div class="epi-reader-link">↩ 这是对 <a href="#" data-act="read" data-id="${esc(orig.id)}">${esc(orig.author)} ${esc(orig.writtenAt)} 来信</a> 的回复</div>` : ''}
                 ${preview ? '' : this.whereHtml(l)}
                 ${isNote(l) && l.appearance.noteStyle === 'custom' && noteLook(l) ? `<div class="epi-note-look">🗒 ${esc(noteLook(l))}</div>` : ''}
@@ -4094,6 +4142,7 @@ ${list}`;
                     toastr?.info(d ? `剧情日期：${d}` : '没能推算出新的日期');
                 });
                 break;
+            case 'paper-toggle': this.paperOpen = this.paperOpen === el.dataset.id ? null : el.dataset.id; this.reopenReader(el.dataset.id); break;
             case 'export': this.hooks.exportArchive(); break;
             case 'bk-all': case 'bk-archive': case 'bk-settings': {
                 const what = act.slice(3);
@@ -4405,6 +4454,24 @@ ${list}`;
             toastr?.success(pack ? `以后 ${p?.name || t.dataset.name} 写的新信默认用「${pack.name}」` : `${t.dataset.name} 不再绑定款式`);
             return;
         }
+        if (t.dataset?.pp && e.type === 'change') {
+            const l = this.archive.letters[t.dataset.id];
+            if (!l) return;
+            l.appearance = l.appearance || {};
+            const pp = t.dataset.pp;
+            if (pp === 'cap') this.setS(t.dataset.capkey, Number(t.value) || 0);
+            else if (pp === 'duplex') l.appearance.duplex = t.checked;
+            else if (pp === 'sheetCap') l.appearance.sheetCap = Number(t.value) || 0;
+            else if (pp === 'sheet') l.appearance.sheet = t.value;
+            if (pp !== 'cap') { l.updatedAt = new Date().toISOString(); this.store.save(); }
+            this.reopenReader(l.id);
+            return;
+        }
+        if (t.classList?.contains('epi-cap-def')) {
+            this.setS(t.dataset.capkey, Number(t.value) || 0);
+            this.updateCount({ cap: false });
+            return;
+        }
         if (t.dataset.s) {
             const key = t.dataset.s;
             let v = t.type === 'checkbox' ? t.checked : t.value;
@@ -4519,7 +4586,7 @@ ${list}`;
                 }
             }
             if (t.dataset.f === 'body') { this.fitPage(); this.keepCaretVisible(); this.updateCount(); }
-            if (['appearance.duplex', 'appearance.size', 'appearance.orientation', 'appearance.noteStyle', 'appearance.sheet', 'appearance.sheetCap'].includes(t.dataset.f)) this.updateCount();
+            if (['appearance.duplex', 'appearance.size', 'appearance.orientation', 'appearance.noteStyle', 'appearance.sheet', 'appearance.sheetCap', 'language'].includes(t.dataset.f)) this.updateCount();
             // 换了纸张：自定义要多一个填字数的格子；纸的长宽比也跟着变
             if (t.dataset.f === 'appearance.sheet' && e.type === 'change') { this.commitRaw(d); this.rerenderKeepScroll(); this.fitPage(); }
             if (t.dataset.f === 'blurb') { d.blurbAuto = false; t.classList.remove('epi-lh-ai'); }

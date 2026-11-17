@@ -8,7 +8,7 @@ import { Fab } from './src/fab.js';
 import { buildBackup, parseBackup, mergeSettings, backupFileName } from './src/backup.js';
 import { trimOldLetters } from './src/tokens.js';
 import { retrieve, DEFAULT_RETRIEVAL } from './src/retrieval.js';
-import { sameName, normalizeDate, findPerson, lettersByCode, unknownCodes, ensureCodes, createLetter, aiText, bodyHash, isNote, noteWord, normalizeLetter, nextCode } from './src/model.js';
+import { sameName, normalizeDate, findPerson, lettersByCode, unknownCodes, ensureCodes, fixSelfVia, fixSelfViaAll, createLetter, aiText, bodyHash, isNote, noteWord, normalizeLetter, nextCode } from './src/model.js';
 import {
     buildReactionGuidance, replyChatMessage, sceneSwitchMessage, sceneReturnMessage,
     deliveryEvents, buildDatePrompt, parseStoryDate, addDays,
@@ -879,13 +879,15 @@ function applyStoryEvents(letter, events, { fromMes = null, past = false, manual
             letter.status = 'sent';
             letter.delivery = { ...d, mode: d.mode || 'instant', status: 'viewed', stage: d.via ? 'done' : (d.stage || ''), arrivedAt: date, reader: e.who || d.reader || letter.recipients[0] || '' };
             if (e.place && !letter.placeTo) letter.placeTo = e.place;
-        } else if ((e.type === 'received' && !isRecipient && st !== 'delivered') || (e.type === 'forwarded' && e.who && !isRecipient && !d.via)) {
+        } else if (!same(e.who || '', letter.author || '\u0000') && ((e.type === 'received' && !isRecipient && st !== 'delivered') || (e.type === 'forwarded' && e.who && !isRecipient && !d.via))) {
+            // 写信人自己“转交”“收到”不算转交人
             // 先到了转交人手里 / 由谁转交
             snap();
             letter.status = 'sent';
             letter.delivery = { ...d, mode: d.mode || 'instant', via: e.who, ...(e.type === 'received' ? { status: 'atVia', stage: 'atVia', viaArrivedAt: date } : {}) };
         }
     }
+    fixSelfVia(store.archive, letter);
     return added;
 }
 
@@ -1326,6 +1328,7 @@ async function saveDelivery(letterId, o) {
         default: return false;
     }
     if (o.placeTo !== undefined) l.placeTo = String(o.placeTo).trim();
+    fixSelfVia(store.archive, l); // 转交人填成了写信人 / 收信人自己：当没有转交人
     l.autoDelivery = []; // 你手动改过：之后换回复不会把它退回去
     dropStashedDelivery(letterId);
     l.updatedAt = new Date().toISOString();
@@ -2570,7 +2573,7 @@ function downloadText(name, text) {
 
 // 一键备份：what = 'all'（信件 + 设置）| 'archive'（只要信件）| 'settings'（只要设置）
 function exportBackup(what = 'all', { includeKey = false } = {}) {
-    const pack = buildBackup({ archive: store.archive, settings: settings(), what, includeKey, version: '0.54.0' });
+    const pack = buildBackup({ archive: store.archive, settings: settings(), what, includeKey, version: '0.55.0' });
     downloadText(backupFileName(what), JSON.stringify(pack, null, 2));
     return pack;
 }
@@ -2592,6 +2595,7 @@ async function applyBackup(pack, { archive = true, settings: doSettings = true }
         try { await store.backupNow({ note: '恢复前的快照' }); } catch (e) { console.warn('[书信簿] 恢复前快照失败', e); }
         store.importJson(JSON.stringify(pack.archive));
         ensureCodes(store.archive);
+        fixSelfViaAll(store.archive);
         await store.saveNow();
         done.push('信件');
     }
@@ -2775,6 +2779,7 @@ jQuery(async () => {
         restoreBackup: async name => {
             await store.restoreBackup(name);
             ensureCodes(store.archive);
+            fixSelfViaAll(store.archive);
             store.save();
             ui.refresh();
             ui.renderPostbox();
@@ -2802,7 +2807,7 @@ jQuery(async () => {
 
     store.onChange(refreshStatus);
     await store.load();
-    if (store.mode !== 'unloaded' && ensureCodes(store.archive)) store.save();
+    if (store.mode !== 'unloaded' && (ensureCodes(store.archive) | fixSelfViaAll(store.archive))) store.save(); // 补暗号；转交人写成了写信人 / 收信人自己的改掉
     if (store.mode !== 'unloaded' && hasChat()) setTimeout(() => { try { adoptLetters(); scanCodeFloors(); } catch { /* */ } }, 1500);
     // 每天第一次打开：自动备份一份档案
     store.autoBackup(Number(settings().backup.keep) || 0)

@@ -137,7 +137,9 @@ function deliveryText0(letter) {
     const st = deliveryState(letter);
     const d = letter.delivery || {};
     const to = d.reader || letter.recipients?.[0] || '收信人';
-    const via = d.via || '';
+    // 转交人和写信人 / 收信人是同一个人：不写“经 X 转交”
+    const sameAs = (a, b) => String(a || '').trim() && String(a || '').trim() === String(b || '').trim();
+    const via = d.via && !sameAs(d.via, letter.author) && !sameAs(d.via, to) && !(letter.recipients || []).some(r => sameAs(r, d.via)) ? d.via : '';
     switch (st) {
         case 'draft': return '✎ 草稿';
         case 'unsent': return letter.status === 'sealed' ? '✉ 封好了，没寄' : '✉ 写好了，没寄';
@@ -145,11 +147,11 @@ function deliveryText0(letter) {
         case 'transit': return `📮 已寄出，在路上${via && d.stage === 'toVia' ? `（先寄给转交人 ${via}）` : ''}${d.eta ? ` · 预计 ${d.eta} 到` : ''}`;
         case 'atVia': return `🤝 在转交人 ${via || '？'} 那里，还没转交${d.status === 'withheld' ? '（扣下了）' : ''}`;
         default: {
-            const rec = (letter.events || []).find(e => e.type === 'received');
+            const rec = (letter.events || []).find(e => e.type === 'received' && !sameAs(e.who, letter.author)) || (letter.events || []).find(e => e.type === 'received');
             const known = !!(d.arrivedAt || d.status || rec);
             if (!known) return `📬 已寄出（没记送到）`;
             const when = d.arrivedAt || rec?.date || '';
-            return `📬 已送到 ${d.reader || rec?.who || to}${when ? ` · ${when}` : ''}${letter.placeTo ? ` · ${letter.placeTo}` : ''}${via ? `（经 ${via} 转交）` : ''}`;
+            return `📬 已送到 ${d.reader || (rec?.who && !sameAs(rec.who, letter.author) ? rec.who : '') || to}${when ? ` · ${when}` : ''}${letter.placeTo ? ` · ${letter.placeTo}` : ''}${via ? `（经 ${via} 转交）` : ''}`;
         }
     }
 }
