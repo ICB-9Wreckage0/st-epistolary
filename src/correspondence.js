@@ -5,6 +5,13 @@ import { paginate, pagesText } from './pages.js';
 import { findPerson, sameName, segmentPosition, normalizeDate, aiText, stripMarks, MARK_RE, normalizeLearned, isNote, noteWord, noteLook, NOTE_STYLES } from './model.js';
 
 // 便条 / 纸条：把给 AI 的话里“这封信”换成“这张纸条”（【信件 …】这类标记不动）
+
+// ---------- 设置：注入时提醒 AI 不要照抄信的原文 ----------
+let NO_COPY = false;
+export function setNoCopy(on) { NO_COPY = !!on; }
+export const NO_COPY_LINE = '**禁止照抄、复制信的原文**：回复里不要把信里的段落、整句整句地搬进来（外文原句和括号里的译文都算）。用读信人的反应、感受和自己的话转述来写；确实要提到原话，最多摘一两个短句。';
+const withNoCopy = text => (NO_COPY && text ? `${text}\n${NO_COPY_LINE}` : text);
+
 export function asNote(text, l) {
     if (!isNote(l)) return text;
     const w = noteWord(l);
@@ -16,7 +23,7 @@ export function asNote(text, l) {
         .replace(/读信/g, `看${w}`)
         .replace(/拆开读它/g, '拿起来看').replace(/他上次的信/g, `他上次那张${w}`);
 }
-import { effectiveWobble, normalizeHand, INKS } from './render.js';
+import { effectiveWobble, normalizeHand, INKS, analyze } from './render.js';
 import { enclosuresForAI, enclosureFeel, ENCLOSURE_KINDS } from './enclosures.js';
 
 // ---------- 日期 ----------
@@ -252,7 +259,7 @@ export function cleanReply(text) {
 /**
  * 角色收到信、读信时注入给 AI 的引导
  */
-export const buildReactionGuidance = (archive, letter, reader, arrival, extra) => asNote(_buildReactionGuidance(archive, letter, reader, arrival, extra), letter);
+export const buildReactionGuidance = (archive, letter, reader, arrival, extra) => withNoCopy(asNote(_buildReactionGuidance(archive, letter, reader, arrival, extra), letter));
 function _buildReactionGuidance(archive, letter, reader, arrival, extra = {}) {
     const person = findPerson(archive, reader);
     const lines = [];
@@ -745,10 +752,10 @@ export function buildPendingHints({ arrived = [], atVia = [], storyDate = '' }) 
 }
 
 // 收信人在剧情里收到信时，直接把原文放进上下文
-export const inlineLetterBlock = (letter, reader, arrival, o) => asNote(_inlineLetterBlock(letter, reader, arrival, o), letter);
+export const inlineLetterBlock = (letter, reader, arrival, o) => withNoCopy(asNote(_inlineLetterBlock(letter, reader, arrival, o), letter));
 function _inlineLetterBlock(letter, reader, arrival, { peek = false } = {}) {
     const head = peek ? `【${reader} 拆开的这封信（本来要转交给 ${(letter.recipients || []).join('、')}），原文如下】` : `【${reader} 收到的${noteWord(letter)}${arrival ? `（${arrival}）` : ''}，原文如下】`;
-    return `${head}\n${aiText(letter.body)}\n【原文完】\n这封信的原文没有出现在聊天记录里，是直接给你的。描写读信时可以引用其中的句子，但不要整封复述。`;
+    return `${head}\n${aiText(letter.body)}\n【原文完】\n这封信的原文没有出现在聊天记录里，是直接给你的。${NO_COPY ? '' : '描写读信时可以引用其中的句子，但不要整封复述。'}`;
 }
 
 // 收信 / 拆信引导里，“信的全文就是上一条消息”改成“原文见上”
@@ -764,7 +771,7 @@ export function viaDeadline(target, legDays) {
 
 // ---------- 暗号：用户消息里写了某封信的暗号，这一轮把整封信交给 AI ----------
 
-export const buildCodeBlock = (archive, letter, o) => asNote(_buildCodeBlock(archive, letter, o), letter);
+export const buildCodeBlock = (archive, letter, o) => withNoCopy(asNote(_buildCodeBlock(archive, letter, o), letter));
 function _buildCodeBlock(archive, letter, { look = false } = {}) {
     const head = [
         letter.author && `写信人：${letter.author}`,
@@ -783,7 +790,7 @@ function _buildCodeBlock(archive, letter, { look = false } = {}) {
     }
     if (letter.enclosures?.length) lines.push(enclosuresForAI(letter, archive));
     lines.push(`用户在消息里写了 ${letter.code}，指的就是上面这封信，这一轮剧情要用到它（比如有人拆开读它、提起它、拿着它）。`);
-    lines.push(`**这封信已经写好了，内容以上面的原文为准。** 剧情里有人读这封信时，读到的就是这些字句——可以直接引用原文里的句子，不要另编一封信，不要改写、增删信的内容，也不要替写信人补写信里没有的话。`);
+    lines.push(`**这封信已经写好了，内容以上面的原文为准。** 剧情里有人读这封信时，读到的就是这些字句——${NO_COPY ? '' : '可以直接引用原文里的句子，'}不要另编一封信，不要改写、增删信的内容，也不要替写信人补写信里没有的话。`);
     lines.push(`回复里不要写出“${letter.code}”这个暗号本身。${callNameRule(letter)}`);
     return lines.filter(Boolean).join('\n');
 }
@@ -899,8 +906,54 @@ function shortDate(d) {
 }
 
 // 你写的简介；没写就用“谁几月几日写给谁的信”
+// 信上落款的那一行（“您忠实的 O.G.”“—— 夜莺”）：先看信头填的署名，没有就看正文结尾的署名段
+export function signLine(l) {
+    const own = stripMarks(String(l.signature || '')).trim();
+    if (own) return own.replace(/\s*\n\s*/g, ' ');
+    const paras = analyze(String(l.body || ''));
+    const sign = paras.filter(p => p.role === 'signoff').pop() || paras.find(p => p.lines?.some(x => x.role === 'signoff'));
+    if (!sign) return '';
+    return sign.lines.map(x => x.text.trim()).filter(Boolean).join(' ').slice(0, 60);
+}
+
+// 落款用的名字：署名的最后一行，去掉“您忠实的 / Votre ami”这种客套和标点
+export function signedName(l) {
+    const own = stripMarks(String(l.signature || '')).trim();
+    const paras = own ? [] : analyze(String(l.body || ''));
+    const sign = paras.filter(p => p.role === 'signoff').pop();
+    const lines = own ? own.split('\n') : sign ? sign.lines.map(x => x.text) : [];
+    let last = lines.map(x => String(x).trim()).filter(Boolean).pop() || '';
+    last = last.replace(/^[—–\-~～·\s]+/, '')
+        .replace(/^(您|你)?(忠实|永远|亲爱|最爱|真诚|敬爱|顺从|卑微|谦卑)?的?(朋友|仆人|学生|弟弟|哥哥|姐姐|妹妹|女儿|儿子)?[，,\s]+/, '')
+        .replace(/^(votre|ton|ta|your|yours|bien|tout|toute|à vous|sincerely|affectionately|truly|ever)[\w\s'’,àéèê]*?,\s*/i, '')
+        .replace(/^(您|你)(永远|忠实|最|真诚)?[^，,\s]{0,4}?的(?=\S)/, '')
+        .replace(/^(ton|ta|votre|your|yours)\s+/i, '')
+        .replace(/[，,。!！]+$/, '').trim();
+    // 只有“祝好 / 此致敬礼 / Bisous”这种结束语，不是名字
+    if (/^(祝|此致|敬礼|晚安|再见|吻你|拥抱|想你|保重|珍重|盼复|bisous|baisers|adieu|amitiés|cordialement|bien à vous|à bientôt|love|regards|best|cheers|farewell)/i.test(last)) return '';
+    return last.length && last.length <= 20 ? last : '';
+}
+
+// 署名和写信人对不上（笔名、化名、代号、缩写）：剧情里的人只认得署名
+export function signedOtherThanAuthor(l) {
+    const name = signedName(l);
+    const author = String(l.author || '').trim();
+    if (!name || !author) return '';
+    const norm = x => x.toLowerCase().replace(/[\s·・.．'’-]/g, '');
+    const parts = author.split(/[\s·・]+/).filter(x => x.length >= 2).map(norm);
+    const n = norm(name);
+    if (!n || n === norm(author) || norm(author).includes(n) || parts.some(p => n.includes(p))) return '';
+    return name;
+}
+
 export function letterCallName(l) {
     if (l.blurb) return l.blurb;
+    const pen = signedOtherThanAuthor(l);
+    if (pen) {
+        const when = shortDate(l.writtenAt);
+        const to = (l.recipients || []).join('、');
+        return `署名“${pen}”、${when}${to ? `写给${to}` : ''}的${l.title ? `「${l.title}」那${isNote(l) ? '张' : '封'}` : ''}${noteWord(l)}`;
+    }
     const when = shortDate(l.writtenAt);
     const to = (l.recipients || []).join('、');
     const w = noteWord(l);
@@ -949,8 +1002,9 @@ function _buildBlurbPrompt(l) {
     const prompt = `用一句话（不超过 30 个字）概括下面这封信，写成剧情里的人提起它时会怎么说：谁、什么时候写的、主要说了什么。
 例如：文森特3月17日从圣雷米寄来、说想回北方的信；勒鲁托我转交、催问画款的那封信。
 不要用书名号或引号括起来，不要写暗号，只输出这一句。
+**写信人用信上落款的名字（署名）来称呼。** 如果署名是笔名、化名、代号或缩写，简介里就用这个署名，**不要写出写信人的真名**——剧情里收信的人未必知道是谁写的。${(() => { const sl = signLine(l); const pen = signedOtherThanAuthor(l); return sl ? `\n这封信的落款是：「${sl}」${pen ? `。署的是“${pen}”，不是真名 ${l.author}，简介里只能用“${pen}”。` : '。'}` : ''; })()}
 
-【信】${l.author || '？'} 写给 ${(l.recipients || []).join('、') || '？'}${l.writtenAt ? `，${l.writtenAt}` : ''}${l.placeFrom ? `，从${l.placeFrom}` : ''}
+【信】真正的写信人：${l.author || '？'}（只供你了解，简介里按署名称呼）；写给 ${(l.recipients || []).join('、') || '？'}${l.writtenAt ? `，${l.writtenAt}` : ''}${l.placeFrom ? `，从${l.placeFrom}` : ''}
 ${aiText(l.body || '').slice(0, 6000)}`;
     return { system, prompt };
 }
@@ -1055,7 +1109,7 @@ export function rereadKey(letter, names = []) {
     return `/${act}[^。！？.!?\\n]{0,15}(${who})|(${who})[^。！？.!?\\n]{0,15}${act}/i`;
 }
 
-export const rereadEntryContent = (letter, h, p) => asNote(_rereadEntryContent(letter, h, p), letter);
+export const rereadEntryContent = (letter, h, p) => withNoCopy(asNote(_rereadEntryContent(letter, h, p), letter));
 function _rereadEntryContent(letter, holder, place = '') {
     return `【信件原文｜${letterCallName(letter)}｜现在在 ${holder} 手里${place ? `（${place}）` : ''}】\n${aiText(letter.body || '').trim()}\n【信件完】\n（${holder} 把这封信拿出来重读时，读到的就是上面的原文。没有这封信的人读不到。${callNameRule(letter)}）`;
 }

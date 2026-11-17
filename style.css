@@ -1658,7 +1658,9 @@ details.epi-sec-card.epi-sec-off > :not(summary):not(.epi-off-note) { opacity: .
     position: fixed;
     right: 24px;
     bottom: 120px;
-    z-index: 8990; /* 书信簿面板（9000）打开时在它下面 */
+    /* 层级放低：比聊天区（SillyTavern 的 #sheld 是 30）高一点，比侧栏、抽屉、弹窗和其他插件的浮窗（几百到几千）都低，
+       所以那些窗口打开时会盖住它，不会被它挡住 */
+    z-index: 35;
     width: var(--fab-size);
     height: var(--fab-size);
     padding: 0;

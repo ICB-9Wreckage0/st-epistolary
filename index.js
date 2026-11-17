@@ -9,7 +9,7 @@ import { buildBackup, parseBackup, mergeSettings, backupFileName } from './src/b
 import { trimOldLetters } from './src/tokens.js';
 import { retrieve, DEFAULT_RETRIEVAL } from './src/retrieval.js';
 import { sameName, normalizeDate, findPerson, lettersByCode, unknownCodes, ensureCodes, fixSelfVia, fixSelfViaAll, createLetter, aiText, bodyHash, isNote, noteWord, normalizeLetter, nextCode } from './src/model.js';
-import {
+import { setNoCopy, NO_COPY_LINE,
     buildReactionGuidance, replyChatMessage, sceneSwitchMessage, sceneReturnMessage,
     deliveryEvents, buildDatePrompt, parseStoryDate, addDays,
     viaSceneMessage, viaPeekMessage, buildViaGuidance, buildViaDecisionPrompt, parseViaDecisions,
@@ -78,6 +78,7 @@ const DEFAULT_SETTINGS = {
         when: 'first',       // 什么时候自动整理：first 有人第一次读这封信时 | every 每次读都整理 | off 不自动
         worldbook: true,     // 记忆写进这个聊天绑定的世界书，角色以后提起这封信时会想起来
         depth: 4,            // 世界书条目插入的深度
+        noCopy: false,       // 把信交给 AI 时提一句“禁止照抄、复制信的原文”
         rereadText: true,    // 信还在某人手里：TA 说要拿出来重读时，世界书给出原文
         compact: false,      // 省 token：世界书里的记忆只放一句话概括 + 几句原话 + 新知道的事
         trackEvents: true,   // 用暗号读到信的那一轮：让 AI 记下剧情里这封信发生了什么（写好、寄出、收到、读、转交），记进时间线
@@ -355,7 +356,8 @@ function letterBlock(l) {
     const note = envNoteLine(l) ? `${envNoteLine(l)}\n\n` : '';
     const enc = l.enclosures?.length ? `\n\n（随信附上：${l.enclosures.map(e => e.name + (e.value && !e.name.includes(e.value) ? `，${e.value}` : '')).join('；')}）` : '';
     // 和“剧情推进”一样：直接写进用户这一楼，并且明确告诉 AI 这是既定内容
-    const rule = `（以下是这封信的原文，已经写好。剧情里有人读它时，读到的就是这些字句：可以引用，不要另编一封，不要改写或增删。${callNameRule(l)}${/〔(加粗|划掉|写得很大|画了线)：/.test(aiText(l.body)) ? '〔划掉：……〕是写信人写了又划掉的字（读的人看得见被划掉的内容），〔写得很大：……〕〔加粗：……〕〔画了线：……〕是写信人特意强调的地方。' : ''}）`;
+    const noCopy = !!settings().memory?.noCopy;
+    const rule = `（以下是这封信的原文，已经写好。剧情里有人读它时，读到的就是这些字句：${noCopy ? '' : '可以引用，'}不要另编一封，不要改写或增删。${noCopy ? NO_COPY_LINE : ''}${callNameRule(l)}${/〔(加粗|划掉|写得很大|画了线)：/.test(aiText(l.body)) ? '〔划掉：……〕是写信人写了又划掉的字（读的人看得见被划掉的内容），〔写得很大：……〕〔加粗：……〕〔画了线：……〕是写信人特意强调的地方。' : ''}）`;
     return `${blockStart(l)}${head}】\n\n${asNote(rule, l)}\n\n${note}${aiText(l.body || '').trim()}${enc}\n\n${BLOCK_END}`;
 }
 
@@ -2573,7 +2575,7 @@ function downloadText(name, text) {
 
 // 一键备份：what = 'all'（信件 + 设置）| 'archive'（只要信件）| 'settings'（只要设置）
 function exportBackup(what = 'all', { includeKey = false } = {}) {
-    const pack = buildBackup({ archive: store.archive, settings: settings(), what, includeKey, version: '0.55.0' });
+    const pack = buildBackup({ archive: store.archive, settings: settings(), what, includeKey, version: '0.57.1' });
     downloadText(backupFileName(what), JSON.stringify(pack, null, 2));
     return pack;
 }
@@ -2660,6 +2662,7 @@ function applyNoteVocab() {
     const words = parseVocab(settings().noteWords);
     const mine = (settings().myNoteStyles || []).map(m => m.word).filter(Boolean);
     setNoteVocab({ words: words.length || mine.length ? [...(words.length ? words : DEFAULT_NOTE_WORDS), ...mine] : [], written: parseVocab(settings().noteWritten) });
+    setNoCopy(!!settings().memory?.noCopy); // 顺带：把信交给 AI 时要不要加“禁止照抄原文”
 }
 
 // ---------- 悬浮按钮 ----------

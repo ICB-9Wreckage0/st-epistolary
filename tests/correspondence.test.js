@@ -251,3 +251,16 @@ test('稿纸和自定义纸条的“看起来像”', async () => {
     assert.match(paperClasses(c), /note-custom note-grid/);
     assert.equal(m.normalizeLetter({ appearance: { noteBase: 'custom' } }, 'x').appearance.noteBase, 'card');
 });
+
+test('署名是笔名 / 代号：称呼信时用署名，不用真名', async () => {
+    const { signedOtherThanAuthor, letterCallName, buildBlurbPrompt } = await import('../src/correspondence.js');
+    const pen = { author: '埃里克', recipients: ['克里斯汀'], writtenAt: '1881-03-17', body: '亲爱的克里斯汀：\n\n今晚的演出……\n\n您的音乐天使' };
+    assert.equal(signedOtherThanAuthor(pen), '音乐天使');
+    assert.match(letterCallName(pen), /署名“音乐天使”/);
+    assert.doesNotMatch(letterCallName(pen), /埃里克/);
+    assert.match(buildBlurbPrompt(pen).prompt, /只能用“音乐天使”/);
+    const real = { author: '文森特·梵高', recipients: ['提奥'], body: '亲爱的提奥：\n\n今天天气很好。\n\n永远爱你的\n文森特' };
+    assert.equal(signedOtherThanAuthor(real), '');
+    const bye = { author: '文森特', recipients: ['提奥'], body: '亲爱的提奥：\n\n今天天气很好。\n\n祝好' };
+    assert.equal(signedOtherThanAuthor(bye), '');
+});

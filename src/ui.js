@@ -3028,6 +3028,7 @@ ${list}`;
                 ${chk('memory.worldbook', '把记忆写进这个聊天的世界书', '写进聊天绑定的世界书；没绑定就自动建一本。每人每封信一条，关键词是“写信人+信”、暗号、标题和你填的关键词，按深度插入。')}
                 ${chk('memory.compact', '省 token：世界书里的记忆写得精简一点', '每段记忆只放一句话概括、记得的一两句原话、新知道的事和信在哪，不放整段回忆。记忆本身不变，随时可以切回来。')}
                 ${this.tokenStatsHtml()}
+                ${chk('memory.noCopy', '把信交给 AI 时提一句“禁止照抄、复制信的原文，只概括内容”', '默认关。勾上以后，用暗号读信、信送到时的读信提示、重读原文的世界书条目里，都会加一句：不要把信里的段落整句整句搬进回复，用读信人的反应和自己的话转述，最多摘一两个短句。AI 老是把整封信复述一遍时可以开。')}
                 ${chk('memory.rereadText', '信还在角色手里时，TA 说要拿出来重读，世界书给出原文', '只在信“收着 / 随身带着”、而且拿着信的人读过它时才有。关键词是“重读 / 拿出 / 翻出……”挨着写信人、暗号或标题。信烧了、丢了、交出去了，就没有这一条，只剩记忆。')}
                 <label>世界书条目插入深度<input class="text_pole epi-num" type="number" min="0" max="50" data-s="memory.depth" value="${esc(s.memory?.depth ?? 4)}"></label>
                 <div class="epi-row"><button class="menu_button" data-act="mem-backfill" ${this.hooks.hasChat() ? '' : 'disabled'} title="找出这个聊天里以前用暗号读过、还没有记忆的信，从当时那几层整理">📜 给过去读过的信补记忆</button></div>
@@ -4480,6 +4481,7 @@ ${list}`;
             this.setS(key, v);
             if (key === 'editZoom') this.applyEditZoom();
             if (key === 'enabled' || key === 'useAI') { this.hooks.syncWorldBook?.(); this.rerenderKeepScroll(); }
+            if (key === 'memory.noCopy') { this.hooks.applyNoteVocab?.(); this.hooks.syncWorldBook?.(); }
             if (key === 'memory.compact' || key === 'memory.rereadText') { this.hooks.syncWorldBook?.(); this.rerenderKeepScroll(); } // 世界书条目跟着重写
             if (key === 'trimOldLetters') { const el = this.root.querySelector('.epi-token-stats'); if (el) el.outerHTML = this.tokenStatsHtml().split('<div class="epi-row epi-trim"')[0]; }
             if (e.type === 'change' && ['api.mode', 'mode', 'viewpointMode'].includes(key)) {
