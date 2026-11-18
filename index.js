@@ -871,6 +871,8 @@ function applyStoryEvents(letter, events, { fromMes = null, past = false, manual
         const st = deliveryState(letter);
         const d = letter.delivery || {};
         const snap = () => !manual && letter.autoDelivery.push({ mes: fromMes ?? mes ?? f, swipe: swipeOf(fromMes ?? mes ?? f), chatId: chatId(), status: letter.status, delivery: letter.delivery ? JSON.parse(JSON.stringify(letter.delivery)) : null, placeTo: letter.placeTo });
+        // 信没写收信人：第一个收到它的（不是写信人自己）就是收信人，不是转交人
+        if (e.type === 'received' && e.who && !(letter.recipients || []).filter(r => String(r || '').trim()).length && !same(e.who, letter.author || '\u0000')) letter.recipients = [e.who];
         const isRecipient = !e.who || letter.recipients.some(r => same(r, e.who));
         if (e.type === 'sent' && (st === 'draft' || st === 'unsent')) {
             snap();
@@ -2575,7 +2577,7 @@ function downloadText(name, text) {
 
 // 一键备份：what = 'all'（信件 + 设置）| 'archive'（只要信件）| 'settings'（只要设置）
 function exportBackup(what = 'all', { includeKey = false } = {}) {
-    const pack = buildBackup({ archive: store.archive, settings: settings(), what, includeKey, version: '0.57.1' });
+    const pack = buildBackup({ archive: store.archive, settings: settings(), what, includeKey, version: '0.57.2' });
     downloadText(backupFileName(what), JSON.stringify(pack, null, 2));
     return pack;
 }

@@ -2766,9 +2766,9 @@ ${list}`;
         const arrived = letters.filter(l => l.delivery.status === 'arrived');
         const follow = letters.filter(l => l.delivery.status === 'viewed' && l.delivery.followup);
         const transit = letters.filter(l => l.delivery.status === 'transit');
-        const atVia = letters.filter(l => l.delivery.status === 'atVia');
+        const atVia = letters.filter(l => l.delivery.status === 'atVia' && !l.delivery.viaHidden);
         const viaFollow = letters.filter(l => l.delivery.viaFollowup && l.delivery.status !== 'atVia');
-        const held = letters.filter(l => l.delivery.status === 'held');
+        const held = letters.filter(l => l.delivery.status === 'held' || (l.delivery.status === 'atVia' && l.delivery.viaHidden)); // 收起来的转交提醒也放这里
         const queued = (this.hooks.getInbox?.() || []).filter(i => this.archive.letters[i.letterId]);
         if (!arrived.length && !follow.length && !transit.length && !atVia.length && !viaFollow.length && !held.length && !queued.length && !sealedItems.length) { box.hidden = true; box.innerHTML = ''; return; }
         const items = [...sealedItems];
@@ -2825,7 +2825,8 @@ ${list}`;
                 ${transit.map(l => `<div class="epi-pb-row"><span>${esc(l.author)} → ${esc(l.recipients.join('、'))}${l.delivery.via ? `（经 ${esc(l.delivery.via)}）` : ''}：${esc(this.etaText(l))}</span>
                     <button class="menu_button epi-mini" data-pb="deliver" data-id="${esc(l.id)}">现在送达</button></div>`).join('')}
                 ${held.map(l => `<div class="epi-pb-row"><span>${esc(l.author)} → ${esc(l.recipients.join('、'))}：${esc(l.delivery.via)} 先留着${l.delivery.opened ? '（拆看过）' : ''}</span>
-                    ${this.isMe(l.delivery.via) ? `<button class="menu_button epi-mini" data-pb="via-forward" data-id="${esc(l.id)}" title="你决定转交">转交</button>` : ''}</div>`).join('')}
+                    ${this.isMe(l.delivery.via) ? `<button class="menu_button epi-mini" data-pb="via-forward" data-id="${esc(l.id)}" title="你决定转交">转交</button>` : ''}
+                    <button class="menu_button epi-mini" data-pb="via-deliver" data-id="${esc(l.id)}" title="剧情里已经送到了：直接记成送达">已送到</button></div>`).join('')}
             </details>`);
         }
         box.innerHTML = items.join('');
@@ -2863,6 +2864,8 @@ ${list}`;
             ${deadline}${waiting}${guess}
             <div class="epi-pb-actions">
                 ${dv.viaViewed ? '' : btn('via-switch', `切过去看 ${via} 怎么处理`, `镜头切到 ${dv.via} 那边。TA 不知道信的内容，拆不拆、交不交由 TA 自己决定`)}
+                ${btn('via-deliver', `其实已经交到 ${to || '收信人'} 手里了`, '剧情里这封信已经送到了：直接记成送达')}
+                ${btn('via-hide', '✕', '收起这条提醒（信还在转交人手里，可以在下面“压在转交人手里”里找到）', 'epi-mini')}
 
             </div></div>`;
     }
@@ -2950,6 +2953,14 @@ ${list}`;
             }
         } else if (act === 'via-forward') {
             this.openForwardDialog(l.id);
+        } else if (act === 'via-hide') {
+            l.delivery.viaHidden = true;
+            this.store.save();
+            this.renderPostbox();
+        } else if (act === 'via-deliver') {
+            await this.hooks.saveDelivery?.(l.id, { state: 'delivered', via: l.delivery.via || '', arrivedAt: this.hooks.getStoryDate?.() || l.delivery.viaArrivedAt || '' });
+            this.renderPostbox();
+            this.refresh();
         } else if (act === 'via-later' || act === 'via-withhold') {
             this.hooks.setViaAction(l, act === 'via-later' ? 'later' : 'withhold');
         } else if (act === 'via-apply') {

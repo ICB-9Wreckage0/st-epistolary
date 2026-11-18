@@ -546,6 +546,17 @@ export function fixSelfVia(archive, letter) {
     }
     const via = d.via;
     if (!via) return changed;
+    // 信没写收信人、却有“转交人”（“拿到了 X 托 TA 转交给 的信”）：那个人其实就是收信人
+    if (!(letter.recipients || []).some(r => String(r || '').trim()) && !same(via, letter.author)) {
+        const atV = ['atVia', 'held', 'withheld'].includes(d.status);
+        const arrived = d.viaArrivedAt || '';
+        letter.recipients = [via];
+        for (const k of ['via', 'viaNote', 'viaDeadline', 'viaArrivedAt', 'openly', 'tampered', 'viaGuess', 'viaViewed', 'viaHidden', 'awaitingDecision', 'viaFollowup']) delete d[k];
+        d.reader = via;
+        if (d.stage) d.stage = '';
+        if (atV) { d.status = 'viewed'; d.arrivedAt = d.arrivedAt || arrived; }
+        return true;
+    }
     const isAuthor = same(via, letter.author);
     const isReader = same(via, d.reader) || (letter.recipients || []).some(r => same(r, via));
     if (!isAuthor && !isReader) return changed;

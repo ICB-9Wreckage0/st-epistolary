@@ -35,3 +35,14 @@ test('旧数据没修也不显示“经自己转交”', () => {
     const l = { author: '埃里克', recipients: ['玛丽亚'], status: 'sent', delivery: { status: 'viewed', via: '玛丽亚', reader: '玛丽亚', arrivedAt: '1890-05-02' } };
     assert.doesNotMatch(deliveryText(l), /转交/);
 });
+
+test('信没写收信人、却记了转交人：那个人其实是收信人', () => {
+    const A = createArchive();
+    const l = createLetter(A, { author: 'E·E·勒鲁', recipients: [], status: 'sent', body: 'x' });
+    l.delivery = { status: 'atVia', stage: 'atVia', via: '阿尔弗雷德·瓦莱特', viaArrivedAt: '1890-06-24' };
+    assert.equal(fixSelfVia(A, l), true);
+    assert.deepEqual(l.recipients, ['阿尔弗雷德·瓦莱特']);
+    assert.equal(l.delivery.status, 'viewed');
+    assert.equal(l.delivery.arrivedAt, '1890-06-24');
+    assert.equal(l.delivery.via, undefined);
+});
