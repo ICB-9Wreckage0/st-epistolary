@@ -2758,8 +2758,7 @@ ${list}`;
                 <div class="epi-pb-actions"><button class="menu_button epi-mini" data-pb="unseal" data-mes="${s.mesId}" title="剧情里其实已经收到了，现在就拆">已经收到了，拆开</button></div></div>`);
         if (!this.expert) {
             // 简单模式没有寄送，只有来信
-            box.innerHTML = sealedItems.join('');
-            box.hidden = !sealedItems.length;
+            this.finishPostbox(sealedItems, sealedItems.length);
             return;
         }
         const letters = this.chatLetters();
@@ -2770,7 +2769,7 @@ ${list}`;
         const viaFollow = letters.filter(l => l.delivery.viaFollowup && l.delivery.status !== 'atVia');
         const held = letters.filter(l => l.delivery.status === 'held' || (l.delivery.status === 'atVia' && l.delivery.viaHidden)); // 收起来的转交提醒也放这里
         const queued = (this.hooks.getInbox?.() || []).filter(i => this.archive.letters[i.letterId]);
-        if (!arrived.length && !follow.length && !transit.length && !atVia.length && !viaFollow.length && !held.length && !queued.length && !sealedItems.length) { box.hidden = true; box.innerHTML = ''; return; }
+        if (!arrived.length && !follow.length && !transit.length && !atVia.length && !viaFollow.length && !held.length && !queued.length && !sealedItems.length) { this.finishPostbox([], 0); return; }
         const items = [...sealedItems];
         for (const i of queued) {
             const l = this.archive.letters[i.letterId];
@@ -2829,9 +2828,25 @@ ${list}`;
                     <button class="menu_button epi-mini" data-pb="via-deliver" data-id="${esc(l.id)}" title="剧情里已经送到了：直接记成送达">已送到</button></div>`).join('')}
             </details>`);
         }
-        box.innerHTML = items.join('');
-        box.hidden = false;
+        this.finishPostbox(items, items.length - (transit.length || held.length ? 1 : 0) + transit.length + held.length);
         box.querySelector('details')?.addEventListener('toggle', ev => { this.postboxOpen = ev.target.open; });
+    }
+
+    // 信箱提醒：上面一条标题栏可以收起；收起后只剩一枚小圆片（点开再展开）；设置里也能整个关掉
+    finishPostbox(items, count) {
+        const box = this.postbox;
+        const s = this.hooks.getSettings();
+        if (!items.length || s.postbox === false) { box.hidden = true; box.innerHTML = ''; return; }
+        box.hidden = false;
+        if (s.postboxMin) {
+            box.classList.add('epi-pb-min');
+            box.innerHTML = `<button class="epi-pb-pill" data-pb="pb-max" title="展开书信簿的提醒">📬 ${count}</button>`;
+            return;
+        }
+        box.classList.remove('epi-pb-min');
+        box.innerHTML = `<div class="epi-pb-head"><span>📬 书信簿提醒 · ${count}</span>
+            <button class="menu_button epi-mini" data-pb="pb-min" title="收起成右下角一个小圆片，点它再展开">— 收起</button></div>
+            <div class="epi-pb-list">${items.join('')}</div>`;
     }
 
     // 信在转交人手里
@@ -2903,6 +2918,7 @@ ${list}`;
         const el = e.target.closest('[data-pb]');
         if (!el) return;
         if (el.dataset.pb === 'unseal') { await this.hooks.unseal(parseInt(el.dataset.mes, 10)); return; }
+        if (el.dataset.pb === 'pb-min' || el.dataset.pb === 'pb-max') { this.setS('postboxMin', el.dataset.pb === 'pb-min'); this.renderPostbox(); return; }
         const l = this.archive.letters[el.dataset.id];
         if (!l) return;
         const act = el.dataset.pb;
@@ -3013,6 +3029,7 @@ ${list}`;
                 <label>写信时的字号<select class="text_pole" data-s="editZoom">${[0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.3].map(z => `<option value="${z}" ${Math.abs(this.editZoom() - z) < 0.01 ? 'selected' : ''}>${Math.round(z * 100)}%${z === 0.9 ? '（默认）' : ''}</option>`).join('')}</select></label>
                 <label>模式<select class="text_pole" data-s="mode"><option value="simple" ${s.mode === 'simple' ? 'selected' : ''}>简单：存档信件 + 暗号</option><option value="expert" ${s.mode === 'expert' ? 'selected' : ''}>高级：寄送、转交、知情过滤、自动注入，以及段落、流转、注入预览</option></select></label>
                 ${chk('fab', '屏幕上的悬浮按钮（点一下打开书信簿，按住可以拖到别处）')}
+                ${chk('postbox', '显示右下角的书信簿提醒（到信、在途、转交）', '关掉以后这些提醒都不弹出来；信件的状态照样会更新，在信件列表里看。平时嫌挡可以在提醒上点「— 收起」，收成一个小圆片。')}
                 ${chk('autoBlurb', '保存时自动让 AI 写一句话简介', '默认关。关着的时候简介空着就按“谁哪天写给谁的信”称呼；想要 AI 写，在信头点「✨ AI 概括」。')}
                 ${chk('pageBreaks', '阅读页里分页：在换页的地方画一道线，写着“第 1 张 · 背面”', '关掉以后正文连着显示，不画分页线；写信页下面的字数和张数照常显示。')}
                 <div class="epi-row epi-pagecap" title="写信页下面显示“几张信纸”、阅读页画分页线时，一面大约能写多少。空着就按字号、横竖版自动估（中文约 400 字、外文约 260 词）。写信页下面「纸」旁边也能直接改。">
@@ -4492,6 +4509,7 @@ ${list}`;
             this.setS(key, v);
             if (key === 'editZoom') this.applyEditZoom();
             if (key === 'enabled' || key === 'useAI') { this.hooks.syncWorldBook?.(); this.rerenderKeepScroll(); }
+            if (key === 'postbox') this.renderPostbox();
             if (key === 'memory.noCopy') { this.hooks.applyNoteVocab?.(); this.hooks.syncWorldBook?.(); }
             if (key === 'memory.compact' || key === 'memory.rereadText') { this.hooks.syncWorldBook?.(); this.rerenderKeepScroll(); } // 世界书条目跟着重写
             if (key === 'trimOldLetters') { const el = this.root.querySelector('.epi-token-stats'); if (el) el.outerHTML = this.tokenStatsHtml().split('<div class="epi-row epi-trim"')[0]; }

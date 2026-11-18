@@ -546,15 +546,10 @@ export function fixSelfVia(archive, letter) {
     }
     const via = d.via;
     if (!via) return changed;
-    // 信没写收信人、却有“转交人”（“拿到了 X 托 TA 转交给 的信”）：那个人其实就是收信人
-    if (!(letter.recipients || []).some(r => String(r || '').trim()) && !same(via, letter.author)) {
-        const atV = ['atVia', 'held', 'withheld'].includes(d.status);
-        const arrived = d.viaArrivedAt || '';
-        letter.recipients = [via];
-        for (const k of ['via', 'viaNote', 'viaDeadline', 'viaArrivedAt', 'openly', 'tampered', 'viaGuess', 'viaViewed', 'viaHidden', 'awaitingDecision', 'viaFollowup']) delete d[k];
-        d.reader = via;
-        if (d.stage) d.stage = '';
-        if (atV) { d.status = 'viewed'; d.arrivedAt = d.arrivedAt || arrived; }
+    // 没写收信人的“信”（多半是文章稿、手稿这类放在书信簿里的东西）、却记了“转交人”：
+    // 那是 AI 把剧情里“某某拿到了稿子 / 读了文章”错记成了转交。把这段寄送记录清掉，不去猜收信人。
+    if (!(letter.recipients || []).some(r => String(r || '').trim())) {
+        letter.delivery = null;
         return true;
     }
     const isAuthor = same(via, letter.author);

@@ -1187,8 +1187,11 @@
     position: fixed;
     right: 14px;
     bottom: 90px;
-    z-index: 8000;
+    z-index: 36; /* 和悬浮按钮一样放低：在侧栏、抽屉、弹窗下面 */
     width: min(360px, calc(100vw - 28px));
+    max-height: calc(100vh - 180px);
+    max-height: calc(100dvh - 180px);
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -1197,6 +1200,7 @@
 }
 #epi-postbox[hidden] { display: none; }
 .epi-pb-item, .epi-pb-transit {
+    flex: none;
     background: var(--SmartThemeBlurTintColor, rgba(28, 28, 33, 0.97));
     backdrop-filter: blur(8px);
     border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,.15));
@@ -1797,3 +1801,9 @@ details.epi-sec-card.epi-sec-off > :not(summary):not(.epi-off-note) { opacity: .
 .epi-paper-panel .epi-pp-num { width: 5.5em; display: inline-block; margin: 0 4px; }
 .epi-paper-panel .checkbox_label { margin: 0; }
 .epi-paper-panel .epi-pp-tip { flex-basis: 100%; }
+
+/* 信箱提醒：标题栏、列表太长就自己滚动、收起后的小圆片 */
+.epi-pb-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-radius: 10px; background: var(--SmartThemeBlurTintColor, rgba(28, 28, 33, 0.97)); border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,.15)); box-shadow: 0 4px 16px rgba(0,0,0,.35); font-size: .92em; }
+.epi-pb-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; min-height: 0; flex: 1 1 auto; overscroll-behavior: contain; }
+#epi-postbox.epi-pb-min { width: auto; align-items: flex-end; right: 92px; } /* 让开默认位置的悬浮按钮 */
+.epi-pb-pill { cursor: pointer; padding: 6px 12px; border-radius: 999px; font: inherit; color: inherit; background: var(--SmartThemeBlurTintColor, rgba(28, 28, 33, 0.97)); border: 1px solid var(--SmartThemeQuoteColor, #e8b86b); box-shadow: 0 4px 14px rgba(0,0,0,.35); }
